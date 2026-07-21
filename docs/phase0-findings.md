@@ -1,10 +1,11 @@
 # Phase 0 Findings — UBI 10 / RHEL 10 environment truth
 
-Date: 2026-07-21. Method: no container runtime was available in the work
-environment, so package availability and file lists were verified directly
-against the **public repository metadata** (repomd/primary/filelists XML) of
-UBI 10, CentOS Stream 10, and EPEL 10 — equivalent to `dnf repoquery` /
-`rpm -ql` against those repos.
+Date: 2026-07-21. Method: package availability and file lists were first
+verified against the **public repository metadata** (repomd/primary/
+filelists XML) of UBI 10, CentOS Stream 10, and EPEL 10 — equivalent to
+`dnf repoquery` / `rpm -ql` against those repos — and then **confirmed by
+building `containers/Containerfile.build` in docker** (CentOS Stream 10
+base) and inspecting the resulting image (see "Container validation").
 
 ## Headline results
 
@@ -96,6 +97,34 @@ Note `meson` and `libinput-devel` live in **CRB**, which must be enabled.
 - **D3 — drop patch P1** (backend include guards) from the required set;
   meson still probes each `libweston/backend-*.h` and fails with a clear
   message if the RPM ever stops shipping one.
+
+## Container validation
+
+`containers/Containerfile.build` was built successfully with docker from
+the CentOS Stream 10 base: `dnf install epel-release` works out of the box,
+`dnf config-manager --set-enabled crb` works, every package resolves, and
+the image's built-in sanity check passed
+(`pkg-config --exists 'libweston-14 >= 14.0.1'`, `headless-backend.so`,
+`xwayland.so`, `xwayland-api.h`). Installed versions in the image:
+
+```
+weston-devel-14.0.1-3.el10_0    weston-libs-14.0.1-3.el10_0
+meson-1.7.2-1.el10              gcc-14.4.1-1.el10
+wayland-devel-1.25.0-1.el10     wayland-protocols-devel-1.49-2.el10
+libinput-devel-1.30.1-2.el10    libevdev-devel-1.13.1-6.el10
+xorg-x11-server-Xwayland-24.1.9-6.el10
+```
+
+`/usr/lib64/libweston-14/` in the image contains all modules predicted by
+the metadata: color-lcms, drm-backend, gl-renderer, headless-backend,
+pipewire-backend, pipewire-plugin, rdp-backend, remoting-plugin,
+vnc-backend, wayland-backend, x11-backend, xwayland.
+
+(Build note for sandboxed/proxied environments like this session: the
+image was built on top of a thin local wrapper of the CS10 base that
+installs the outbound-proxy CA into the trust store and sets `proxy=` in
+dnf.conf; the repo Containerfile itself is unchanged and works as-is in
+normally-networked environments via its `BASE_IMAGE` build-arg.)
 
 ## Plan risk status after Phase 0
 
