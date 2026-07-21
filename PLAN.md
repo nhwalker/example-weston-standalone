@@ -189,9 +189,17 @@ logged in `VENDOR.md`:
   `data/westonite.desktop` added and installed. Verified headless in the
   container: no client spawn attempts, `Using config file
   '…/westonite.ini'` honored, clean exit both with and without a config.
-- **Phase 3 — Xwayland**: `BUILD_XWAYLAND` on, `xwayland-api.h` present or
-  vendored per Phase 0 findings; smoke test: `xterm`/`xeyes` (or
-  `xwininfo`) against westonite headless + Xwayland in the container.
+- **Phase 3 — Xwayland** ✅ *(done)*: verified in the container —
+  `westonite --backend=headless --xwayland` publishes display `:0`,
+  lazily spawns `/usr/bin/Xwayland` on first connection, and `xdpyinfo`
+  completes a real X11 round-trip; clean exit. Environment notes:
+  `/tmp/.X11-unix` must exist (systemd-tmpfiles provides it on real
+  systems; bare containers must create it — if missing, the RPM's
+  `xwayland.so` fails to bind and then **segfaults in its error path**,
+  an upstream teardown bug in 14.0.1, not a westonite defect).
+  `xorg-x11-server-Xwayland-devel` added to the build image so
+  `HAVE_XWAYLAND_LISTENFD` is enabled (avoids Xwayland's deprecated
+  `-listen` fd path).
 - **Phase 4 — RPM**: spec, `rpmbuild` in container, install the RPM into a
   clean UBI10 image and rerun the Phase 2/3 smoke tests from the installed
   location.

@@ -35,6 +35,7 @@ RUN dnf -y install epel-release \
         rpm-build \
         rpmdevtools \
         xorg-x11-server-Xwayland \
+        xorg-x11-server-Xwayland-devel \
     && dnf clean all
 
 # Sanity marker used by CI/smoke scripts: fail the image build early if the
