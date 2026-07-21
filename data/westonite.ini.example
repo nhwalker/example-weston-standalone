@@ -1,0 +1,34 @@
+# Example configuration for westonite.
+#
+# Copy to one of the locations westonite searches (first hit wins):
+#   $XDG_CONFIG_HOME/westonite.ini   (~/.config/westonite.ini)
+#   ~/.config/westonite.ini
+# or pass explicitly with:  westonite -c /path/to/westonite.ini
+#
+# The format is identical to weston.ini(5); only the file name differs.
+# Options relating to helper clients (panel, on-screen keyboard) are off
+# by default because westonite does not ship those clients.
+
+[core]
+# Backend: drm-backend.so (default), headless, wayland, x11, ...
+#backend=drm
+#idle-time=0
+# Xwayland support (requires xorg-x11-server-Xwayland installed):
+#xwayland=true
+
+[shell]
+# Background color when no helper client draws one (0xAARRGGBB):
+#background-color=0xff103040
+# No helper client is spawned by default. To get the classic weston
+# panel/background, install EPEL's weston package and set:
+#client=/usr/libexec/weston-desktop-shell
+# Disable the startup fade-in if desired:
+#startup-animation=none
+
+[input-method]
+# On-screen keyboard client; disabled by default. To enable, install
+# EPEL's weston package and set:
+#path=/usr/libexec/weston-keyboard
+
+[keyboard]
+#keymap_layout=us
