@@ -40,6 +40,10 @@ All `meson.build` files and `meson_options.txt` are written for this repo
 - **P4** — `frontend/text-backend.c`: `[input-method] path` defaults to
   empty (upstream defaulted to `$libexecdir/weston-keyboard`, which
   westonite does not ship); empty was already handled as "disabled".
+- **T1** — `protocol/weston-desktop-shell.xml`: removed the vestigial
+  `weston_screensaver` interface (never implemented or advertised by
+  shell.c; upstream keeps it only as a fossil). First change of the
+  desktop-shell trim series; see `docs/desktop-shell-capabilities.md`.
 
 ## Rebasing to a newer 14.0.x
 
