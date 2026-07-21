@@ -200,9 +200,14 @@ logged in `VENDOR.md`:
   `xorg-x11-server-Xwayland-devel` added to the build image so
   `HAVE_XWAYLAND_LISTENFD` is enabled (avoids Xwayland's deprecated
   `-listen` fd path).
-- **Phase 4 — RPM**: spec, `rpmbuild` in container, install the RPM into a
-  clean UBI10 image and rerun the Phase 2/3 smoke tests from the installed
-  location.
+- **Phase 4 — RPM** ✅ *(done)*: `rpm/westonite.spec` builds
+  `westonite-14.0.1-1.el10.x86_64.rpm` (+debuginfo/debugsource) via
+  `rpmbuild` in the build container (Source0 from `git archive`).
+  Install-tested in a **pristine** CentOS Stream 10 container: pulls
+  `weston-libs` (not full `weston`), and the headless + Xwayland +
+  `xdpyinfo` smoke tests pass from the installed files. Runtime repo
+  note: EPEL's `weston-libs` needs **CRB enabled at runtime as well**
+  (its VNC backend chain: `neatvnc` → `libturbojpeg` lives in CRB).
 - **Phase 5 — docs/CI**: README (build, run, config), optional GitHub
   Actions job running the container build + smoke tests.
 
