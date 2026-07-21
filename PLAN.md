@@ -5,10 +5,11 @@ in this repository, linking against **libweston 14 as installed from RPMs on
 UBI 10 / RHEL 10**. The result is renamed **`westonite`** so it can be
 installed alongside (and never collides with) the distro `weston` package.
 
-Upstream baseline: **weston `14.0.2`** (tag in the weston repo; the `14.0`
-branch tip only adds DRM-backend fixes that live inside libweston, which we
-consume from the RPM anyway — so the tag matching the RPM version is the
-right import base).
+Upstream baseline: **weston `14.0.1`** — matching the actual RPM found in
+Phase 0: RHEL 10 itself ships no weston; **EPEL 10** provides
+`weston-14.0.1-3.el10_0` (`weston`, `weston-libs`, `weston-devel`, …).
+One frontend fix from 14.0.2 is backported as patch P0 (see §6).
+Phase 0 results: `docs/phase0-findings.md` (repos, file lists, versions).
 
 ## 1. Scope
 
@@ -49,8 +50,9 @@ Findings from the 14.0 source (verified against `meson.build` files and
   `shared/` with `link_whole` and config-parser carries `WL_EXPORT`, so the
   `.so` exports it. **We do not vendor `config-parser.c`.**
 - Backend headers `<libweston/backend-*.h>` and `<libweston/xwayland-api.h>`
-  — but **only for features the RPM was built with** (each is installed by
-  its feature's meson block). See risk R2/R3.
+  — in principle only for features the RPM was built with, but Phase 0
+  verified the EPEL 10 build ships **all seven** backend headers plus
+  `xwayland-api.h` (risks R2/R3 resolved).
 - Runtime backends/renderers (`/usr/lib64/libweston-14/*.so`) and the
   `xwayland.so` libweston module, loaded by public API — nothing to build.
 
@@ -71,17 +73,18 @@ Findings from the 14.0 source (verified against `meson.build` files and
 with vendored fallback copies if UBI10 lacks the package), plus a
 `git-version.h` derived from this repo (upstream generates it from git).
 
-## 3. Target environment: UBI 10
+## 3. Target environment: UBI 10 *(validated in Phase 0)*
 
-- Build/runtime base: `registry.access.redhat.com/ubi10/ubi`.
-- Expected packages: `weston` (runtime libweston + backends + xwayland
-  module), `weston-devel`, `meson`, `gcc`, `pkgconf`, `wayland-devel`,
-  `wayland-protocols-devel`, `libinput-devel`, `libevdev-devel`,
-  `rpm-build`, `rpmdevtools`; `xorg-x11-server-Xwayland` at runtime.
-- **Phase 0 validates this** (see §8): UBI repos are a subset of RHEL —
-  `weston-devel` may need the CRB repo or an entitled build; CentOS
-  Stream 10 repos are the unentitled CI fallback. Record the actual
-  `rpm -ql weston-devel` output; it decides R2/R3 below.
+- weston 14.0.1 comes from **EPEL 10** (RHEL 10 / public UBI repos ship no
+  weston at all). Runtime needs `weston-libs` (libweston + all backends +
+  gl-renderer + xwayland.so); build needs `weston-devel`.
+- Build deps from RHEL10 content: `wayland-devel`,
+  `wayland-protocols-devel` 1.49, `libevdev-devel`, `gcc` (AppStream);
+  `meson` 1.7 and `libinput-devel` (**CRB** — must be enabled);
+  `xorg-x11-server-Xwayland` (AppStream) at runtime for Phase 3.
+- Build image: `containers/Containerfile.build` — defaults to CentOS
+  Stream 10 (unentitled CI); `--build-arg BASE_IMAGE=…/ubi10/ubi` works on
+  an entitlement-bearing host. Details in `docs/phase0-findings.md`.
 
 ## 4. Repository layout
 
@@ -103,7 +106,7 @@ example-weston-standalone/
 
 ## 5. Build design (meson)
 
-- `project('westonite', 'c')` versioned `14.0.2+westonite.N`.
+- `project('westonite', 'c')` versioned `14.0.1+westonite.N`.
 - Resolve `dependency('libweston-14')`, `libinput`, `libevdev`, `dl`,
   `threads`, `wayland-server`, `wayland-scanner`, `wayland-protocols`.
 - `config.h` via `configuration_data()`, providing exactly the macros the
@@ -130,10 +133,14 @@ etc.) and libweston interfaces stay untouched.
 Every source deviation from the verbatim 14.0.2 import is a discrete commit
 logged in `VENDOR.md`:
 
-1. **P1 — guard backend includes**: `main.c` includes all seven
-   `<libweston/backend-*.h>` unconditionally while the *code* is already
-   guarded by `BUILD_*_COMPOSITOR`; wrap each include in its existing guard
-   so the port compiles against an RPM built with a backend subset.
+1. **P0 — backport `51dfd1be`** ("frontend: Fix crash in output resize
+   handler") from 14.0.2 into the vendored `main.c` — the only change to a
+   vendored file between 14.0.1 and 14.0.2. (The other 14.0.2 fix,
+   config-parser's `binding-modifier none`, sits inside the RPM's
+   libweston and can't be fixed from our side — documented limitation.)
+   *(P1 — guarding the backend `#include`s — was dropped: Phase 0 showed
+   the EPEL RPM installs all backend headers; meson probes them and fails
+   clearly if that ever changes.)*
 2. **P2 — config filename**: `main.c` looks up `weston.ini`; switch the
    string to `westonite.ini` (same XDG search logic, `--config` unaffected).
 3. **P3 — no-panel**: `shell.c` unconditionally idle-spawns
@@ -148,12 +155,13 @@ logged in `VENDOR.md`:
 
 ## 7. RPM spec (`rpm/westonite.spec`)
 
-- `Name: westonite`, `Version: 14.0.2`, `Release: N%%{?dist}`, MIT.
+- `Name: westonite`, `Version: 14.0.1`, `Release: N%%{?dist}`, MIT.
 - `BuildRequires`: meson, gcc, `pkgconfig(libweston-14)`,
   `pkgconfig(libinput)`, `pkgconfig(libevdev)`, `pkgconfig(wayland-server)`,
   `pkgconfig(wayland-scanner)`, `pkgconfig(wayland-protocols)`.
-- `Requires`: `weston` (supplies libweston runtime, backends, renderers,
-  xwayland module); `Recommends: xorg-x11-server-Xwayland`.
+- `Requires`: `weston-libs` (EPEL 10 — supplies libweston runtime, all
+  backends, gl-renderer, xwayland module; the full `weston` package is
+  *not* required); `Recommends: xorg-x11-server-Xwayland`.
 - `%%files`: `%%{_bindir}/westonite`, `%%{_libdir}/westonite/*.so`,
   `%%{_datadir}/wayland-sessions/westonite.desktop`, doc/example ini.
   No devel subpackage (we don't install plugin-SDK headers).
@@ -162,12 +170,13 @@ logged in `VENDOR.md`:
 
 ## 8. Phases
 
-- **Phase 0 — environment truth** *(gates everything)*: UBI10
-  `Containerfile.build`; confirm package names/availability of
-  `weston-devel` (CRB? entitlement? CentOS Stream 10 fallback); capture
-  `rpm -ql` for weston packages → finalize R1–R3.
-- **Phase 1 — verbatim import + build**: import files from tag `14.0.2`
-  (recorded in `VENDOR.md`), write meson, apply P1 only; compiles and
+- **Phase 0 — environment truth** ✅ *(done — see
+  `docs/phase0-findings.md`)*: weston 14.0.1 located in EPEL 10;
+  `containers/Containerfile.build` written (CentOS Stream 10 default,
+  UBI10-on-entitled-host variant); R1–R3 resolved; import base fixed at
+  `14.0.1`.
+- **Phase 1 — verbatim import + build**: import files from tag `14.0.1`
+  (recorded in `VENDOR.md`), write meson, apply P0 only; compiles and
   `westonite --backend=headless-backend.so` runs in the container with
   desktop-shell loaded (log-verified).
 - **Phase 2 — westonite identity + no-panel**: renames, P2–P4,
@@ -184,19 +193,21 @@ logged in `VENDOR.md`:
 
 ## 9. Risks / open questions
 
-- **R1 — UBI10 package availability**: `weston`/`weston-devel` may not be
-  in unentitled UBI repos. Mitigation: CRB repo, entitled builds, or CentOS
-  Stream 10 for CI. Phase 0 resolves.
-- **R2 — backend header subset**: only headers for compiled-in backends are
-  installed. P1 + meson probing makes any subset compile; runtime backend
-  choice is validated in Phase 1.
-- **R3 — Xwayland availability**: `xwayland-api.h` and the `xwayland.so`
-  libweston module only exist if the RPM enabled xwayland (RHEL is expected
-  to). If the header alone is missing, vendor it; if the *module* is
-  missing, Xwayland cannot work against that RPM — escalate before Phase 3.
+- **R1 — UBI10 package availability**: ✅ **resolved** (Phase 0) — weston
+  is absent from RHEL10/UBI10 proper; EPEL 10 provides 14.0.1. Unentitled
+  builds use CentOS Stream 10 + EPEL; entitled hosts can use UBI10 + CRB +
+  EPEL.
+- **R2 — backend header subset**: ✅ **resolved** (Phase 0) — the EPEL
+  build installs all seven backend headers; patch dropped, meson probe
+  kept as a tripwire.
+- **R3 — Xwayland availability**: ✅ **resolved** (Phase 0) —
+  `xwayland-api.h`, `xwayland.so`, and `xorg-x11-server-Xwayland` all
+  available.
 - **R4 — `weston-private.h` coupling**: it only needs installed headers
-  (verified), but frontend↔libweston version skew is real: pin the port to
-  the RPM's exact 14.0.x and rebase when the RPM moves.
+  (verified), but frontend↔libweston version skew is real: port pinned to
+  `14.0.1` (EPEL's version); rebase when EPEL moves. Known RPM-side bug
+  until then: `binding-modifier none` (fixed upstream in 14.0.2's
+  config-parser, which lives inside the RPM's libweston).
 - **R5 — screenshooter authorization**: `weston-screenshooter.c` references
   the screenshot client path (`weston-screenshoot` binding); without ported
   clients the binding degrades to a no-op — acceptable; revisit only if

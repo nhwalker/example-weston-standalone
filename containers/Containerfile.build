@@ -1,0 +1,47 @@
+# Build/test image for westonite (Phase 0 deliverable).
+#
+# Default base is CentOS Stream 10 — the RHEL 10 content set without
+# subscription entitlement, suitable for CI. On a subscription-entitled
+# host the same file builds on UBI 10:
+#
+#   docker build -f containers/Containerfile.build \
+#     --build-arg BASE_IMAGE=registry.access.redhat.com/ubi10/ubi .
+#
+# (UBI containers inherit the host's RHEL entitlement; EPEL and CRB
+# — "codeready-builder-for-rhel-10-$(arch)-rpms" — resolve through it.)
+#
+# weston 14.0.1 comes from EPEL 10; meson and libinput-devel come from CRB.
+# See docs/phase0-findings.md for the repository research behind this.
+
+ARG BASE_IMAGE=quay.io/centos/centos:stream10
+FROM ${BASE_IMAGE}
+
+RUN dnf -y install epel-release \
+    && (dnf config-manager --set-enabled crb \
+        || subscription-manager repos --enable "codeready-builder-for-rhel-10-$(arch)-rpms") \
+    && dnf -y install \
+        gcc \
+        meson \
+        ninja-build \
+        pkgconf-pkg-config \
+        git-core \
+        weston-devel \
+        weston-libs \
+        wayland-devel \
+        wayland-protocols-devel \
+        libinput-devel \
+        libevdev-devel \
+        libxkbcommon-devel \
+        rpm-build \
+        rpmdevtools \
+        xorg-x11-server-Xwayland \
+    && dnf clean all
+
+# Sanity marker used by CI/smoke scripts: fail the image build early if the
+# libweston 14 development environment is not actually usable.
+RUN pkg-config --exists 'libweston-14 >= 14.0.1' \
+    && test -e /usr/lib64/libweston-14/headless-backend.so \
+    && test -e /usr/lib64/libweston-14/xwayland.so \
+    && test -e /usr/include/libweston-14/libweston/xwayland-api.h
+
+WORKDIR /src
