@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the CentOS Stream 10 + EPEL build image
+        run: docker build -f containers/Containerfile.build -t westonite-build .
+
+      - name: Build westonite and run smoke tests
+        run: docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
+
+      - name: Build the RPM
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/src -v "$PWD/out":/out \
+            westonite-build /src/scripts/rpm-build.sh /out
+
+      - name: Install-test the RPM in a pristine container
+        run: |
+          docker run --rm -v "$PWD/out":/rpms:ro -v "$PWD/scripts":/scripts:ro \
+            quay.io/centos/centos:stream10 /scripts/rpm-install-test.sh /rpms
+
+      - name: Upload RPMs
+        uses: actions/upload-artifact@v4
+        with:
+          name: westonite-rpms
+          path: out/*.rpm

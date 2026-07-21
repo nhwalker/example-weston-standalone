@@ -208,8 +208,12 @@ logged in `VENDOR.md`:
   `xdpyinfo` smoke tests pass from the installed files. Runtime repo
   note: EPEL's `weston-libs` needs **CRB enabled at runtime as well**
   (its VNC backend chain: `neatvnc` → `libturbojpeg` lives in CRB).
-- **Phase 5 — docs/CI**: README (build, run, config), optional GitHub
-  Actions job running the container build + smoke tests.
+- **Phase 5 — docs/CI** ✅ *(done)*: README rewritten (repos, build, RPM,
+  running, no-client defaults); `scripts/{smoke-test,rpm-build,
+  rpm-install-test}.sh` encapsulate the phase 1–4 verifications and were
+  each validated in containers; `.github/workflows/ci.yml` runs them on
+  every push (image build → build+smoke → rpmbuild → pristine install
+  test → RPM artifacts).
 
 ## 9. Risks / open questions
 
