@@ -129,5 +129,6 @@ subdir('protocol')
 subdir('shared')
 subdir('frontend')
 subdir('desktop-shell')
+subdir('data')
 
 configure_file(output: 'config.h', configuration: config_h)

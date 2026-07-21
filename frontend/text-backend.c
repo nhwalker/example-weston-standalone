@@ -1064,18 +1064,17 @@ text_backend_configuration(struct text_backend *text_backend)
 {
 	struct weston_config *config = wet_get_config(text_backend->compositor);
 	struct weston_config_section *section;
-	char *client;
 
 	section = weston_config_get_section(config,
 					    "input-method", NULL, NULL);
-	client = wet_get_libexec_path("weston-keyboard");
+	/* No input-method client by default: westonite does not ship
+	 * weston-keyboard. Set [input-method] path to enable one. */
 	weston_config_section_get_string(section, "path",
 					 &text_backend->input_method.path,
-					 client);
+					 "");
 	weston_config_section_get_bool(section, "overlay-keyboard",
 				       &text_backend->input_method.overlay_keyboard,
 				       false);
-	free(client);
 }
 
 WL_EXPORT void

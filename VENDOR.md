@@ -30,6 +30,16 @@ All `meson.build` files and `meson_options.txt` are written for this repo
 - **P0** — backport of upstream `51dfd1be` ("frontend: Fix crash in output
   resize handler", the only 14.0.1→14.0.2 change to a vendored file) into
   `frontend/main.c`.
+- **P2** — `frontend/main.c`: default config file name `weston.ini` →
+  `westonite.ini` (lookup string + usage text; same XDG search logic).
+- **P3** — `desktop-shell/shell.c`: an empty `[shell] client=` (or empty
+  `WESTON_SHELL_CLIENT` default, set via the `shell-client-default` meson
+  option) disables the helper client: no spawn is scheduled, and the
+  startup fade is triggered immediately instead of waiting on the 15 s
+  desktop_ready timeout.
+- **P4** — `frontend/text-backend.c`: `[input-method] path` defaults to
+  empty (upstream defaulted to `$libexecdir/weston-keyboard`, which
+  westonite does not ship); empty was already handled as "disabled".
 
 ## Rebasing to a newer 14.0.x
 

@@ -721,8 +721,8 @@ usage(int error_code)
 #endif
 		"  --modules\t\tLoad the comma-separated list of modules\n"
 		"  --log=FILE\t\tLog to the given file\n"
-		"  -c, --config=FILE\tConfig file to load, defaults to weston.ini\n"
-		"  --no-config\t\tDo not read weston.ini\n"
+		"  -c, --config=FILE\tConfig file to load, defaults to westonite.ini\n"
+		"  --no-config\t\tDo not read westonite.ini\n"
 		"  --wait-for-debugger\tRaise SIGSTOP on start-up\n"
 		"  --debug\t\tEnable debug extension\n"
 		"  -l, --logger-scopes=SCOPE\n\t\t\tSpecify log scopes to "
@@ -1276,7 +1276,7 @@ static int
 load_configuration(struct weston_config **config, int32_t noconfig,
 		   const char *config_file)
 {
-	const char *file = "weston.ini";
+	const char *file = "westonite.ini";
 	const char *full_path;
 
 	*config = NULL;

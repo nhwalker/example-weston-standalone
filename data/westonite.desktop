@@ -1,0 +1,5 @@
+[Desktop Entry]
+Name=Westonite
+Comment=Standalone Weston-based Wayland compositor
+Exec=westonite
+Type=Application

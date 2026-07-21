@@ -20,6 +20,6 @@ option(
 option(
 	'shell-client-default',
 	type: 'string',
-	value: 'weston-desktop-shell',
-	description: 'Default shell helper client spawned by desktop-shell'
+	value: '',
+	description: 'Default shell helper client spawned by desktop-shell (empty: none; override per-config with [shell] client=)'
 )

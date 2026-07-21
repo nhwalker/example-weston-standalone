@@ -526,7 +526,12 @@ shell_configuration(struct desktop_shell *shell)
 
 	config = wet_get_config(shell->compositor);
 	section = weston_config_get_section(config, "shell", NULL, NULL);
-	client = wet_get_libexec_path(WESTON_SHELL_CLIENT);
+	/* An empty client name (option or default) disables the helper
+	 * client entirely; see also wet_shell_init(). */
+	if (strlen(WESTON_SHELL_CLIENT) > 0)
+		client = wet_get_libexec_path(WESTON_SHELL_CLIENT);
+	else
+		client = strdup("");
 	weston_config_section_get_string(section, "client", &s, client);
 	free(client);
 	shell->client = s;
@@ -4993,7 +4998,9 @@ wet_shell_init(struct weston_compositor *ec,
 	setup_output_destroy_handler(ec, shell);
 
 	loop = wl_display_get_event_loop(ec->wl_display);
-	wl_event_loop_add_idle(loop, launch_desktop_shell_process, shell);
+	if (shell->client && shell->client[0] != '\0')
+		wl_event_loop_add_idle(loop, launch_desktop_shell_process,
+				       shell);
 
 	wl_list_for_each(seat, &ec->seat_list, link)
 		create_shell_seat(shell, seat);
@@ -5010,6 +5017,11 @@ wet_shell_init(struct weston_compositor *ec,
 	shell_add_bindings(ec, shell);
 
 	shell_fade_init(shell);
+
+	/* With no helper client there is nothing to send desktop_ready;
+	 * fade in right away instead of waiting for the 15 s timeout. */
+	if (!shell->client || shell->client[0] == '\0')
+		shell_fade_startup(shell);
 
 	clock_gettime(CLOCK_MONOTONIC, &shell->startup_time);
 

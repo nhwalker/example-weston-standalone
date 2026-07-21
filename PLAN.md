@@ -184,9 +184,11 @@ logged in `VENDOR.md`:
   (upstream gets it transitively; the RPM's `libweston-14.pc` keeps pixman
   in `Requires.private`). Binary/paths already use the `westonite` name;
   Phase 2 reduces to config-name changes + no-panel patches.
-- **Phase 2 — westonite identity + no-panel**: renames, P2–P4,
-  `westonite.ini.in`, `.desktop` file; headless smoke test shows no
-  attempts to spawn missing clients.
+- **Phase 2 — westonite identity + no-panel** ✅ *(done)*: P2–P4 applied
+  (see `VENDOR.md`), `data/westonite.ini.example` +
+  `data/westonite.desktop` added and installed. Verified headless in the
+  container: no client spawn attempts, `Using config file
+  '…/westonite.ini'` honored, clean exit both with and without a config.
 - **Phase 3 — Xwayland**: `BUILD_XWAYLAND` on, `xwayland-api.h` present or
   vendored per Phase 0 findings; smoke test: `xterm`/`xeyes` (or
   `xwininfo`) against westonite headless + Xwayland in the container.
