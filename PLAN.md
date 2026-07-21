@@ -175,10 +175,15 @@ logged in `VENDOR.md`:
   `containers/Containerfile.build` written (CentOS Stream 10 default,
   UBI10-on-entitled-host variant); R1–R3 resolved; import base fixed at
   `14.0.1`.
-- **Phase 1 — verbatim import + build**: import files from tag `14.0.1`
-  (recorded in `VENDOR.md`), write meson, apply P0 only; compiles and
-  `westonite --backend=headless-backend.so` runs in the container with
-  desktop-shell loaded (log-verified).
+- **Phase 1 — verbatim import + build** ✅ *(done)*: sources imported from
+  tag `14.0.1` (see `VENDOR.md`), meson build written, P0 applied.
+  Verified in the build container: `westonite --backend=headless` starts,
+  loads the RPM's `headless-backend.so` and our `desktop-shell.so` from
+  `/usr/lib64/westonite/`, and exits 0 on SIGTERM. Only build deviation
+  from upstream: an explicit `pixman-1` dependency for `desktop-shell.so`
+  (upstream gets it transitively; the RPM's `libweston-14.pc` keeps pixman
+  in `Requires.private`). Binary/paths already use the `westonite` name;
+  Phase 2 reduces to config-name changes + no-panel patches.
 - **Phase 2 — westonite identity + no-panel**: renames, P2–P4,
   `westonite.ini.in`, `.desktop` file; headless smoke test shows no
   attempts to spawn missing clients.

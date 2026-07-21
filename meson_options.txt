@@ -1,0 +1,25 @@
+option(
+	'backend-default',
+	type: 'combo',
+	choices: [ 'drm', 'wayland', 'x11', 'headless' ],
+	value: 'drm',
+	description: 'Default backend when none is specified on the command line'
+)
+option(
+	'xwayland',
+	type: 'boolean',
+	value: true,
+	description: 'Build the Xwayland glue (requires libweston built with xwayland)'
+)
+option(
+	'xwayland-path',
+	type: 'string',
+	value: '/usr/bin/Xwayland',
+	description: 'Path to the Xwayland binary'
+)
+option(
+	'shell-client-default',
+	type: 'string',
+	value: 'weston-desktop-shell',
+	description: 'Default shell helper client spawned by desktop-shell'
+)
