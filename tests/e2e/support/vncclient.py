@@ -202,6 +202,16 @@ class VncClient:
         self.pointer(x, y, mask)
         self.pointer(x, y, 0)
 
+    def drag(self, x0, y0, x1, y1, button=1, steps=8):
+        """Press at (x0, y0), move in steps, release at (x1, y1)."""
+        mask = 1 << (button - 1)
+        self.pointer(x0, y0, 0)
+        self.pointer(x0, y0, mask)
+        for i in range(1, steps + 1):
+            self.pointer(x0 + (x1 - x0) * i // steps,
+                         y0 + (y1 - y0) * i // steps, mask)
+        self.pointer(x1, y1, 0)
+
     def key(self, keysym, down):
         self._send(struct.pack(">BBxxI", 4, 1 if down else 0, keysym))
 

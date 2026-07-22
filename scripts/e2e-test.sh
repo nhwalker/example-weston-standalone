@@ -10,7 +10,7 @@ set -euo pipefail
 
 cd /src
 rm -rf build
-meson setup build --prefix=/usr
+meson setup build --prefix=/usr -De2e-test-client=true
 ninja -C build
 ninja -C build install
 
@@ -24,5 +24,6 @@ echo "$E2E_USER:$E2E_PASSWORD" | chpasswd
 exec runuser -u "$E2E_USER" -- env \
 	WESTONITE_VNC_USER="$E2E_USER" \
 	WESTONITE_VNC_PASSWORD="$E2E_PASSWORD" \
+	WTEST_CLIENT=/src/build/tests/e2e/clients/wtest-client \
 	python3 -m pytest /src/tests/e2e -v -p no:cacheprovider \
 		--junit-xml=/tmp/e2e-results.xml "$@"

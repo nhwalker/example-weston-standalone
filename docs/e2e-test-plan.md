@@ -279,10 +279,23 @@ lived compositor instance; instances are cheap headless/VNC processes).
   `wayland-info`, and multi-backend headless+vnc. VNC client-resize
   tests were written but are skip-marked: the resize path segfaults
   the RPM stack (see §6). `wayland-utils` added to the build image.
-- **E3 — shell suite** — build `wtest-client` (§1.3, meson target under
-  `tests/e2e/clients/`, excluded from install/RPM), then §2.4, plus
-  spike S2 (P0 mirror-resize reproduction recipe) and the mirror-resize
-  test.
+- **E3 — shell suite** ✅ *(done)* — `wtest-client` built
+  (`tests/e2e/clients/`, behind `-De2e-test-client=true`, never
+  installed; solid-color xdg-shell client with left-click→move /
+  right-click→resize, focus-color switching, protocol-event stdout,
+  SIGUSR1 unresponsive mode) and `test_shell_windows.py` (10 tests):
+  window-map bounds, new-window focus, click-activation between two
+  windows (pixel + protocol), pointer move grab (pixel-exact landing),
+  pointer resize grab (growth + pixel/configure/commit consistency —
+  exact deltas unassertable, see §6), empty `wm_capabilities` (T6/T9),
+  fullscreen and maximize requests ignored (T6), background clicks
+  swallowed, unresponsive-client handling (T8). Two findings recorded
+  in §6 (VNC resize-grab half-delta quirk; grabs need the button held
+  until the client's request reaches the shell — encoded in
+  `grab_drag`). Deferred from §2.4: `transient` (initial placement is
+  randomized, so parent/child overlap can't be arranged
+  deterministically without more client machinery) and the
+  blocked `background-resize`; S2 (P0) still open.
 - **E4 — Xwayland + install** — §2.5, §2.6 installed-suite plumbing in
   `rpm-install-test.sh`.
 - **E5 — CI + docs** — workflow wiring, artifact upload, README
@@ -316,6 +329,16 @@ Each phase lands as an independently green PR; the suite is additive.
   skip with this reason (the RFB client retains its
   `set_desktop_size()` support for when EPEL ships a fix), and S2
   cannot use VNC resize as its trigger.
+- **Found during E3 — VNC drag deltas reach resize grabs halved.**
+  During an interactive resize drive over VNC, only every second
+  pointer motion reaches the shell's resize grab and at half its
+  delta (empirically: an 8-step +70,+50 drag yields sized configures
+  matching motions 2/4/6/8 at half-delta, ending +35,+25), while the
+  same event stream lands *move* grabs pixel-exactly. The shell's
+  resize grab tracks whatever positions it is handed, so this lives in
+  the RPM stack's input translation (vnc backend/neatvnc), not our
+  code. Consequence: `resize-grab` asserts growth + pixel/configure/
+  commit consistency instead of exact deltas.
 - **S2: P0 reproduction recipe** — the exact mirror/resize sequence
   that hit the upstream crash needs to be reconstructed from upstream
   commit `51dfd1be`. VNC client-resize is off the table as the trigger
