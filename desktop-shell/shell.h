@@ -30,19 +30,12 @@
 #include <libweston/libweston.h>
 #include <libweston/xwayland-api.h>
 
-#include "weston-desktop-shell-server-protocol.h"
-
 enum animation_type {
 	ANIMATION_NONE,
 
 	ANIMATION_ZOOM,
 	ANIMATION_FADE,
 	ANIMATION_DIM_LAYER,
-};
-
-enum fade_type {
-	FADE_IN,
-	FADE_OUT
 };
 
 struct focus_surface {
@@ -66,14 +59,7 @@ struct shell_output {
 	struct wl_listener    destroy_listener;
 	struct wl_list        link;
 
-	struct weston_surface *panel_surface;
-	struct weston_view *panel_view;
-	struct wl_listener panel_surface_listener;
-	struct weston_coord_global panel_offset;
-
-	struct weston_surface *background_surface;
-	struct weston_view *background_view;
-	struct wl_listener background_surface_listener;
+	struct weston_curtain *background_curtain;
 };
 
 struct weston_desktop;
@@ -82,45 +68,17 @@ struct desktop_shell {
 	struct weston_desktop *desktop;
 	const struct weston_xwayland_surface_api *xwayland_surface_api;
 
-	struct wl_listener idle_listener;
-	struct wl_listener wake_listener;
 	struct wl_listener transform_listener;
 	struct wl_listener resized_listener;
 	struct wl_listener destroy_listener;
 	struct wl_listener session_listener;
 
 	struct weston_layer fullscreen_layer;
-	struct weston_layer panel_layer;
 	struct weston_layer background_layer;
-	struct weston_layer lock_layer;
 
 	struct wl_listener pointer_focus_listener;
-	struct weston_surface *grab_surface;
-
-	struct {
-		struct wl_client *client;
-		struct wl_resource *desktop_shell;
-		struct wl_listener client_destroy_listener;
-
-		unsigned deathcount;
-		struct timespec deathstamp;
-	} child;
-
-	bool locked;
-	bool prepare_event_sent;
-
-	struct weston_surface *lock_surface;
-	struct wl_listener lock_surface_listener;
-	struct weston_view *lock_view;
 
 	struct workspace workspace;
-
-	struct {
-		struct weston_curtain *curtain;
-		struct weston_view_animation *animation;
-		enum fade_type type;
-		struct wl_event_source *startup_timer;
-	} fade;
 
 	bool allow_zap;
 	uint32_t binding_modifier;
@@ -138,9 +96,7 @@ struct desktop_shell {
 	struct wl_list seat_list;
 	struct wl_list shsurf_list;
 
-	enum weston_desktop_shell_panel_position panel_position;
-
-	char *client;
+	uint32_t background_color;
 
 	struct timespec startup_time;
 };

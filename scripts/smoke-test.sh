@@ -26,7 +26,7 @@ grep -q "launching" /tmp/w1.log \
 echo "== smoke 2: westonite.ini is honored"
 export XDG_CONFIG_HOME=/tmp/cfg
 mkdir -p "$XDG_CONFIG_HOME"
-printf '[shell]\nstartup-animation=none\n' > "$XDG_CONFIG_HOME/westonite.ini"
+printf '[shell]\nbackground-color=0xff336699\n' > "$XDG_CONFIG_HOME/westonite.ini"
 timeout --preserve-status 5 westonite --backend=headless --log=/tmp/w2.log \
 	|| fail "westonite exited non-zero" /tmp/w2.log
 grep -q "Using config file '/tmp/cfg/westonite.ini'" /tmp/w2.log \

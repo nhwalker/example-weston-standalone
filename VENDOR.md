@@ -44,6 +44,20 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   `weston_screensaver` interface (never implemented or advertised by
   shell.c; upstream keeps it only as a fossil). First change of the
   desktop-shell trim series; see `docs/desktop-shell-capabilities.md`.
+- **T2** — removed input-panel / on-screen-keyboard support: deleted
+  `desktop-shell/input-panel.c` and `frontend/text-backend.c` (whose
+  lifecycle shell.c owned), their layer/listener/state members, and the
+  `text-input-unstable-v1` + `input-method-unstable-v1` generated
+  protocols.
+- **T3** — removed the helper-client (`weston_desktop_shell`) protocol,
+  lock screen, idle handling, and the screen-fade machinery: deleted the
+  protocol XML (supersedes T1) and all client lifecycle/request handling,
+  `lock()`/`unlock()`/`resume_desktop()`, idle/wake listeners (displays
+  never sleep now, per project decision), fade curtains, panel layer and
+  panel-aware work-area logic, grab-cursor feedback, and the P3 patch
+  (nothing left to spawn). Replaced the client-drawn background with a
+  compositor-side solid curtain per output, configurable via
+  `[shell] background-color` (default `0xff002244`).
 
 ## Rebasing to a newer 14.0.x
 

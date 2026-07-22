@@ -106,8 +106,6 @@ endforeach
 backend_default = get_option('backend-default')
 config_h.set_quoted('WESTON_NATIVE_BACKEND', backend_default)
 
-config_h.set_quoted('WESTON_SHELL_CLIENT', get_option('shell-client-default'))
-
 if get_option('xwayland')
 	config_h.set('BUILD_XWAYLAND', '1')
 	config_h.set_quoted('XSERVER_PATH', get_option('xwayland-path'))
@@ -125,7 +123,6 @@ dep_libdl = cc.find_library('dl', required: false)
 dep_libm = cc.find_library('m', required: false)
 dep_threads = dependency('threads')
 
-subdir('protocol')
 subdir('shared')
 subdir('frontend')
 subdir('desktop-shell')
