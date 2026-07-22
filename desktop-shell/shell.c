@@ -458,16 +458,6 @@ focus_state_set_focus(struct focus_state *state,
 }
 
 
-static void
-drop_focus_state(struct desktop_shell *shell, struct workspace *ws,
-		 struct weston_surface *surface)
-{
-	struct focus_state *state;
-
-	wl_list_for_each(state, &ws->focus_list, link)
-		if (state->keyboard_focus == surface)
-			focus_state_set_focus(state, NULL);
-}
 
 static void
 desktop_shell_destroy_layer(struct weston_layer *layer);
@@ -516,25 +506,6 @@ get_current_workspace(struct desktop_shell *shell)
 	return &shell->workspace;
 }
 
-static void
-surface_keyboard_focus_lost(struct weston_surface *surface)
-{
-	struct weston_compositor *compositor = surface->compositor;
-	struct weston_seat *seat;
-	struct weston_surface *focus;
-
-	wl_list_for_each(seat, &compositor->seat_list, link) {
-		struct weston_keyboard *keyboard =
-			weston_seat_get_keyboard(seat);
-
-		if (!keyboard)
-			continue;
-
-		focus = weston_surface_get_main_surface(keyboard->focus);
-		if (focus == surface)
-			weston_keyboard_set_focus(keyboard, NULL);
-	}
-}
 
 static void
 touch_move_grab_down(struct weston_touch_grab *grab,
@@ -1128,30 +1099,6 @@ static void
 weston_view_set_initial_position(struct weston_view *view,
 				 struct desktop_shell *shell);
 
-static void
-set_minimized(struct weston_surface *surface)
-{
-	struct shell_surface *shsurf;
-	struct workspace *current_ws;
-	struct weston_view *view;
-
-	view = get_default_view(surface);
-	if (!view)
-		return;
-
-	assert(weston_surface_get_main_surface(view->surface) == view->surface);
-
-	shsurf = get_shell_surface(surface);
-	current_ws = get_current_workspace(shsurf->shell);
-
-	weston_view_move_to_layer(view,
-				  &shsurf->shell->minimized_layer.view_list);
-
-	drop_focus_state(shsurf->shell, current_ws, view->surface);
-	surface_keyboard_focus_lost(surface);
-
-	shell_surface_update_child_surface_layers(shsurf);
-}
 
 
 
@@ -1528,16 +1475,6 @@ desktop_surface_set_parent(struct weston_desktop_surface *desktop_surface,
 	}
 }
 
-static void
-desktop_surface_minimized_requested(struct weston_desktop_surface *desktop_surface,
-				    void *shell)
-{
-	struct weston_surface *surface =
-		weston_desktop_surface_get_surface(desktop_surface);
-
-	 /* apply compositor's own minimization logic (hide) */
-	set_minimized(surface);
-}
 
 static void
 set_busy_cursor(struct shell_surface *shsurf, struct weston_pointer *pointer)
@@ -1675,7 +1612,6 @@ static const struct weston_desktop_api shell_desktop_api = {
 	.move = desktop_surface_move,
 	.resize = desktop_surface_resize,
 	.set_parent = desktop_surface_set_parent,
-	.minimized_requested = desktop_surface_minimized_requested,
 	.ping_timeout = desktop_surface_ping_timeout,
 	.pong = desktop_surface_pong,
 	.set_xwayland_position = desktop_surface_set_xwayland_position,
@@ -2174,7 +2110,6 @@ shell_destroy(struct wl_listener *listener, void *data)
 	workspace_destroy(&shell->workspace);
 
 	desktop_shell_destroy_layer(&shell->background_layer);
-	desktop_shell_destroy_layer(&shell->minimized_layer);
 
 	free(shell);
 }
@@ -2271,7 +2206,6 @@ wet_shell_init(struct weston_compositor *ec,
 	wl_list_init(&shell->workspace.focus_list);
 	wl_list_init(&shell->workspace.seat_destroyed_listener.link);
 
-	weston_layer_init(&shell->minimized_layer, ec);
 	weston_layer_init(&shell->workspace.layer, ec);
 
 	if (!shell_configuration(shell))
