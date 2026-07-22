@@ -43,6 +43,8 @@ def test_new_window_gets_keyboard_focus(westonite):
 
 
 def test_click_moves_activation_between_windows(westonite):
+    # spawn order does not determine map order, so discover which window
+    # ended up unfocused (it shows its dim color) and click that one
     w = westonite(backend="vnc")
     with w.vnc() as vnc, \
          make_client(w, "--color", "ffcc0000",
@@ -51,21 +53,35 @@ def test_click_moves_activation_between_windows(westonite):
                      "--focus-color", "ff4444ff", "--title", "B") as b:
         a.wait_mapped()
         b.wait_mapped()
-        # B mapped last -> B holds focus
-        b.wait_for_line(r"focus: enter")
-        box_a, fb = wait_for_region(vnc, RED)  # A unfocused
+        by_dim_color = {RED: (a, BRIGHT_RED, b, BLUE),
+                        BLUE: (b, BRIGHT_BLUE, a, RED)}
+        state = {}
 
-        # click a guaranteed-visible pixel of A -> focus follows the click
-        click_x, click_y = pick_pixel(fb, vnc.width, RED)
-        vnc.click(click_x, click_y)
-        a.wait_for_line(r"focus: enter")
-        b.wait_for_line(r"focus: leave")
-        wait_for_region(vnc, BRIGHT_RED)   # A now drawn focused
-        wait_for_region(vnc, BLUE)         # B drawn unfocused
+        def find_unfocused():
+            _, _, fb = vnc.capture()
+            for dim in (RED, BLUE):
+                pixel = pick_pixel(fb, vnc.width, dim)
+                if pixel:
+                    state.update(dim=dim, pixel=pixel)
+                    return True
+            return False
 
-        # keys land in A now
+        wait_until(find_unfocused, message="an unfocused window to show")
+        clicked, clicked_bright, other, other_dim = by_dim_color[state["dim"]]
+
+        n_enter = clicked.count(r"focus: enter")
+        n_leave = other.count(r"focus: leave")
+        n_key = clicked.count(r"^key: ")
+        vnc.click(*state["pixel"])
+
+        clicked.wait_for_count(r"focus: enter", n_enter + 1)
+        other.wait_for_count(r"focus: leave", n_leave + 1)
+        wait_for_region(vnc, clicked_bright)  # clicked one drawn focused
+        wait_for_region(vnc, other_dim)       # other drawn unfocused
+
+        # keys land in the clicked window now
         vnc.key_tap(0x0061)  # 'a'
-        a.wait_for_line(r"^key: ")
+        clicked.wait_for_count(r"^key: ", n_key + 1)
 
 
 def grab_drag(vnc, client, x0, y0, x1, y1, button=1, steps=8):
@@ -83,11 +99,23 @@ def grab_drag(vnc, client, x0, y0, x1, y1, button=1, steps=8):
     vnc.pointer(x1, y1, 0)
 
 
-def move_window_to(vnc, client, client_box, target_xy):
-    """Left-drag an --interactive window so its origin lands on target."""
-    x, y, bw, bh = client_box
-    grab_drag(vnc, client, x + bw // 2, y + bh // 2,
-              target_xy[0] + bw // 2, target_xy[1] + bh // 2)
+def move_window_to(vnc, client, color, target_xy, deadline=20.0):
+    """Left-drag an --interactive window until its origin sits on
+    target. Retries the drag: the RPM's VNC input path occasionally
+    drops trailing motions (docs/e2e-test-plan.md §6), which a repeat
+    drag corrects; each individual drag is still a real move grab."""
+    import time as _time
+    end = _time.monotonic() + deadline
+    while _time.monotonic() < end:
+        _, _, fb = vnc.capture()
+        box = region_of(fb, vnc.width, color)
+        if box and (box[0], box[1]) == target_xy:
+            return box
+        if box:
+            grab_drag(vnc, client, box[0] + box[2] // 2, box[1] + box[3] // 2,
+                      target_xy[0] + box[2] // 2, target_xy[1] + box[3] // 2)
+        _time.sleep(0.2)
+    raise AssertionError(f"window never landed on {target_xy}")
 
 
 def test_pointer_move_grab(westonite):
@@ -98,17 +126,10 @@ def test_pointer_move_grab(westonite):
         box, _ = wait_for_region(vnc, GREEN)
 
         # left press makes the client request xdg_toplevel.move; the
-        # shell's pointer move grab must then follow the drag exactly
+        # shell's pointer move grab must then follow the drag
         target = (60, 60)
-        move_window_to(vnc, client, box, target)
-
-        def moved():
-            _, _, fb = vnc.capture()
-            new = region_of(fb, vnc.width, GREEN)
-            return new and (new[0], new[1]) == target and \
-                (new[2], new[3]) == (box[2], box[3])
-
-        wait_until(moved, message=f"window to land at {target}")
+        final = move_window_to(vnc, client, GREEN, target)
+        assert (final[2], final[3]) == (box[2], box[3])
 
 
 def test_pointer_resize_grab(westonite):
@@ -121,10 +142,7 @@ def test_pointer_resize_grab(westonite):
 
         # park the window at a known spot so the corner drag stays
         # inside the output (initial placement is randomized)
-        move_window_to(vnc, client, box, (40, 40))
-        wait_until(lambda: region_of(vnc.capture()[2], vnc.width, GREEN)
-                   and region_of(vnc.capture()[2], vnc.width, GREEN)[:2]
-                   == (40, 40), message="window parked at (40, 40)")
+        move_window_to(vnc, client, GREEN, (40, 40))
 
         # right press inside the bottom-right corner: the client
         # requests xdg_toplevel.resize(bottom-right); dragging must grow
@@ -136,11 +154,20 @@ def test_pointer_resize_grab(westonite):
         # shell's resize grab faithfully tracks whatever positions it
         # is handed -- asserting exact deltas would test the RPM's
         # input translation, not our code.
-        start = (40 + bw - 5, 40 + bh - 5)
-        grab_drag(vnc, client, start[0], start[1],
-                  start[0] + 80, start[1] + 60, button=3)
-
-        match = client.wait_for_line(r"configure: ([1-9]\d*)x(\d+) \[ resizing")
+        match = None
+        for _ in range(3):
+            _, _, fb = vnc.capture()
+            cur = region_of(fb, vnc.width, GREEN)
+            start = (cur[0] + cur[2] - 5, cur[1] + cur[3] - 5)
+            grab_drag(vnc, client, start[0], start[1],
+                      start[0] + 80, start[1] + 60, button=3)
+            try:
+                match = client.wait_for_line(
+                    r"configure: ([1-9]\d*)x(\d+) \[ resizing", deadline=5.0)
+                break
+            except AssertionError:
+                continue  # dropped motions can void a whole drag; redo
+        assert match, "no sized resizing configure after 3 drag attempts"
         new_w, new_h = int(match.group(1)), int(match.group(2))
         assert new_w > bw and new_h > bh, \
             f"resize went {bw}x{bh} -> {new_w}x{new_h}"

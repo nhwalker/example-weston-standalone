@@ -219,37 +219,34 @@ workspaces (single, upstream).
 
 ---
 
-## 3. Reference images & determinism
+## 3. Pixel determinism *(as implemented)*
 
 - Renderer pinned to **pixman**; output size pinned per test.
 - Every scene is composed of solid colors: the shell's background plus
-  `wtest-client`'s flat-color windows. Full-frame golden images are
-  therefore exact (tolerance ~0) for *all* [pix] tests — no fonts, no
-  antialiasing, no toolkit theming anywhere in the pipeline. Geometric
-  assertions (bounding box of the non-background region, region deltas
-  after an action) remain the tool for move/resize tests where the
-  interesting fact is a delta, not a picture. The only text-rendering
-  clients in the suite are the X11 ones (`xeyes`/`xclock`), which get
-  geometric assertions only.
-- References live in `tests/e2e/reference/`; regenerated only inside
-  the canonical build container via `scripts/regen-references.sh`
-  (documented in the README so a font/pixman bump in the base image is
-  a conscious re-baseline, not silent drift).
-- No sleeps: every wait is a log-line / screenshot-predicate poll with
-  a deadline.
+  the flat-color windows of `wtest-client` / `wtest-xclient`. All
+  pixel assertions are therefore *computed*, exact-match checks
+  (`solid_color`, `region_of` bounding boxes) — no golden image files
+  exist and none are needed, so there is no re-baselining workflow.
+  No fonts, no antialiasing, no toolkit theming anywhere in the
+  asserted pipeline (the xwm titlebar is the one themed element on
+  screen, and nothing asserts its pixels).
+- No sleeps on the happy path: every wait polls a log line, client
+  stdout line, or capture predicate with a deadline. Fixed short
+  sleeps appear only in negative tests ("nothing happens within 1 s").
 
-## 4. CI wiring (push only)
+## 4. CI wiring (push only) *(as implemented)*
 
-Extend `.github/workflows/ci.yml`:
+`.github/workflows/ci.yml`, every push:
 
-1. build image (existing)
-2. build + smoke (existing, fast gate)
-3. **e2e suite**: `docker run … /src/scripts/e2e-test.sh` — JUnit
-   output; on failure upload screenshots/diffs/compositor logs as
-   artifacts
-4. rpmbuild (existing)
-5. pristine install test (existing) + **installed-suite** subset
-6. RPM artifacts (existing)
+1. build image
+2. build + smoke (fast gate)
+3. **e2e suite**: `e2e-test.sh /results` — JUnit XML plus, per failed
+   test, its whole working dir (compositor log, config, stub output)
+   collected by a conftest hook
+4. rpmbuild
+5. pristine install test incl. the **installed subset**
+   (`rpm-install-test.sh /rpms /src /results`)
+6. artifacts: RPMs + `test-results` (uploaded `if: always()`)
 
 Runtime budget: e2e stage ≤ ~5 minutes (dozens of tests, each a short-
 lived compositor instance; instances are cheap headless/VNC processes).
@@ -311,8 +308,14 @@ lived compositor instance; instances are cheap headless/VNC processes).
   pristine container — verified end-to-end locally. Note for titlebar
   interactions: xwm handles frame clicks asynchronously, so drags must
   press-and-hold before moving (`titlebar_drag` helper).
-- **E5 — CI + docs** — workflow wiring, artifact upload, README
-  section, reference-image regeneration doc.
+- **E5 — CI + docs** ✅ *(done)* — results plumbed out of both
+  containers (`scripts/e2e-test.sh` and `rpm-install-test.sh` take a
+  results dir; a conftest hook copies failed tests' working dirs —
+  compositor logs, configs, stub output — into it), JUnit XML + failure
+  artifacts uploaded from CI as `test-results`, README gains a Testing
+  section. No reference-image machinery was ever needed: the
+  flat-color scene design made every pixel assertion computable
+  (§3), so there is nothing to re-baseline.
 
 Each phase lands as an independently green PR; the suite is additive.
 
@@ -351,13 +354,21 @@ Each phase lands as an independently green PR; the suite is additive.
   resize grab tracks whatever positions it is handed, so this lives in
   the RPM stack's input translation (vnc backend/neatvnc), not our
   code. Consequence: `resize-grab` asserts growth + pixel/configure/
-  commit consistency instead of exact deltas.
-- **S2: P0 reproduction recipe** — the exact mirror/resize sequence
-  that hit the upstream crash needs to be reconstructed from upstream
-  commit `51dfd1be`. VNC client-resize is off the table as the trigger
-  (see previous bullet); remaining candidates are compositor-side
-  resizes; if none is reachable from our black-box surface, P0
-  coverage degrades to a documented gap.
+  commit consistency instead of exact deltas. E5 stress runs showed
+  the same event-dropping occasionally clips *move* drags short too
+  (~1 in 10 runs), so drag-driven tests converge by re-dragging toward
+  the target (`move_window_to`, resize retry loop) — every iteration
+  is still a real grab; retries only absorb dropped events.
+- **S2 — CLOSED as a documented gap (E5).** The P0 backport ("frontend:
+  Fix crash in output resize handler", upstream `51dfd1be`) guards the
+  mirror-of output-resize path. Black-box, the only way to resize an
+  output at runtime is a VNC client `SetDesktopSize` — which crashes
+  the RPM stack before our handler ever runs (see the E2 finding
+  above). So the P0 path has **no reachable e2e trigger** on this RPM
+  stack; its coverage remains the verbatim upstream backport itself
+  (logged in `VENDOR.md`). Revisit when EPEL ships a neatvnc/weston
+  with working client resize: un-skip `vnc-resize`, then add
+  `mirror-of=` + resize as the P0 regression test.
 - **Font/AA drift** in client screenshots — avoided structurally (§3).
 - **PAM in container**: resolved with S1 — `pam_unix` + a real
   password works for a non-root compositor in the container, so the
@@ -365,8 +376,22 @@ Each phase lands as an independently green PR; the suite is additive.
 - **Flakiness budget**: VNC framebuffer updates are asynchronous;
   every pixel assertion polls until match-or-deadline rather than
   asserting a single capture.
-- Open: is the `[autolaunch] watch=` kiosk flow the primary production
-  use-case? If so E2 should be promoted ahead of parts of E3, and the
-  installed-suite subset should center on it.
-- Open: preferred VNC test client language constraint, if any (pure
-  Python keeps the container slim; the C fallback adds a build step)?
+- ~~Open: autolaunch priority / client language~~ — both mooted by
+  execution: the full autolaunch/kiosk matrix landed in E2 (with
+  `watch=true` in the installed subset), and the client stack settled
+  as pure Python for VNC plus two small in-repo C test clients.
+
+## 7. Remaining coverage gaps (post-E5)
+
+Everything in §2 is implemented except the following, each blocked or
+deferred with its reason recorded above:
+
+- `vnc-resize` / `background-resize` — skip-marked; RPM stack
+  segfaults on client resize (E2 finding).
+- P0 mirror-resize regression — no reachable black-box trigger (S2).
+- `transient` popup/child stacking — randomized initial placement
+  prevents deterministic overlap; needs extra client machinery if
+  ever wanted.
+- Touch/tablet input paths — VNC injects only pointer/keyboard; no
+  input hardware in CI (out of scope by design).
+- DRM backend on real hardware — out of scope by design.

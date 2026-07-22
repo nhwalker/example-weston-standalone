@@ -73,6 +73,42 @@ Configuration lives in `westonite.ini` (searched in `$XDG_CONFIG_HOME`,
 exist before starting with `--xwayland` (normal systems create it via
 systemd-tmpfiles).
 
+## Testing
+
+All test code lives in this repo and treats the built (or installed)
+artifacts strictly black-box; the design, coverage inventory, and the
+RPM-stack findings the suite uncovered are documented in
+[`docs/e2e-test-plan.md`](docs/e2e-test-plan.md).
+
+```sh
+# fast sanity gate (headless + Xwayland smoke)
+docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
+
+# full e2e suite (~45 tests, ~20 s after the build)
+docker run --rm -v "$PWD":/src westonite-build /src/scripts/e2e-test.sh
+```
+
+How it works: each pytest test boots its own westonite instance and
+drives it through the **VNC backend** — one authenticated RFB
+connection provides scripted keyboard/pointer injection *and*
+framebuffer capture. The RFB client is in-repo, pure Python
+(`tests/e2e/support/vncclient.py`, Apple-DH auth via
+`python3-cryptography`) because EPEL's neatvnc offers no security type
+that off-the-shelf scriptable clients speak. Auth runs through a real
+`pam_unix` stack (`/etc/pam.d/weston-remote-access`) as a dedicated
+non-root user. Windows come from two test-only clients built with
+`-De2e-test-client=true` (never installed, not in the RPM):
+`wtest-client` (xdg-shell, solid-color, turns clicks into
+move/resize requests) and `wtest-xclient` (xcb, for Xwayland). Every
+scene is flat-colored, so pixel assertions are exact with no reference
+images to maintain, and every wait polls a condition — no sleeps on
+the happy path.
+
+CI runs the suite on every push (see `.github/workflows/ci.yml`),
+plus an 8-test `@pytest.mark.installed` subset re-run against the
+installed RPM inside a pristine container. JUnit XML and per-failure
+compositor logs are uploaded as the `test-results` artifact.
+
 ## License
 
 MIT/Expat, same as upstream Weston — see [`COPYING`](COPYING).

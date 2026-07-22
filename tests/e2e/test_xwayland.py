@@ -68,10 +68,17 @@ def test_x11_window_renders_and_position_syncs(westonite):
         assert (box[2], box[3]) == (200, 150)
 
         # the position the X server reports must converge on where the
-        # compositor actually put the content (xwm position sync); the
-        # client also reports earlier pre-placement positions, so only
-        # the latest report counts
-        wait_until(lambda: last_position(xc) == (box[0], box[1]),
+        # compositor actually shows the content (xwm position sync).
+        # Recapture inside the poll: placement can still shift the
+        # window shortly after the first frame, and the client reports
+        # earlier pre-placement positions, so only latest-vs-current
+        # counts.
+        def in_sync():
+            _, _, fb = vnc.capture()
+            current = region_of(fb, vnc.width, MAGENTA)
+            return current and last_position(xc) == (current[0], current[1])
+
+        wait_until(in_sync,
                    message="X-reported position to match the content box")
 
 

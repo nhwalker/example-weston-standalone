@@ -2,11 +2,13 @@
 # Install the built RPM into a PRISTINE CentOS Stream 10 container,
 # rerun the runtime smoke tests from the installed files, and run the
 # @pytest.mark.installed subset of the e2e suite against them.
-# Usage: rpm-install-test.sh [rpm-dir] [repo-dir]  (default: /rpms /src)
+# Usage: rpm-install-test.sh [rpm-dir] [repo-dir] [results-dir]
+#        (defaults: /rpms /src /tmp)
 set -euo pipefail
 
 RPMDIR="${1:-/rpms}"
 SRCDIR="${2:-/src}"
+RESULTS="${3:-/tmp}"
 
 dnf -y install epel-release
 dnf config-manager --set-enabled crb
@@ -50,10 +52,15 @@ printf 'auth     required pam_unix.so\naccount  required pam_unix.so\n' \
 id -u "$E2E_USER" >/dev/null 2>&1 || useradd -m "$E2E_USER"
 echo "$E2E_USER:$E2E_PASSWORD" | chpasswd
 
+mkdir -p "$RESULTS/failures-installed"
+chown -R "$E2E_USER" "$RESULTS/failures-installed"
+touch "$RESULTS/e2e-installed.xml" && chown "$E2E_USER" "$RESULTS/e2e-installed.xml"
+
 runuser -u "$E2E_USER" -- env \
 	WESTONITE_VNC_USER="$E2E_USER" \
 	WESTONITE_VNC_PASSWORD="$E2E_PASSWORD" \
+	WESTONITE_E2E_ARTIFACTS="$RESULTS/failures-installed" \
 	python3 -m pytest "$SRCDIR/tests/e2e" -v -m installed \
-		-p no:cacheprovider --junit-xml=/tmp/e2e-installed.xml
+		-p no:cacheprovider --junit-xml="$RESULTS/e2e-installed.xml"
 
 echo "RPM INSTALL TEST PASSED"

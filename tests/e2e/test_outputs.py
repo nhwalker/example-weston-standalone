@@ -67,9 +67,16 @@ def test_vnc_client_resize_repaints_background(westonite):
 
 
 def test_multi_backend_headless_plus_vnc(westonite):
+    from support.compositor import wait_until
+
     w = westonite(backend="vnc", extra_args=["--backends=headless,vnc"])
-    info = wayland_info(w)
-    names = re.findall(r"name:\s*(\S+)", info)
-    assert len([n for n in names if n in ("headless", "vnc")]) == 2, info
+
+    def both_outputs_advertised():
+        names = re.findall(r"name:\s*(\S+)", wayland_info(w))
+        return len([n for n in names if n in ("headless", "vnc")]) == 2
+
+    # outputs from the second backend can come up after the socket does
+    wait_until(both_outputs_advertised,
+               message="both headless and vnc outputs to be advertised")
     with w.vnc() as vnc:
         vnc.capture()
