@@ -21,6 +21,8 @@ import struct
 
 APPLE_DH = 30
 RAW_ENCODING = 0
+DESKTOP_SIZE = -223
+EXTENDED_DESKTOP_SIZE = -308
 
 
 class RfbError(AssertionError):
@@ -109,44 +111,79 @@ class VncClient:
         pixel_format = struct.pack(">BBBBHHHBBBxxx", 32, 24, 0, 1,
                                    255, 255, 255, 16, 8, 0)
         self._send(struct.pack(">Bxxx", 0) + pixel_format)
-        # SetEncodings: Raw only -- every update arrives uncompressed
-        self._send(struct.pack(">BxH", 2, 1) + struct.pack(">i", RAW_ENCODING))
+        # SetEncodings: Raw pixels (uncompressed) plus the desktop-size
+        # pseudo-encodings so the server tells us about output resizes
+        encodings = [RAW_ENCODING, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE]
+        self._send(struct.pack(">BxH", 2, len(encodings))
+                   + b"".join(struct.pack(">i", e) for e in encodings))
+        # screen layout, learned from ExtendedDesktopSize rects
+        self.screens = [(0, 0, 0, self.width, self.height, 0)]
 
     # -- framebuffer ----------------------------------------------------
 
     def capture(self):
         """Request a full non-incremental update; return (width, height,
-        bytes) with 4-byte BGRX pixels, row-major."""
-        self._send(struct.pack(">BBHHHH", 3, 0, 0, 0, self.width, self.height))
-        fb = bytearray(self.width * self.height * 4)
-        got_update = False
-        while not got_update:
-            msg_type = self._read(1)[0]
-            if msg_type == 0:  # FramebufferUpdate
-                self._read(1)
-                nrects = struct.unpack(">H", self._read(2))[0]
-                for _ in range(nrects):
-                    x, y, w, h, enc = struct.unpack(">HHHHi", self._read(12))
-                    if enc != RAW_ENCODING:
-                        raise RfbError(f"unexpected encoding {enc}")
-                    data = self._read(w * h * 4)
-                    for row in range(h):
-                        dst = ((y + row) * self.width + x) * 4
-                        src = row * w * 4
-                        fb[dst:dst + w * 4] = data[src:src + w * 4]
-                got_update = True
-            elif msg_type == 1:  # SetColourMapEntries
-                head = self._read(5)
-                ncolours = struct.unpack(">H", head[3:5])[0]
-                self._read(6 * ncolours)
-            elif msg_type == 2:  # Bell
-                pass
-            elif msg_type == 3:  # ServerCutText
-                length = struct.unpack(">I", self._read(7)[3:])[0]
-                self._read(length)
-            else:
-                raise RfbError(f"unhandled server message type {msg_type}")
-        return self.width, self.height, bytes(fb)
+        bytes) with 4-byte BGRX pixels, row-major. Desktop-size changes
+        arriving in between are absorbed (self.width/height follow)."""
+        while True:
+            self._send(struct.pack(">BBHHHH", 3, 0, 0, 0,
+                                   self.width, self.height))
+            fb = bytearray(self.width * self.height * 4)
+            got_pixels = False
+            resized = False
+            while not got_pixels and not resized:
+                msg_type = self._read(1)[0]
+                if msg_type == 0:  # FramebufferUpdate
+                    self._read(1)
+                    nrects = struct.unpack(">H", self._read(2))[0]
+                    for _ in range(nrects):
+                        x, y, w, h, enc = struct.unpack(">HHHHi",
+                                                        self._read(12))
+                        if enc == RAW_ENCODING:
+                            data = self._read(w * h * 4)
+                            for row in range(h):
+                                dst = ((y + row) * self.width + x) * 4
+                                src = row * w * 4
+                                fb[dst:dst + w * 4] = data[src:src + w * 4]
+                            got_pixels = True
+                        elif enc == DESKTOP_SIZE:
+                            if (w, h) != (self.width, self.height):
+                                self.width, self.height = w, h
+                                resized = True
+                        elif enc == EXTENDED_DESKTOP_SIZE:
+                            # servers repeat the current layout in normal
+                            # updates; only a geometry *change* is a resize
+                            nscreens = self._read(4)[0]
+                            self.screens = [
+                                struct.unpack(">IHHHHI", self._read(16))
+                                for _ in range(nscreens)]
+                            if (w, h) != (self.width, self.height):
+                                self.width, self.height = w, h
+                                resized = True
+                        else:
+                            raise RfbError(f"unexpected encoding {enc}")
+                elif msg_type == 1:  # SetColourMapEntries
+                    head = self._read(5)
+                    ncolours = struct.unpack(">H", head[3:5])[0]
+                    self._read(6 * ncolours)
+                elif msg_type == 2:  # Bell
+                    pass
+                elif msg_type == 3:  # ServerCutText
+                    length = struct.unpack(">I", self._read(7)[3:])[0]
+                    self._read(length)
+                else:
+                    raise RfbError(f"unhandled server message type {msg_type}")
+            if got_pixels and not resized:
+                return self.width, self.height, bytes(fb)
+            # a resize invalidates this update's geometry: re-request
+
+    def set_desktop_size(self, width, height):
+        """Ask the server to resize the output (SetDesktopSize). The
+        result shows up asynchronously; poll capture() for the change."""
+        screen_id, _, _, _, _, flags = self.screens[0]
+        msg = struct.pack(">BxHHBx", 251, width, height, 1)
+        msg += struct.pack(">IHHHHI", screen_id, 0, 0, width, height, flags)
+        self._send(msg)
 
     def pixel(self, fb_bytes, x, y):
         """Return (r, g, b) at x,y from a capture() buffer."""

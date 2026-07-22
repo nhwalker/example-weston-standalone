@@ -39,6 +39,7 @@ RUN dnf -y install epel-release \
         xdpyinfo \
         python3-pytest \
         python3-cryptography \
+        wayland-utils \
     && dnf clean all
 
 # Sanity marker used by CI/smoke scripts: fail the image build early if the

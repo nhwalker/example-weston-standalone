@@ -162,8 +162,8 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 
 | Test | Asserts |
 |---|---|
-| no-helpers (P3) | default config spawns **no** client processes (existing smoke check, ported) |
-| shell-client-opt-in (P3) | `[shell] client=/path/stub` → spawned with wayland env; empty value → not spawned |
+| no-helpers (T3) | default config spawns **no** client processes (existing smoke check, ported) |
+| shell-client-ignored (T3) | `[shell] client=/path/stub` is dead config: nothing spawned, startup undisturbed (T3 removed the helper-client machinery outright, superseding the P3 opt-in — discovered during E2; the plan's earlier opt-in row was stale) |
 | autolaunch-positional | `westonite -- /path/stub` spawns the client |
 | autolaunch-config | `[autolaunch] path=` spawns; `watch=true` → compositor **exits when the client exits** (the kiosk primitive); `watch=false` → client exit tolerated, compositor keeps running |
 | sigchld | crashing child is reaped; compositor unaffected |
@@ -175,8 +175,8 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | headless-geometry | `--width/--height` reflected in `wayland-info` output mode |
 | output-sections | `[output]` scale/transform for the headless/VNC output reflected in `wayland-info` |
 | vnc-output-mode [vnc] | `[output] mode=WxH` for the vnc output → framebuffer received over VNC has exactly WxH |
-| vnc-resize [vnc][pix] | `resizeable=true` + client-side resize → new framebuffer size, background repainted full-frame (exercises `handle_output_resized` → `shell_output_recreate_background`) |
-| mirror-resize (P0) [vnc] | S2 spike: `mirror-of=` a resizeable VNC output, resize it — the P0 backport ("Fix crash in output resize handler") must hold: no crash, mirror keeps tracking |
+| vnc-resize [vnc][pix] | **skip-marked** — client-initiated resize segfaults EPEL's neatvnc/weston-libs (see §6); test exists and re-enables when the RPM stack is fixed |
+| mirror-resize (P0) [vnc] | S2 spike: `mirror-of=` a VNC output — trigger needs rethinking, VNC client-resize is unusable (§6) |
 | multi-backend | `--backends=headless,vnc` → both outputs advertised, both usable |
 
 ### 2.4 desktop-shell behavior [vnc]
@@ -185,7 +185,7 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 |---|---|
 | background-default [pix] | untouched config → solid `0xff002244` full-frame |
 | background-config [pix] | `[shell] background-color=0xff336699` → that color, full-frame |
-| background-resize [pix] | after VNC resize, new area fully covered (no stale/black bands) |
+| background-resize [pix] | blocked on the same RPM-side resize crash as vnc-resize (§6) |
 | window-map [pix] | `wtest-client` (solid red, 200×150) → exactly that region appears, fully inside output bounds (initial placement logic) |
 | click-activate [pix] | two `wtest-client` windows in distinct colors; VNC click on each → only the clicked one shows its focused color (activation + keyboard focus) |
 | move-grab [pix] | click-hold on a `wtest-client` (which requests `xdg_toplevel.move` on button press) and drag via VNC → window region moves by the drag delta |
@@ -266,9 +266,19 @@ lived compositor instance; instances are cheap headless/VNC processes).
   `clean_shutdown_vnc_backend`, `background_default` (pixel-exact
   `0xff002244` full-frame), `background_from_config` (pixel-exact
   `0xff336699` from `westonite.ini`). Exit criteria met.
-- **E2 — frontend suite** — §2.1 + §2.2 + §2.3 (except mirror-resize);
-  port the three smoke assertions into pytest (keep the bash smoke as
-  the quick gate).
+- **E2 — frontend suite** ✅ *(done)* — §2.1 + §2.2 + §2.3 in
+  `test_cli.py` / `test_children.py` / `test_outputs.py` (26 new
+  tests): version/help/bad-CLI/XDG-runtime-dir, socket naming +
+  two-instance coexistence, the full P2 config-discovery matrix
+  (incl. the negative `weston.ini` test and `$HOME` fallback),
+  helper-client policy (updated for T3: `[shell] client=` is dead
+  config — the plan's opt-in row was stale), the autolaunch/kiosk
+  matrix (spawn env incl. `WESTON_CONFIG_FILE`, watch=true session
+  exit, crash tolerance, non-executable fatal, positional `--`
+  command), headless/VNC output geometry & scale/transform via
+  `wayland-info`, and multi-backend headless+vnc. VNC client-resize
+  tests were written but are skip-marked: the resize path segfaults
+  the RPM stack (see §6). `wayland-utils` added to the build image.
 - **E3 — shell suite** — build `wtest-client` (§1.3, meson target under
   `tests/e2e/clients/`, excluded from install/RPM), then §2.4, plus
   spike S2 (P0 mirror-resize reproduction recipe) and the mirror-resize
@@ -293,10 +303,25 @@ Each phase lands as an independently green PR; the suite is additive.
   a real `pam_unix` stack as a non-root user (wrong password
   rejected), captures pixel-exact frames, injects input. TLS mode is
   unnecessary for the suite.
+- **Found during E2 — client-initiated VNC resize crashes the RPM
+  stack.** A VNC client sending `SetDesktopSize` segfaults the
+  compositor (crash in neatvnc 0.9.0's raw-encoder worker,
+  `pixel_to_cpixel`, via weston-libs 14.0.1's vnc backend) — even with
+  `[output] resizeable=false`, and the server never advertises an
+  ExtendedDesktopSize layout first. This is entirely inside EPEL's
+  `weston-libs`/`neatvnc` (out of scope per the our-code-only
+  decision), but note the operational implication: an authenticated
+  VNC client can kill the session. Consequences for the suite: the
+  `vnc-resize` (§2.3) and `background-resize` (§2.4) tests are marked
+  skip with this reason (the RFB client retains its
+  `set_desktop_size()` support for when EPEL ships a fix), and S2
+  cannot use VNC resize as its trigger.
 - **S2: P0 reproduction recipe** — the exact mirror/resize sequence
   that hit the upstream crash needs to be reconstructed from upstream
-  commit `51dfd1be`; if it needs the DRM backend it degrades to a
-  "resize with mirror active doesn't crash" smoke on VNC.
+  commit `51dfd1be`. VNC client-resize is off the table as the trigger
+  (see previous bullet); remaining candidates are compositor-side
+  resizes; if none is reachable from our black-box surface, P0
+  coverage degrades to a documented gap.
 - **Font/AA drift** in client screenshots — avoided structurally (§3).
 - **PAM in container**: resolved with S1 — `pam_unix` + a real
   password works for a non-root compositor in the container, so the
