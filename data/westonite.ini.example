@@ -18,10 +18,6 @@
 [shell]
 # Solid background color drawn by the compositor (0xAARRGGBB):
 #background-color=0xff002244
-# Ctrl+Alt+Backspace terminates the compositor unless disabled:
-#allow-zap=true
-# Modifier for window-management bindings (super/alt/ctrl/none):
-#binding-modifier=super
 
 [keyboard]
 #keymap_layout=us

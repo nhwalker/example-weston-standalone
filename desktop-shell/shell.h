@@ -64,8 +64,6 @@ struct desktop_shell {
 
 	struct workspace workspace;
 
-	bool allow_zap;
-	uint32_t binding_modifier;
 
 	struct weston_layer minimized_layer;
 

@@ -63,6 +63,16 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   focus-surface curtains, `get_animation_type`, and the `animation`,
   `close-animation`, `startup-animation`, `focus-animation` config
   options (stale keys in existing configs are ignored harmlessly).
+- **T5** — removed every hotkey binding (per-binding user decisions):
+  zap (Ctrl+Alt+Backspace, with the `allow-zap` option), move/resize
+  drags, maximize/fullscreen toggles, tiled-snap (with the whole
+  orientation state), rotate (with the whole rotation machinery,
+  including the busy-grab right-click rotate), the mod+Tab switcher,
+  force-kill, backlight keys (fixed and mod+F9/F10), and surface
+  opacity — plus the now-meaningless `binding-modifier` option. The debug-key
+  chain was subsequently restored with a hardcoded Super modifier.
+  Otherwise only pointer/touch/tablet click-to-activate bindings remain;
+  window management is exclusively client-initiated (xdg-shell).
 
 ## Rebasing to a newer 14.0.x
 
