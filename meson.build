@@ -127,5 +127,8 @@ subdir('shared')
 subdir('frontend')
 subdir('desktop-shell')
 subdir('data')
+if get_option('e2e-test-client')
+	subdir('tests/e2e/clients')
+endif
 
 configure_file(output: 'config.h', configuration: config_h)

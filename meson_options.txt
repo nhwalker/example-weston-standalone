@@ -17,3 +17,9 @@ option(
 	value: '/usr/bin/Xwayland',
 	description: 'Path to the Xwayland binary'
 )
+option(
+	'e2e-test-client',
+	type: 'boolean',
+	value: false,
+	description: 'Build the wtest-client test driver used by tests/e2e (never installed)'
+)

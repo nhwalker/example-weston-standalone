@@ -1,8 +1,10 @@
 name: CI
 
+# push covers main; pull_request covers PR branches -- without the
+# split, every PR commit runs the whole (docker-heavy) workflow twice.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
@@ -17,6 +19,12 @@ jobs:
       - name: Build westonite and run smoke tests
         run: docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
 
+      - name: Run the e2e suite
+        run: |
+          mkdir -p test-results
+          docker run --rm -v "$PWD":/src -v "$PWD/test-results":/results \
+            westonite-build /src/scripts/e2e-test.sh /results
+
       - name: Build the RPM
         run: |
           mkdir -p out
@@ -25,11 +33,21 @@ jobs:
 
       - name: Install-test the RPM in a pristine container
         run: |
-          docker run --rm -v "$PWD/out":/rpms:ro -v "$PWD/scripts":/scripts:ro \
-            quay.io/centos/centos:stream10 /scripts/rpm-install-test.sh /rpms
+          mkdir -p test-results
+          docker run --rm -v "$PWD/out":/rpms:ro -v "$PWD":/src:ro \
+            -v "$PWD/test-results":/results \
+            quay.io/centos/centos:stream10 /src/scripts/rpm-install-test.sh /rpms /src /results
 
       - name: Upload RPMs
         uses: actions/upload-artifact@v4
         with:
           name: westonite-rpms
           path: out/*.rpm
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: test-results/
+          if-no-files-found: ignore
