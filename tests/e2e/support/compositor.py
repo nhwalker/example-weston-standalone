@@ -148,13 +148,21 @@ class Westonite:
 
     def vnc(self):
         """Connect the test's RFB client, authenticating as the user
-        running the suite (see scripts/e2e-test.sh for the PAM setup)."""
+        running the suite (see scripts/e2e-test.sh for the PAM setup).
+        One reconnect on timeout: busy CI runners can stall the very
+        first handshake."""
         from .vncclient import VncClient
         assert self.vnc_port, "instance was not started with backend='vnc'"
         user = os.environ.get("WESTONITE_VNC_USER",
                               pwd.getpwuid(os.getuid()).pw_name)
         password = os.environ["WESTONITE_VNC_PASSWORD"]
-        return VncClient("127.0.0.1", self.vnc_port, user, password)
+        try:
+            return VncClient("127.0.0.1", self.vnc_port, user, password)
+        except (TimeoutError, OSError):
+            assert self.proc.poll() is None, (
+                f"westonite died during VNC connect\n--- log ---\n{self.log()}")
+            time.sleep(2.0)
+            return VncClient("127.0.0.1", self.vnc_port, user, password)
 
     # -- client helpers -------------------------------------------------
 

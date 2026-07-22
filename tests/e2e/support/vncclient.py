@@ -30,7 +30,9 @@ class RfbError(AssertionError):
 
 
 class VncClient:
-    def __init__(self, host, port, username, password, timeout=10.0):
+    def __init__(self, host, port, username, password, timeout=30.0):
+        # generous timeout: the Apple-DH handshake plus PAM check can
+        # take several seconds on loaded 2-core CI runners
         self.sock = socket.create_connection((host, port), timeout=timeout)
         self.sock.settimeout(timeout)
         self._handshake(username, password)

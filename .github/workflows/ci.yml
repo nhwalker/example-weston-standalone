@@ -1,8 +1,10 @@
 name: CI
 
+# push covers main; pull_request covers PR branches -- without the
+# split, every PR commit runs the whole (docker-heavy) workflow twice.
 on:
   push:
-    branches: ['**']
+    branches: [main]
   pull_request:
 
 jobs:
