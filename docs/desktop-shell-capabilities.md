@@ -1,6 +1,6 @@
 # desktop-shell capability inventory
 
-Scope: `desktop-shell/shell.c` (3070 lines) and `desktop-shell/shell.h`
+Scope: `desktop-shell/shell.c` (3072 lines) and `desktop-shell/shell.h`
 (113 lines), as of the post-trim state (trim series T1–T5, logged in
 `VENDOR.md`). Line numbers refer to this state.
 
@@ -41,7 +41,7 @@ xdg-shell (and Xwayland) toplevel handling:
 
 - **Surface lifecycle**: `desktop_surface_added/removed` (1717/1771),
   `desktop_surface_committed` (1886), `map` (1848), initial placement
-  `weston_view_set_initial_position` (1405), output assignment.
+  `weston_view_set_initial_position` (2545), output assignment.
 - **Move/resize (client-initiated only)**: `desktop_surface_move` (2042)
   and `desktop_surface_resize` (2085) drive the pointer/touch/tablet grab
   machinery — `surface_move` (823), `surface_touch_move` (712),
@@ -53,7 +53,7 @@ xdg-shell (and Xwayland) toplevel handling:
   curtain views, dedicated fullscreen layer, `lower_fullscreen_layer`
   (2348), `unset_fullscreen` (1409).
 - **Maximize**: `desktop_surface_maximized_requested` (2171),
-  `set_maximized` (2144), `get_maximized_size` (203),
+  `set_maximized` (2144), `get_maximized_size` (1982),
   `set_maximized_position` (1808), `unset_maximized` (1424). Work area =
   full output (`get_output_work_area` 328).
 - **Minimize**: `desktop_surface_minimized_requested` (2181),
@@ -106,14 +106,14 @@ complete `[shell]` option set.
   (`shell_reposition_view_on_output_change` 2607), resize handling
   (`handle_output_resized` 2733, `handle_output_resized_shsurfs` 2705),
   destroy wiring `setup_output_destroy_handler` (2851).
-- VT/session switching: `desktop_shell_notify_session` (2960) — on
+- VT/session switching: `desktop_shell_notify_session` (2962) — on
   session re-activation re-syncs surface activation state.
 
 ## 5. Seat management
 
 `shell_seat` per `weston_seat` (`create_shell_seat` 1632,
 `get_shell_seat` 1684, caps-changed 1613, tablet-tool tracking
-`handle_tablet_tool_added` 1583, `handle_seat_created` 2989, destruction
+`handle_tablet_tool_added` 1583, `handle_seat_created` 2991, destruction
 `desktop_shell_destroy_seat` 1558, `seat_destroyed` 594) — carries the
 focus listeners used by activation.
 
