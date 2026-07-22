@@ -3046,9 +3046,6 @@ resume_desktop(struct desktop_shell *shell)
 
 	weston_layer_unset_position(&shell->lock_layer);
 
-	if (shell->showing_input_panels)
-		weston_layer_set_position(&shell->input_panel_layer,
-					  WESTON_LAYER_POSITION_TOP_UI);
 	weston_layer_set_position(&shell->fullscreen_layer,
 				  WESTON_LAYER_POSITION_FULLSCREEN);
 	weston_layer_set_position(&shell->panel_layer,
@@ -3767,8 +3764,6 @@ lock(struct desktop_shell *shell)
 
 	weston_layer_unset_position(&shell->panel_layer);
 	weston_layer_unset_position(&shell->fullscreen_layer);
-	if (shell->showing_input_panels)
-		weston_layer_unset_position(&shell->input_panel_layer);
 	weston_layer_unset_position(&ws->layer);
 
 	weston_layer_set_position(&shell->lock_layer,
@@ -4526,7 +4521,6 @@ shell_for_each_layer(struct desktop_shell *shell,
 	func(shell, &shell->panel_layer, data);
 	func(shell, &shell->background_layer, data);
 	func(shell, &shell->lock_layer, data);
-	func(shell, &shell->input_panel_layer, data);
 	func(shell, &shell->workspace.layer, data);
 }
 
@@ -4764,9 +4758,6 @@ shell_destroy(struct wl_listener *listener, void *data)
 	wl_list_remove(&shell->wake_listener.link);
 	wl_list_remove(&shell->transform_listener.link);
 
-	text_backend_destroy(shell->text_backend);
-	input_panel_destroy(shell);
-
 	if (shell->fade.animation) {
 		weston_view_animation_destroy(shell->fade.animation);
 		shell->fade.animation = NULL;
@@ -4796,7 +4787,6 @@ shell_destroy(struct wl_listener *listener, void *data)
 	desktop_shell_destroy_layer(&shell->panel_layer);
 	desktop_shell_destroy_layer(&shell->background_layer);
 	desktop_shell_destroy_layer(&shell->lock_layer);
-	desktop_shell_destroy_layer(&shell->input_panel_layer);
 	desktop_shell_destroy_layer(&shell->minimized_layer);
 	desktop_shell_destroy_layer(&shell->fullscreen_layer);
 
@@ -4950,7 +4940,6 @@ wet_shell_init(struct weston_compositor *ec,
 	weston_layer_init(&shell->panel_layer, ec);
 	weston_layer_init(&shell->background_layer, ec);
 	weston_layer_init(&shell->lock_layer, ec);
-	weston_layer_init(&shell->input_panel_layer, ec);
 
 	weston_layer_set_position(&shell->fullscreen_layer,
 				  WESTON_LAYER_POSITION_FULLSCREEN);
@@ -4971,11 +4960,6 @@ wet_shell_init(struct weston_compositor *ec,
 
 	weston_layer_init(&shell->minimized_layer, ec);
 	weston_layer_init(&shell->workspace.layer, ec);
-
-	if (input_panel_setup(shell) < 0)
-		return -1;
-
-	shell->text_backend = text_backend_init(ec);
 
 	if (!shell_configuration(shell))
 		return -1;

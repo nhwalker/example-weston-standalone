@@ -87,16 +87,12 @@ struct desktop_shell {
 	struct wl_listener transform_listener;
 	struct wl_listener resized_listener;
 	struct wl_listener destroy_listener;
-	struct wl_listener show_input_panel_listener;
-	struct wl_listener hide_input_panel_listener;
-	struct wl_listener update_input_panel_listener;
 	struct wl_listener session_listener;
 
 	struct weston_layer fullscreen_layer;
 	struct weston_layer panel_layer;
 	struct weston_layer background_layer;
 	struct weston_layer lock_layer;
-	struct weston_layer input_panel_layer;
 
 	struct wl_listener pointer_focus_listener;
 	struct weston_surface *grab_surface;
@@ -111,26 +107,13 @@ struct desktop_shell {
 	} child;
 
 	bool locked;
-	bool showing_input_panels;
 	bool prepare_event_sent;
-
-	struct text_backend *text_backend;
-
-	struct {
-		struct weston_surface *surface;
-		pixman_box32_t cursor_rectangle;
-	} text_input;
 
 	struct weston_surface *lock_surface;
 	struct wl_listener lock_surface_listener;
 	struct weston_view *lock_view;
 
 	struct workspace workspace;
-
-	struct {
-		struct wl_resource *binding;
-		struct wl_list surfaces;
-	} input_panel;
 
 	struct {
 		struct weston_curtain *curtain;
@@ -186,11 +169,6 @@ lower_fullscreen_layer(struct desktop_shell *shell,
 void
 activate(struct desktop_shell *shell, struct weston_view *view,
 	 struct weston_seat *seat, uint32_t flags);
-
-int
-input_panel_setup(struct desktop_shell *shell);
-void
-input_panel_destroy(struct desktop_shell *shell);
 
 typedef void (*shell_for_each_layer_func_t)(struct desktop_shell *,
 					    struct weston_layer *, void *);
