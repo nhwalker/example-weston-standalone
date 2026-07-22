@@ -68,9 +68,10 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   drags, maximize/fullscreen toggles, tiled-snap (with the whole
   orientation state), rotate (with the whole rotation machinery,
   including the busy-grab right-click rotate), the mod+Tab switcher,
-  force-kill, backlight keys (fixed and mod+F9/F10), surface opacity,
-  and the debug-key chain — plus the now-meaningless `binding-modifier`
-  option. Only pointer/touch/tablet click-to-activate bindings remain;
+  force-kill, backlight keys (fixed and mod+F9/F10), and surface
+  opacity — plus the now-meaningless `binding-modifier` option. The debug-key
+  chain was subsequently restored with a hardcoded Super modifier.
+  Otherwise only pointer/touch/tablet click-to-activate bindings remain;
   window management is exclusively client-initiated (xdg-shell).
 
 ## Rebasing to a newer 14.0.x

@@ -2954,6 +2954,8 @@ shell_add_bindings(struct weston_compositor *ec, struct desktop_shell *shell)
 					    shell);
 	weston_compositor_add_tablet_tool_binding(ec, BTN_TOUCH, 0,
 						  tablet_tool_activate_binding, shell);
+
+	weston_install_debug_key_binding(ec, MODIFIER_SUPER);
 }
 
 static void

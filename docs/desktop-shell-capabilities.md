@@ -6,15 +6,16 @@ Scope: `desktop-shell/shell.c` (3070 lines) and `desktop-shell/shell.h`
 
 Westonite's desktop-shell is a **pure window-manager plugin**: it serves
 no client-facing shell protocol of its own, spawns no helper clients,
-draws a built-in solid-color background, and has **no hotkeys**. Features
+draws a built-in solid-color background, and has no hotkeys beyond
+libweston's debug-key chain. Features
 upstream weston's desktop-shell has that this one deliberately does
 **not**: helper-client protocol (panel, wallpaper images, grab cursors),
 lock screen, idle/DPMS handling (displays never sleep), all animations,
 input-panel / on-screen-keyboard support (including the frontend
 text-backend), multiple workspaces (already single-workspace upstream in
-v14), and — after T5 — every key/hotkey binding along with the window
-rotation, tiled-snap, switcher, and per-surface opacity machinery and the
-`allow-zap` / `binding-modifier` options.
+v14), and — after T5 — every hotkey binding except the debug-key chain,
+along with the window rotation, tiled-snap, switcher, and per-surface
+opacity machinery and the `allow-zap` / `binding-modifier` options.
 
 Each numbered group below is a candidate unit for any future trimming.
 
@@ -83,12 +84,15 @@ xdg-shell (and Xwayland) toplevel handling:
 
 ## 3. Input bindings (`shell_add_bindings`, 2944)
 
-Only the activation bindings remain: pointer click (left/right), touch
-tap, and tablet-tool tap raise-and-focus the target window. There are
-**no hotkeys** — no zap, no switcher, no move/resize/maximize/
-fullscreen/snap shortcuts, no rotate, no opacity, no backlight keys, no
-force-kill, no debug-key chain. Window state changes happen only through
-client-side requests (xdg-shell) and pointer/touch activation.
+Only the activation bindings and the debug-key chain remain: pointer
+click (left/right), touch tap, and tablet-tool tap raise-and-focus the
+target window, and Super+Shift+Space starts libweston's debug-key chain
+(`weston_install_debug_key_binding`, hardcoded Super since
+`binding-modifier` is gone). There are no other hotkeys — no zap, no
+switcher, no move/resize/maximize/fullscreen/snap shortcuts, no rotate,
+no opacity, no backlight keys, no force-kill. Window state changes
+happen only through client-side requests (xdg-shell) and pointer/touch
+activation.
 
 Config read in `shell_configuration` (430): `background-color` — the
 complete `[shell]` option set.
