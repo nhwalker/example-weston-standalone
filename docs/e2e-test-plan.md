@@ -204,18 +204,18 @@ workspaces (single, upstream).
 
 | Test | Asserts |
 |---|---|
-| lazy-spawn | existing smoke: display advertised, Xwayland spawned on first connection, `xdpyinfo` round-trip — ported into pytest |
-| x11-window [vnc][pix] | `xeyes`/`xclock` maps and renders over the background |
-| x11-position-sync | drag the X window via VNC; `xwininfo -geometry` matches the new position (exercises `desktop_surface_set_xwayland_position` / `transform_handler`) |
-| two-x-clients | second X client connects to the same lazily-started server |
+| lazy-spawn | display advertised before spawn, Xwayland spawned on first connection, `xdpyinfo` round-trip |
+| x11-window [vnc][pix] | `wtest-xclient` maps and renders at exact size (EL10 ships no X demo apps; the in-repo xcb client replaces them *and* `xwininfo`) |
+| x11-position-sync [vnc][pix] | X-reported root position converges on the on-screen content; titlebar drag moves the window with the X position following (exercises `desktop_surface_set_xwayland_position` / `transform_handler`) |
+| two-x-clients [vnc][pix] | second X client connects to the same lazily-started server; both render |
 
 ### 2.6 Packaging & install e2e
 
 | Test | Asserts |
 |---|---|
 | rpm-install (existing) | pristine Stream 10 container: RPM pulls `weston-libs` only; kept as-is |
-| installed-suite | a tagged subset of the pytest suite (background pixel test, config discovery, autolaunch-watch, Xwayland round-trip) re-run against the **installed RPM** in the pristine container — same tests, different binaries |
-| session-file | `wayland-sessions/westonite.desktop` passes `desktop-file-validate`; `Exec=` target exists |
+| installed-suite | the `@pytest.mark.installed` subset (clean shutdown, both background pixel tests, P2 config discovery incl. the weston.ini negative, no-helpers, autolaunch-watch, Xwayland round-trip) re-run against the **installed RPM** in the pristine container — same tests, different binaries; excludes anything needing the build tree (wtest-client/xclient, wayland-info) |
+| session-file | `wayland-sessions/westonite.desktop` passes `desktop-file-validate`; `Exec=` resolves in PATH |
 
 ---
 
@@ -296,8 +296,21 @@ lived compositor instance; instances are cheap headless/VNC processes).
   randomized, so parent/child overlap can't be arranged
   deterministically without more client machinery) and the
   blocked `background-resize`; S2 (P0) still open.
-- **E4 — Xwayland + install** — §2.5, §2.6 installed-suite plumbing in
-  `rpm-install-test.sh`.
+- **E4 — Xwayland + install** ✅ *(done)* — `wtest-xclient` added
+  (xcb, solid-color, prints root-relative position on every
+  ConfigureNotify — EL10 ships no xeyes/xclock/xwininfo, so the suite
+  carries its own X client). `test_xwayland.py` (4 tests): lazy
+  Xwayland spawn + `xdpyinfo` round-trip, X window renders at exact
+  size with X-reported position converging on the on-screen content
+  (xwm position sync), titlebar drag moves the window pixel-exactly
+  with the X position following, and two simultaneous X clients.
+  §2.6: `rpm-install-test.sh` now also validates the wayland-session
+  file (`desktop-file-validate` + Exec lookup) and runs the
+  `@pytest.mark.installed` subset (8 dependency-light tests incl.
+  pixel-verified VNC backgrounds) against the installed RPM in the
+  pristine container — verified end-to-end locally. Note for titlebar
+  interactions: xwm handles frame clicks asynchronously, so drags must
+  press-and-hold before moving (`titlebar_drag` helper).
 - **E5 — CI + docs** — workflow wiring, artifact upload, README
   section, reference-image regeneration doc.
 

@@ -2,9 +2,12 @@
 solid-color curtain per output; color comes from [shell]
 background-color, default 0xff002244."""
 
+import pytest
+
 from support.image import wait_for_solid_color
 
 
+@pytest.mark.installed
 def test_background_default(westonite):
     w = westonite(backend="vnc")
     with w.vnc() as vnc:
@@ -12,6 +15,7 @@ def test_background_default(westonite):
         wait_for_solid_color(vnc, (0x00, 0x22, 0x44))
 
 
+@pytest.mark.installed
 def test_background_from_config(westonite):
     w = westonite(backend="vnc",
                   config="[shell]\nbackground-color=0xff336699\n")

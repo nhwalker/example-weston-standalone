@@ -5,6 +5,8 @@ or exit immediately; fixture tests cover behaviors of a running
 compositor.
 """
 
+import pytest
+
 import os
 import subprocess
 
@@ -83,6 +85,7 @@ def test_two_instances_share_runtime_dir(westonite, tmp_path):
 # -- config discovery (P2) ----------------------------------------------
 
 
+@pytest.mark.installed
 def test_config_found_in_xdg_config_home(westonite):
     w = westonite(config="[core]\n")
     w.wait_for_log(r"Using config file '.*/westonite\.ini'")
@@ -95,6 +98,7 @@ def test_config_explicit_path(westonite, tmp_path):
     w.wait_for_log(rf"Using config file '{ini}'")
 
 
+@pytest.mark.installed
 def test_stock_weston_ini_is_ignored(westonite):
     # P2: only westonite.ini is searched; a weston.ini must not be read
     w = westonite(no_config_flag=False)

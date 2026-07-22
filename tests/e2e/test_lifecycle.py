@@ -2,7 +2,10 @@
 
 import signal
 
+import pytest
 
+
+@pytest.mark.installed
 def test_clean_shutdown_sigterm(westonite):
     w = westonite()
     w.terminate(signal.SIGTERM)

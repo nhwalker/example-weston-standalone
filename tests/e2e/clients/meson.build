@@ -27,3 +27,10 @@ executable(
 	dependencies: [ dep_wayland_client ],
 	install: false,
 )
+
+executable(
+	'wtest-xclient',
+	'wtest-xclient.c',
+	dependencies: [ dependency('xcb') ],
+	install: false,
+)

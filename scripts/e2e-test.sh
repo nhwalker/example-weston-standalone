@@ -14,6 +14,8 @@ meson setup build --prefix=/usr -De2e-test-client=true
 ninja -C build
 ninja -C build install
 
+mkdir -p -m 1777 /tmp/.X11-unix   # Xwayland needs it; bare containers lack it
+
 E2E_USER=e2e
 E2E_PASSWORD=westonite-e2e
 printf 'auth     required pam_unix.so\naccount  required pam_unix.so\n' \
@@ -25,5 +27,6 @@ exec runuser -u "$E2E_USER" -- env \
 	WESTONITE_VNC_USER="$E2E_USER" \
 	WESTONITE_VNC_PASSWORD="$E2E_PASSWORD" \
 	WTEST_CLIENT=/src/build/tests/e2e/clients/wtest-client \
+	WTEST_XCLIENT=/src/build/tests/e2e/clients/wtest-xclient \
 	python3 -m pytest /src/tests/e2e -v -p no:cacheprovider \
 		--junit-xml=/tmp/e2e-results.xml "$@"

@@ -15,9 +15,11 @@ from .compositor import wait_until
 
 
 class WtestClient:
-    def __init__(self, compositor, *args):
-        binary = os.environ.get("WTEST_CLIENT", "wtest-client")
-        self.proc = compositor.spawn([binary, *args],
+    def __init__(self, compositor, *args, binary=None, extra_env=None):
+        binary = binary or os.environ.get("WTEST_CLIENT", "wtest-client")
+        env = compositor.client_env()
+        env.update(extra_env or {})
+        self.proc = subprocess.Popen([binary, *args], env=env,
                                      stdout=subprocess.PIPE,
                                      stderr=subprocess.STDOUT, text=True)
         self.lines = []

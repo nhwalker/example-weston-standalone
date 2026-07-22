@@ -139,6 +139,13 @@ class Westonite:
         assert socks, "no wayland socket"
         return socks[0]
 
+    @property
+    def x_display(self):
+        """The :N display of this instance's Xwayland (requires
+        --xwayland in extra_args); waits for it to be advertised."""
+        match = self.wait_for_log(r"listening on display (:\d+)")
+        return match.group(1)
+
     def vnc(self):
         """Connect the test's RFB client, authenticating as the user
         running the suite (see scripts/e2e-test.sh for the PAM setup)."""

@@ -4,6 +4,8 @@ Stub clients are tiny shell scripts that record their environment to a
 file; "spawned" is asserted by that file appearing.
 """
 
+import pytest
+
 import signal
 import time
 
@@ -27,6 +29,7 @@ def wait_for_file(path, deadline=10.0):
 # -- helper-client policy (patch P3) ------------------------------------
 
 
+@pytest.mark.installed
 def test_no_helper_clients_by_default(westonite):
     w = westonite()
     w.wait_for_log(r"Loading module '.*/desktop-shell\.so'")
@@ -60,6 +63,7 @@ def test_autolaunch_config_spawns(westonite, tmp_path):
     assert env.get("WESTON_CONFIG_FILE") == str(w.config_home / "westonite.ini")
 
 
+@pytest.mark.installed
 def test_autolaunch_watch_exits_with_client(westonite, tmp_path):
     # the kiosk primitive: watch=true ties the session to the client
     stub, marker = make_stub(tmp_path, body="sleep 1")

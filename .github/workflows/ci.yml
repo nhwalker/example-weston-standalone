@@ -28,8 +28,8 @@ jobs:
 
       - name: Install-test the RPM in a pristine container
         run: |
-          docker run --rm -v "$PWD/out":/rpms:ro -v "$PWD/scripts":/scripts:ro \
-            quay.io/centos/centos:stream10 /scripts/rpm-install-test.sh /rpms
+          docker run --rm -v "$PWD/out":/rpms:ro -v "$PWD":/src:ro \
+            quay.io/centos/centos:stream10 /src/scripts/rpm-install-test.sh /rpms /src
 
       - name: Upload RPMs
         uses: actions/upload-artifact@v4
