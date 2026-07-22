@@ -93,6 +93,9 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   libweston directly to clients — but can no longer focus or drag
   windows. Touch keeps both tap-to-activate and window dragging, per
   project decision.
+- **T8** — busy-cursor grab: removed the move-on-left-click behavior on
+  unresponsive windows; a click now only activates them. The grab and
+  ping/pong unresponsiveness detection remain.
 
 ## Rebasing to a newer 14.0.x
 

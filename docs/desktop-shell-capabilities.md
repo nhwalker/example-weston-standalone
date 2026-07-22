@@ -71,8 +71,8 @@ xdg-shell (and Xwayland) toplevel handling:
   (1606/1638), busy-cursor pointer grab (`busy_cursor_grab_focus` 897,
   `set_busy_cursor` 1545, `end_busy_cursor` 1563,
   `desktop_surface_set_unresponsive` 1595). Purely behavioral — no
-  special cursor sprite is shown; left-click during the grab moves the
-  unresponsive window.
+  special cursor sprite is shown; left-click during the grab only
+  activates the unresponsive window (move-on-click was removed in T8).
 - **Activation & focus**: `activate` (1701),
   click/touch-to-activate bindings (1766/1781),
   per-workspace focus-state bookkeeping (`focus_state_create` 405,

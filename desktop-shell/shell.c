@@ -929,11 +929,9 @@ busy_cursor_grab_button(struct weston_pointer_grab *base,
 	struct weston_pointer *pointer = grab->grab.pointer;
 	struct weston_seat *seat = pointer->seat;
 
-	if (shsurf && button == BTN_LEFT && state) {
+	if (shsurf && button == BTN_LEFT && state)
 		activate(shsurf->shell, shsurf->view, seat,
 			 WESTON_ACTIVATE_FLAG_CONFIGURE);
-		surface_move(shsurf, pointer, false);
-	}
 }
 
 static void
