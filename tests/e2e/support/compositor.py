@@ -106,11 +106,13 @@ class Westonite:
 
     def wait_ready(self):
         """Wait until the compositor is serving clients: the wayland
-        socket exists (created after backend + shell load succeed) and,
-        for the VNC backend, the RFB port accepts connections."""
+        socket exists (created after all backends load, so the VNC
+        listener is already up too). Deliberately NO probe-connect to
+        the VNC port: neatvnc is a single-client server and treats a
+        probe as a client -- its teardown can race the real client's
+        connect and kill it (seen as instant connection-closed on slow
+        CI runners)."""
         wait_until(self._alive_with_socket, message="wayland socket to exist")
-        if self.backend == "vnc":
-            wait_until(self._vnc_port_open, message="VNC port to accept")
         return self
 
     def _alive_with_socket(self):
@@ -125,13 +127,6 @@ class Westonite:
             return [self.socket_name] if path.is_socket() else []
         return sorted(p.name for p in self.runtime_dir.iterdir()
                       if p.name.startswith("wayland-") and p.is_socket())
-
-    def _vnc_port_open(self):
-        try:
-            with socket.create_connection(("127.0.0.1", self.vnc_port), 0.5):
-                return True
-        except OSError:
-            return False
 
     @property
     def wayland_display(self):
@@ -149,16 +144,17 @@ class Westonite:
     def vnc(self):
         """Connect the test's RFB client, authenticating as the user
         running the suite (see scripts/e2e-test.sh for the PAM setup).
-        One reconnect on timeout: busy CI runners can stall the very
-        first handshake."""
-        from .vncclient import VncClient
+        One reconnect on a stalled or server-closed handshake: busy CI
+        runners can stall it, and the compositor may still be draining
+        an earlier client's teardown."""
+        from .vncclient import RfbError, VncClient
         assert self.vnc_port, "instance was not started with backend='vnc'"
         user = os.environ.get("WESTONITE_VNC_USER",
                               pwd.getpwuid(os.getuid()).pw_name)
         password = os.environ["WESTONITE_VNC_PASSWORD"]
         try:
             return VncClient("127.0.0.1", self.vnc_port, user, password)
-        except (TimeoutError, OSError):
+        except (TimeoutError, OSError, RfbError):
             assert self.proc.poll() is None, (
                 f"westonite died during VNC connect\n--- log ---\n{self.log()}")
             time.sleep(2.0)
