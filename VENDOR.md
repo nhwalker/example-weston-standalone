@@ -96,6 +96,12 @@ All `meson.build` files and `meson_options.txt` are written for this repo
 - **T8** — busy-cursor grab: removed the move-on-left-click behavior on
   unresponsive windows; a click now only activates them. The grab and
   ping/pong unresponsiveness detection remain.
+- **T9** — removed minimize, the last advertised window-state request:
+  dropped `minimized_requested` from `shell_desktop_api` (un-advertised
+  from `wm_capabilities` exactly like T6's maximize/fullscreen; legacy
+  requests are NULL-guard ignored), and deleted `set_minimized`, the
+  minimized layer, and the orphaned `surface_keyboard_focus_lost` /
+  `drop_focus_state` helpers that only minimization used.
 
 ## Rebasing to a newer 14.0.x
 
