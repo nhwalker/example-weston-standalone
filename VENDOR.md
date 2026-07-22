@@ -85,6 +85,14 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   output-resize window re-fitting. Windows are free-floating and
   client-sized only. (Frontend `--fullscreen` — the nested-backend
   window option — is unrelated and untouched.)
+- **T7** — removed the tablet-tool (pen) machinery: pen tap-to-activate
+  binding, the pen-driven window-move grab (and its branch in
+  `desktop_surface_move`), and the per-seat tool tracking / focus-ping
+  listeners. Pens remain fully functional *inside* applications — the
+  tablet-v2 protocol (pressure, tilt, proximity) is delivered by
+  libweston directly to clients — but can no longer focus or drag
+  windows. Touch keeps both tap-to-activate and window dragging, per
+  project decision.
 
 ## Rebasing to a newer 14.0.x
 
