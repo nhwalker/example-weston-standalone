@@ -73,6 +73,18 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   chain was subsequently restored with a hardcoded Super modifier.
   Otherwise only pointer/touch/tablet click-to-activate bindings remain;
   window management is exclusively client-initiated (xdg-shell).
+- **T6** — removed fullscreen and maximize support: dropped the
+  `fullscreen_requested`/`maximized_requested` entries from
+  `shell_desktop_api` (libweston-desktop then omits both from
+  `xdg_toplevel.wm_capabilities`, so v5-aware toolkits hide the buttons,
+  and NULL-guards ignore requests from legacy clients), and deleted
+  `set_fullscreen`/`unset_fullscreen`/`set_maximized`/`unset_maximized`,
+  the black letterbox curtains, the fullscreen layer and lowering logic,
+  the maximize sizing/positioning helpers, the shared saved-position
+  restore machinery, the `surface_state` tracking struct, and the
+  output-resize window re-fitting. Windows are free-floating and
+  client-sized only. (Frontend `--fullscreen` — the nested-backend
+  window option — is unrelated and untouched.)
 
 ## Rebasing to a newer 14.0.x
 
