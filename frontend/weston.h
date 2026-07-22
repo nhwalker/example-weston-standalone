@@ -94,14 +94,6 @@ wet_load_xwayland(struct weston_compositor *comp);
 void
 wet_xwayland_destroy(struct weston_compositor *comp, void *data);
 
-struct text_backend;
-
-struct text_backend *
-text_backend_init(struct weston_compositor *ec);
-
-void
-text_backend_destroy(struct text_backend *text_backend);
-
 /*
  * Return value from wet_main() when
  * weston_testsuite_quirks::required_capabilities are not met.

@@ -5,30 +5,23 @@
 #   ~/.config/westonite.ini
 # or pass explicitly with:  westonite -c /path/to/westonite.ini
 #
-# The format is identical to weston.ini(5); only the file name differs.
-# Options relating to helper clients (panel, on-screen keyboard) are off
-# by default because westonite does not ship those clients.
+# The format follows weston.ini(5), but westonite supports no helper
+# clients (no panel, no on-screen keyboard, no lock screen) and no
+# animations; options for those features do not exist here.
 
 [core]
 # Backend: drm-backend.so (default), headless, wayland, x11, ...
 #backend=drm
-#idle-time=0
 # Xwayland support (requires xorg-x11-server-Xwayland installed):
 #xwayland=true
 
 [shell]
-# Background color when no helper client draws one (0xAARRGGBB):
-#background-color=0xff103040
-# No helper client is spawned by default. To get the classic weston
-# panel/background, install EPEL's weston package and set:
-#client=/usr/libexec/weston-desktop-shell
-# Disable the startup fade-in if desired:
-#startup-animation=none
-
-[input-method]
-# On-screen keyboard client; disabled by default. To enable, install
-# EPEL's weston package and set:
-#path=/usr/libexec/weston-keyboard
+# Solid background color drawn by the compositor (0xAARRGGBB):
+#background-color=0xff002244
+# Ctrl+Alt+Backspace terminates the compositor unless disabled:
+#allow-zap=true
+# Modifier for window-management bindings (super/alt/ctrl/none):
+#binding-modifier=super
 
 [keyboard]
 #keymap_layout=us

@@ -1,13 +1,8 @@
 srcs_westonite = [
 	git_version_h,
 	'main.c',
-	'text-backend.c',
 	'config-helpers.c',
 	'weston-screenshooter.c',
-	text_input_unstable_v1_server_protocol_h,
-	text_input_unstable_v1_protocol_c,
-	input_method_unstable_v1_server_protocol_h,
-	input_method_unstable_v1_protocol_c,
 ]
 deps_westonite = [
 	dep_libshared,

@@ -17,9 +17,3 @@ option(
 	value: '/usr/bin/Xwayland',
 	description: 'Path to the Xwayland binary'
 )
-option(
-	'shell-client-default',
-	type: 'string',
-	value: '',
-	description: 'Default shell helper client spawned by desktop-shell (empty: none; override per-config with [shell] client=)'
-)
