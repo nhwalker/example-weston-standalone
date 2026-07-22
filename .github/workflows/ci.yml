@@ -17,6 +17,9 @@ jobs:
       - name: Build westonite and run smoke tests
         run: docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
 
+      - name: Run the e2e suite
+        run: docker run --rm -v "$PWD":/src westonite-build /src/scripts/e2e-test.sh
+
       - name: Build the RPM
         run: |
           mkdir -p out

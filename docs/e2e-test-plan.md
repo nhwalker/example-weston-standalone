@@ -55,10 +55,13 @@ Facts that shape the design (verified against the 14.0.1 sources):
   `weston_authenticate_user()` → PAM service **`weston-remote-access`**,
   and the client must authenticate *as the user running westonite*.
   Test container setup therefore needs: a
-  `/etc/pam.d/weston-remote-access` file (permissive `pam_permit.so` is
-  acceptable in the ephemeral test container; `pam_unix.so` + a real
-  password is the fallback if we want to exercise a realistic stack), a
-  dedicated non-root test user, and the compositor run as that user.
+  `/etc/pam.d/weston-remote-access` file, a dedicated non-root test
+  user, and the compositor run as that user. E1 verified that the
+  realistic stack — `pam_unix.so` with a real password, checked via
+  the setuid `unix_chkpwd` helper — works for a non-root compositor in
+  the container, so the suite uses that rather than `pam_permit`
+  (wrong-password rejection stays testable). `scripts/e2e-test.sh`
+  owns this setup.
 - **One client per instance** — a second VNC connection kicks the
   first. Tests serialize connections per instance; parallelism comes
   from running multiple instances on distinct ports with distinct
@@ -68,24 +71,18 @@ Facts that shape the design (verified against the 14.0.1 sources):
   types; with TLS it offers VeNCrypt. Not every scriptable client
   speaks these.
 
-### Client stack (spike S1 decides)
+### Client stack (decided by spike S1 — see §6)
 
-Candidates, in preference order:
-
-1. **`vncdotool`** (Python, pip): mature scripting API — `move`,
-   `click`, `key`, `type`, `captureScreen`, `expectScreen`. Must verify
-   it negotiates a security type neatvnc offers.
-2. **`asyncvnc`** or another modern Python client with RSA-AES /
-   VeNCrypt support.
-3. **Small custom `wnc-ctl` C tool on `libvncclient`**
-   (`libvncserver-devel` is in EPEL; gnutls build speaks VeNCrypt).
-   ~200 lines: connect, auth, inject events from a command list, dump
-   framebuffer as PNG. Fully under our control — the guaranteed
-   fallback.
-
-S1 also decides whether the standard test config is no-TLS or
-self-signed-TLS (generated at container build), driven purely by which
-mode the chosen client supports.
+**`tests/e2e/support/vncclient.py`** — an in-repo pure-Python RFB
+client. Off-the-shelf scriptable clients (`vncdotool`, `asyncvnc`)
+cannot negotiate any security type neatvnc offers in no-TLS mode
+(RSA-AES-256 / RSA-AES / Apple DH), so the suite carries its own
+~200-line client implementing Apple DH auth on top of
+`python3-cryptography` (BaseOS RPM — no pip anywhere in the test
+stack), Raw-encoding full-frame capture, and pointer/keyboard event
+injection. Standard test config is no-TLS
+(`--disable-transport-layer-security`); auth still runs through the
+full PAM + `pam_unix` stack as a dedicated non-root `e2e` user.
 
 ### Test runner
 
@@ -259,11 +256,16 @@ lived compositor instance; instances are cheap headless/VNC processes).
 
 ## 5. Phases
 
-- **E1 — control plane** — spike S1 (client/security-type compat, PAM
-  setup, TLS-or-not decision), pytest skeleton, instance fixture, and
-  the first two tests: `background-default`, `clean-shutdown`.
-  *Exit criteria: a pixel-verified screenshot of the default background
-  captured over authenticated VNC in the CI container.*
+- **E1 — control plane** ✅ *(done)* — spike S1 resolved (security
+  types probed, in-repo Apple-DH client written and proven, `pam_unix`
+  auth verified, no-TLS mode chosen); pytest skeleton
+  (`tests/e2e/`, instance fixture with log/socket polling and
+  exit-0-asserting teardown), `scripts/e2e-test.sh`, container test
+  deps (`python3-pytest`, `python3-cryptography`). Tests green in the
+  build container: `clean_shutdown_sigterm`, `clean_shutdown_sigint`,
+  `clean_shutdown_vnc_backend`, `background_default` (pixel-exact
+  `0xff002244` full-frame), `background_from_config` (pixel-exact
+  `0xff336699` from `westonite.ini`). Exit criteria met.
 - **E2 — frontend suite** — §2.1 + §2.2 + §2.3 (except mirror-resize);
   port the three smoke assertions into pytest (keep the bash smoke as
   the quick gate).
@@ -280,23 +282,25 @@ Each phase lands as an independently green PR; the suite is additive.
 
 ## 6. Risks & open questions
 
-- **S1 (blocking E1): VNC security-type mismatch.** neatvnc's no-TLS
-  auth types (RSA-AES family) are not universally supported by
-  scriptable clients. Mitigations, in order: self-signed TLS +
-  VeNCrypt-capable client; `libvncclient`-based custom tool (known to
-  speak VeNCrypt when built with gnutls). If *all* of that fails —
-  considered unlikely — the fallback control plane is the RDP backend
-  (also in `weston-libs`, FreeRDP clients are scriptable), with the
-  same test inventory.
+- **S1 — RESOLVED (E1, 2026-07-22).** Empirically, EPEL 10's neatvnc
+  0.9.0 with TLS disabled offers security types **129 (RSA-AES-256),
+  5 (RSA-AES), 30 (Apple DH)** — no classic VNC auth, so `vncdotool`
+  and `asyncvnc` both fail the handshake. Resolution: an in-repo
+  ~200-line pure-Python RFB client (`tests/e2e/support/vncclient.py`)
+  implementing **Apple DH** auth (needs only `python3-cryptography`
+  from BaseOS — no pip), Raw-encoding capture, and pointer/keyboard
+  injection. Verified against the live backend: authenticates through
+  a real `pam_unix` stack as a non-root user (wrong password
+  rejected), captures pixel-exact frames, injects input. TLS mode is
+  unnecessary for the suite.
 - **S2: P0 reproduction recipe** — the exact mirror/resize sequence
   that hit the upstream crash needs to be reconstructed from upstream
   commit `51dfd1be`; if it needs the DRM backend it degrades to a
   "resize with mirror active doesn't crash" smoke on VNC.
 - **Font/AA drift** in client screenshots — avoided structurally (§3).
-- **PAM in container**: `pam_permit` for the test service keeps the
-  suite independent of shadow-file handling in rootless containers;
-  the installed-suite run can use `pam_unix` + a real password once,
-  to prove the realistic stack.
+- **PAM in container**: resolved with S1 — `pam_unix` + a real
+  password works for a non-root compositor in the container, so the
+  realistic stack is used everywhere.
 - **Flakiness budget**: VNC framebuffer updates are asynchronous;
   every pixel assertion polls until match-or-deadline rather than
   asserting a single capture.

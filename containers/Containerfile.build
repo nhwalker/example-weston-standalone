@@ -37,6 +37,8 @@ RUN dnf -y install epel-release \
         xorg-x11-server-Xwayland \
         xorg-x11-server-Xwayland-devel \
         xdpyinfo \
+        python3-pytest \
+        python3-cryptography \
     && dnf clean all
 
 # Sanity marker used by CI/smoke scripts: fail the image build early if the
