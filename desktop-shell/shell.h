@@ -57,7 +57,6 @@ struct desktop_shell {
 	struct wl_listener destroy_listener;
 	struct wl_listener session_listener;
 
-	struct weston_layer fullscreen_layer;
 	struct weston_layer background_layer;
 
 	struct wl_listener pointer_focus_listener;
@@ -96,9 +95,6 @@ get_output_work_area(struct desktop_shell *shell,
 		     struct weston_output *output,
 		     pixman_rectangle32_t *area);
 
-void
-lower_fullscreen_layer(struct desktop_shell *shell,
-		       struct weston_output *lowering_output);
 
 void
 activate(struct desktop_shell *shell, struct weston_view *view,
