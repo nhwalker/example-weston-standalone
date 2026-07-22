@@ -23,11 +23,20 @@ Goals, in priority order:
    macros.
 3. **Behavioral parity** with the current C build: same CLI, same
    `westonite.ini` semantics, same installed file layout, same RPM
-   upgrade path, smoke tests pass unchanged.
+   upgrade path — and the smoke scripts plus the **black-box e2e
+   suite** (`tests/e2e/`, `docs/e2e-test-plan.md`) pass unchanged.
+   The e2e suite drives the compositor exactly as a user would (VNC
+   input injection + framebuffer capture, no test hooks in shipped
+   code), so it runs identically against the C build, every hybrid
+   phase, and the final Rust build — it is the migration's fixed
+   parity oracle.
 
 Non-goals: porting libweston itself; changing the libweston version
 (stays 14.0.1/EPEL); adding features during the port (the
-maintenance-layer plan sequences separately — see Open questions).
+maintenance-layer plan is deferred separately — §9 D7); porting the
+e2e suite itself (the Python harness and the C `wtest-client`/
+`wtest-xclient` test drivers stay as they are — a measuring stick
+must not move while the thing it measures is rebuilt).
 
 ## 1. What makes this tractable (post-trim inventory)
 
@@ -185,9 +194,10 @@ C boundary.
   `%{_libdir}/westonite/*.so` (if the cdylib layout survives — see
   linkage question), same `Requires: weston-libs`. Spec swaps
   meson/gcc BuildRequires for rust-toolset + vendored crates.
-- **CI**: existing image-build → build+smoke → rpmbuild → pristine
-  install pipeline unchanged in shape; adds `cargo fmt --check`,
-  `clippy -D warnings`, `cargo test`, and the unsafe-fence check.
+- **CI**: existing image-build → build+smoke+e2e → rpmbuild →
+  pristine install (incl. installed-RPM e2e subset) pipeline
+  unchanged in shape; adds `cargo fmt --check`, `clippy -D warnings`,
+  `cargo test`, and the unsafe-fence check.
 
 ## 6. Phasing (strangler fig — a working compositor at every step)
 
@@ -206,18 +216,27 @@ halves can be mixed and smoke-tested at every phase boundary.
   `wet_get_config`). This is deliberately first: it is the smaller
   but *deeper* half — it exercises every §3 primitive and hardens the
   wrapper design while the battle-tested C frontend still drives
-  startup. Verified by the full existing smoke suite + eyes-on nested
-  (x11/wayland backend) session for focus/fullscreen/move/resize
-  behavior parity.
+  startup. Verified by the smoke scripts plus the e2e shell suites
+  (`test_shell_windows.py`, `test_shell_background.py`,
+  `test_children.py`): focus, activation, move/resize grabs, the
+  ignored-request trims, and background pixels are asserted under CI
+  via VNC — replacing the eyes-on nested session this phase would
+  otherwise have needed.
 - **Phase R2 — shared + frontend in Rust** (slices, each ending
-  green): R2a core startup, CLI/config, logging, headless (smoke
-  passes on all-Rust path); R2b output management + DRM (the largest
-  block: heads, hotplug, clone/mirror, color mgmt); R2c remaining
-  backends (x11/wayland/rdp/vnc/pipewire) plus the remoting/pipewire
-  virtual-output plugin loaders; R2d xwayland (Phase-3 smoke test
-  must pass); R2e screenshooter/recorder. The C `main.c` stays in-tree,
-  buildable via meson, until R2 completes — it is the reference
-  oracle for behavioral diffs.
+  green — "green" means smoke **and** the full e2e suite): R2a core
+  startup, CLI/config, logging, headless (`test_cli.py`,
+  `test_lifecycle.py`, `test_children.py` on the all-Rust path — the
+  CLI/config-discovery/autolaunch behaviors those tests pin are
+  exactly the main.c logic this slice ports); R2b output management +
+  DRM (the largest block: heads, hotplug, clone/mirror, color mgmt;
+  `test_outputs.py` covers the headless/VNC-reachable subset — DRM
+  paths remain hardware-verified); R2c remaining backends
+  (x11/wayland/rdp/vnc/pipewire — VNC is load-bearing for the whole
+  e2e control plane, so it lands first in this slice) plus the
+  remoting/pipewire virtual-output plugin loaders; R2d xwayland
+  (`test_xwayland.py` + Phase-3 smoke); R2e screenshooter/recorder.
+  The C `main.c` stays in-tree, buildable via meson, until R2
+  completes — it is the reference oracle for behavioral diffs.
 - **Phase R3 — decommission C**: delete C sources + meson, switch
   spec + CI to cargo-only, RPM install test in pristine container,
   docs rewrite (README, VENDOR.md provenance model — below).
@@ -227,7 +246,8 @@ halves can be mixed and smoke-tested at every phase boundary.
   comment audit, optional sanitizer run of the smoke suite.
 
 Each phase = one PR series with the same discipline as the port
-phases: build container, smoke scripts, VENDOR.md-style log entries.
+phases: build container, smoke scripts + e2e suite, VENDOR.md-style
+log entries.
 
 ## 7. Provenance & upstream-rebase model
 
@@ -247,12 +267,15 @@ C: a translation cannot be rebased with `git diff`. Replacement:
 ## 8. Risks
 
 - **R-A Reentrancy panics** (§3d): `BorrowMutError` aborts replace C
-  UB. Mitigation: narrow borrow scopes as a review rule; nested
-  eyes-on testing in R1 (headless smoke cannot exercise focus churn).
+  UB. Mitigation: narrow borrow scopes as a review rule; the e2e
+  window-management suite exercises focus churn, grabs, and
+  activation races under CI in R1 (headless smoke alone could not).
 - **R-B Behavior drift** in CLI/ini handling: mitigated by binding
   the RPM's config parser (not rewriting), porting option-parser
   faithfully with a test vector suite generated from the C
-  implementation, and keeping the C build alive as an oracle until R3.
+  implementation, the e2e CLI/config/autolaunch tests pinning
+  user-visible behavior, and keeping the C build alive as an oracle
+  until R3.
 - **R-C ABI drift on libweston bumps**: backend-config structs use
   `struct_size`/version fields — the builders in `weston` set them
   from the bound headers, and the pkg-config version tripwire (§5)
