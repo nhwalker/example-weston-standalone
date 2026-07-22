@@ -58,6 +58,11 @@ All `meson.build` files and `meson_options.txt` are written for this repo
   (nothing left to spawn). Replaced the client-drawn background with a
   compositor-side solid curtain per output, configurable via
   `[shell] background-color` (default `0xff002244`).
+- **T4** — removed all remaining animations: window open (`zoom`/`fade`)
+  and close (`fade`) animations, the focus dim-layer animation with its
+  focus-surface curtains, `get_animation_type`, and the `animation`,
+  `close-animation`, `startup-animation`, `focus-animation` config
+  options (stale keys in existing configs are ignored harmlessly).
 
 ## Rebasing to a newer 14.0.x
 

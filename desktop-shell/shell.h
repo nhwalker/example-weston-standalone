@@ -30,27 +30,11 @@
 #include <libweston/libweston.h>
 #include <libweston/xwayland-api.h>
 
-enum animation_type {
-	ANIMATION_NONE,
-
-	ANIMATION_ZOOM,
-	ANIMATION_FADE,
-	ANIMATION_DIM_LAYER,
-};
-
-struct focus_surface {
-	struct weston_curtain *curtain;
-};
-
 struct workspace {
 	struct weston_layer layer;
 
 	struct wl_list focus_list;
 	struct wl_listener seat_destroyed_listener;
-
-	struct focus_surface *fsurf_front;
-	struct focus_surface *fsurf_back;
-	struct weston_view_animation *focus_animation;
 };
 
 struct shell_output {
@@ -82,10 +66,6 @@ struct desktop_shell {
 
 	bool allow_zap;
 	uint32_t binding_modifier;
-	enum animation_type win_animation_type;
-	enum animation_type win_close_animation_type;
-	enum animation_type startup_animation_type;
-	enum animation_type focus_animation_type;
 
 	struct weston_layer minimized_layer;
 

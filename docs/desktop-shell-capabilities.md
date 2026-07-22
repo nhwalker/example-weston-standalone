@@ -1,5 +1,14 @@
 # desktop-shell capability inventory (research for trimming)
 
+> **Status after trim series T1–T4** (see `VENDOR.md`): groups **1**
+> (helper-client protocol — replaced by a built-in solid-color background
+> curtain, `[shell] background-color`), **4** (lock screen & idle — idle
+> no longer does anything, displays never sleep), **5** (all animations),
+> and **7** (input panel / on-screen keyboard, including frontend
+> text-backend) have been **removed**. Groups 2, 3, 6, 8 (window
+> management, bindings, multi-output/session, seats) remain. Line
+> numbers below refer to the pre-trim state on `main`.
+
 Scope: `desktop-shell/shell.c` (5029 lines), `desktop-shell/shell.h`,
 `desktop-shell/input-panel.c` (425 lines), and
 `protocol/weston-desktop-shell.xml`, as vendored from weston 14.0.1 (plus

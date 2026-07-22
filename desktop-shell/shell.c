@@ -45,7 +45,6 @@
 #include <libweston/desktop.h>
 
 #define DEFAULT_NUM_WORKSPACES 1
-#define DEFAULT_WORKSPACE_CHANGE_ANIMATION_LENGTH 200
 
 struct focus_state {
 	struct desktop_shell *shell;
@@ -96,8 +95,6 @@ struct shell_surface {
 
 	struct weston_desktop_surface *desktop_surface;
 	struct weston_view *view;
-	struct weston_surface *wsurface_anim_fade;
-	struct weston_view *wview_anim_fade;
 	int32_t last_width, last_height;
 
 	struct desktop_shell *shell;
@@ -319,7 +316,6 @@ desktop_shell_destroy_surface(struct shell_surface *shsurf)
 	weston_view_destroy(shsurf->view);
 
 	wl_signal_emit(&shsurf->destroy_signal, shsurf);
-	weston_surface_unref(shsurf->wsurface_anim_fade);
 
 	if (shsurf->output_destroy_listener.notify) {
 		wl_list_remove(&shsurf->output_destroy_listener.link);
@@ -448,28 +444,12 @@ shell_tablet_tool_grab_end(struct shell_tablet_tool_grab *grab)
 	weston_tablet_tool_end_grab(grab->tool);
 }
 
-static enum animation_type
-get_animation_type(char *animation)
-{
-	if (!animation)
-		return ANIMATION_NONE;
-
-	if (!strcmp("zoom", animation))
-		return ANIMATION_ZOOM;
-	else if (!strcmp("fade", animation))
-		return ANIMATION_FADE;
-	else if (!strcmp("dim-layer", animation))
-		return ANIMATION_DIM_LAYER;
-	else
-		return ANIMATION_NONE;
-}
 
 static bool
 shell_configuration(struct desktop_shell *shell)
 {
 	struct weston_config_section *section;
 	struct weston_config *config;
-	char *s;
 	bool allow_zap;
 
 	config = wet_get_config(shell->compositor);
@@ -483,130 +463,15 @@ shell_configuration(struct desktop_shell *shell)
 
 	shell->binding_modifier = weston_config_get_binding_modifier(config, MODIFIER_SUPER);
 
-	weston_config_section_get_string(section, "animation", &s, "none");
-	shell->win_animation_type = get_animation_type(s);
-	free(s);
-	weston_config_section_get_string(section, "close-animation", &s, "fade");
-	shell->win_close_animation_type = get_animation_type(s);
-	free(s);
-
-	weston_config_section_get_string(section,
-					 "startup-animation", &s, "fade");
-	shell->startup_animation_type = get_animation_type(s);
-	if (shell->startup_animation_type == ANIMATION_ZOOM) {
-		weston_log("invalid startup animation type %s\n", s);
-		free(s);
-		return false;
-	}
-	free(s);
-
-	weston_config_section_get_string(section, "focus-animation", &s, "none");
-	shell->focus_animation_type = get_animation_type(s);
-	if (shell->focus_animation_type != ANIMATION_NONE &&
-	    shell->focus_animation_type != ANIMATION_DIM_LAYER) {
-		weston_log("invalid focus animation type %s\n", s);
-		free(s);
-		return false;
-	}
-	free(s);
-
 	return true;
 }
 
-static int
-focus_surface_get_label(struct weston_surface *surface, char *buf, size_t len)
-{
-	return snprintf(buf, len, "focus highlight effect for output %s",
-			(surface->output ? surface->output->name : "NULL"));
-}
 
-/* no-op func for checking focus surface */
-static void
-focus_surface_committed(struct weston_surface *es,
-			struct weston_coord_surface new_origin)
-{
-}
 
-static bool
-is_focus_view (struct weston_view *view)
-{
-	return (view->surface->committed == focus_surface_committed);
-}
 
-static struct focus_surface *
-create_focus_surface(struct weston_compositor *ec,
-		     struct weston_output *output)
-{
-	struct focus_surface *fsurf = NULL;
-	struct weston_curtain_params curtain_params = {
-		.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0,
-		.pos = output->pos,
-		.width = output->width, .height = output->height,
-		.surface_committed = focus_surface_committed,
-		.get_label = focus_surface_get_label,
-		.surface_private = NULL,
-		.capture_input = false,
-	};
 
-	fsurf = malloc(sizeof *fsurf);
-	if (!fsurf)
-		return NULL;
 
-	curtain_params.surface_private = fsurf;
 
-	fsurf->curtain = weston_shell_utils_curtain_create(ec, &curtain_params);
-	weston_view_set_output(fsurf->curtain->view, output);
-
-	return fsurf;
-}
-
-static void
-focus_surface_destroy(struct focus_surface *fsurf)
-{
-	weston_shell_utils_curtain_destroy(fsurf->curtain);
-	free(fsurf);
-}
-
-static void
-focus_animation_done(struct weston_view_animation *animation, void *data)
-{
-	struct workspace *ws = data;
-
-	ws->focus_animation = NULL;
-}
-
-static void
-animate_focus_change(struct desktop_shell *shell, struct workspace *ws,
-		     struct weston_view *from, struct weston_view *to)
-{
-	struct weston_view *front = ws->fsurf_front->curtain->view;
-	struct weston_view *back = ws->fsurf_back->curtain->view;
-	if ((from && from == to) || shell->focus_animation_type == ANIMATION_NONE)
-		return;
-
-	if (ws->focus_animation) {
-		weston_view_animation_destroy(ws->focus_animation);
-		ws->focus_animation = NULL;
-	}
-
-	if (to) {
-		weston_view_move_to_layer(front, &to->layer_link);
-		if (from)
-			weston_view_move_to_layer(back, &from->layer_link);
-		else
-			weston_view_move_to_layer(back, &ws->layer.view_list);
-
-		ws->focus_animation =
-			weston_stable_fade_run(front, 0.0, back, 0.4,
-					       focus_animation_done, ws);
-	} else {
-		weston_view_move_to_layer(front, &ws->layer.view_list);
-		weston_view_move_to_layer(back, NULL);
-		ws->focus_animation =
-			weston_fade_run(front, front->alpha, 0.0,
-					focus_animation_done, ws);
-	}
-}
 
 static void
 focus_state_destroy(struct focus_state *state)
@@ -644,8 +509,6 @@ focus_state_surface_destroy(struct wl_listener *listener, void *data)
 			 &state->ws->layer.view_list.link, layer_link.link) {
 		if (view->surface == main_surface)
 			continue;
-		if (is_focus_view(view))
-			continue;
 		if (!get_shell_surface(view->surface))
 			continue;
 
@@ -666,11 +529,6 @@ focus_state_surface_destroy(struct wl_listener *listener, void *data)
 		activate(state->shell, next, state->seat,
 			 WESTON_ACTIVATE_FLAG_CONFIGURE);
 	} else {
-		if (state->shell->focus_animation_type != ANIMATION_NONE) {
-			animate_focus_change(state->shell, state->ws,
-					     get_default_view(main_surface), NULL);
-		}
-
 		wl_list_remove(&state->link);
 		focus_state_destroy(state);
 	}
@@ -755,11 +613,6 @@ workspace_destroy(struct workspace *ws)
 	wl_list_for_each_safe(state, next, &ws->focus_list, link)
 		focus_state_destroy(state);
 
-	if (ws->fsurf_front)
-		focus_surface_destroy(ws->fsurf_front);
-	if (ws->fsurf_back)
-		focus_surface_destroy(ws->fsurf_back);
-
 	desktop_shell_destroy_layer(&ws->layer);
 }
 
@@ -788,22 +641,6 @@ workspace_create(struct desktop_shell *shell)
 	wl_list_init(&ws->focus_list);
 	wl_list_init(&ws->seat_destroyed_listener.link);
 	ws->seat_destroyed_listener.notify = seat_destroyed;
-
-	if (shell->focus_animation_type != ANIMATION_NONE) {
-		struct weston_output *output =
-			weston_shell_utils_get_default_output(shell->compositor);
-
-		assert(shell->focus_animation_type == ANIMATION_DIM_LAYER);
-
-		ws->fsurf_front = create_focus_surface(shell->compositor, output);
-		assert(ws->fsurf_front);
-		ws->fsurf_back = create_focus_surface(shell->compositor, output);
-		assert(ws->fsurf_back);
-	} else {
-		ws->fsurf_front = NULL;
-		ws->fsurf_back = NULL;
-	}
-	ws->focus_animation = NULL;
 }
 
 struct workspace *
@@ -1913,26 +1750,7 @@ get_shell_seat(struct weston_seat *seat)
 			    struct shell_seat, seat_destroy_listener);
 }
 
-static void
-fade_out_done_idle_cb(void *data)
-{
-	struct shell_surface *shsurf = data;
-	desktop_shell_destroy_surface(shsurf);
-}
 
-static void
-fade_out_done(struct weston_view_animation *animation, void *data)
-{
-	struct shell_surface *shsurf = data;
-	struct wl_event_loop *loop;
-
-	loop = wl_display_get_event_loop(shsurf->shell->compositor->wl_display);
-
-	if (weston_view_is_mapped(shsurf->wview_anim_fade)) {
-		weston_view_move_to_layer(shsurf->wview_anim_fade, NULL);
-		wl_event_loop_add_idle(loop, fade_out_done_idle_cb, shsurf);
-	}
-}
 
 struct shell_surface *
 get_shell_surface(struct weston_surface *surface)
@@ -2040,41 +1858,6 @@ desktop_surface_removed(struct weston_desktop_surface *desktop_surface,
 	weston_desktop_surface_set_user_data(shsurf->desktop_surface, NULL);
 	shsurf->desktop_surface = NULL;
 
-	if (weston_view_is_mapped(shsurf->view) &&
-	    shsurf->shell->win_close_animation_type == ANIMATION_FADE) {
-
-		if (shsurf->shell->compositor->state == WESTON_COMPOSITOR_ACTIVE &&
-		    shsurf->view->output->power_state == WESTON_OUTPUT_POWER_NORMAL) {
-			struct weston_coord_global pos;
-
-			pixman_region32_fini(&surface->pending.input);
-			pixman_region32_init(&surface->pending.input);
-			pixman_region32_fini(&surface->input);
-			pixman_region32_init(&surface->input);
-
-			/* its location might have changed, but also might've
-			 * migrated to a different output, so re-compute  this
-			 * as the animation requires having the same output as
-			 * the view */
-			shsurf->wview_anim_fade = weston_view_create(surface);
-			weston_view_set_output(shsurf->wview_anim_fade,
-					       shsurf->view->output);
-			pos = weston_view_get_pos_offset_global(shsurf->view);
-			weston_view_set_position(shsurf->wview_anim_fade, pos);
-
-			weston_view_move_to_layer(shsurf->wview_anim_fade,
-						  &shsurf->view->layer_link);
-
-			/* unmap the "original" view, which is owned by
-			 * libweston-desktop */
-			weston_view_move_to_layer(shsurf->view, NULL);
-			weston_fade_run(shsurf->wview_anim_fade, 1.0, 0.0,
-					fade_out_done, shsurf);
-
-			return;
-		}
-	}
-
 	desktop_shell_destroy_surface(shsurf);
 }
 
@@ -2154,19 +1937,6 @@ map(struct desktop_shell *shell, struct shell_surface *shsurf)
 			 (shsurf->state.fullscreen ?
 			 WESTON_ACTIVATE_FLAG_FULLSCREEN : 0));
 
-	if (!shsurf->state.fullscreen && !shsurf->state.maximized) {
-		switch (shell->win_animation_type) {
-		case ANIMATION_FADE:
-			weston_fade_run(shsurf->view, 0.0, 1.0, NULL, NULL);
-			break;
-		case ANIMATION_ZOOM:
-			weston_zoom_run(shsurf->view, 0.5, 1.0, NULL, NULL);
-			break;
-		case ANIMATION_NONE:
-		default:
-			break;
-		}
-	}
 }
 
 static void
@@ -2203,13 +1973,6 @@ desktop_surface_committed(struct weston_desktop_surface *desktop_surface,
 
 	if (!weston_surface_is_mapped(surface)) {
 		map(shell, shsurf);
-		/* as we need to survive the weston_surface destruction we'll
-		 * need to take another reference */
-		if (shsurf->shell->win_close_animation_type == ANIMATION_FADE) {
-			shsurf->wsurface_anim_fade =
-				weston_surface_ref(surface);
-		}
-
 		return;
 	}
 
@@ -3121,8 +2884,6 @@ activate(struct desktop_shell *shell, struct weston_view *view,
 	struct weston_surface *es = view->surface;
 	struct weston_surface *main_surface;
 	struct focus_state *state;
-	struct workspace *ws;
-	struct weston_surface *old_es;
 	struct shell_surface *shsurf, *shsurf_child;
 	struct shell_seat *shseat = get_shell_seat(seat);
 
@@ -3161,7 +2922,6 @@ activate(struct desktop_shell *shell, struct weston_view *view,
 	if (state == NULL)
 		return;
 
-	old_es = state->keyboard_focus;
 	focus_state_set_focus(state, es);
 
 	if (weston_desktop_surface_get_fullscreen(shsurf->desktop_surface) &&
@@ -3171,12 +2931,6 @@ activate(struct desktop_shell *shell, struct weston_view *view,
 	/* Update the surface’s layer. This brings it to the top of the stacking
 	 * order as appropriate. */
 	shell_surface_update_layer(shsurf);
-
-	if (shell->focus_animation_type != ANIMATION_NONE) {
-		assert(shell->focus_animation_type == ANIMATION_DIM_LAYER);
-		ws = get_current_workspace(shell);
-		animate_focus_change(shell, ws, get_default_view(old_es), get_default_view(es));
-	}
 }
 
 static void
@@ -3412,12 +3166,8 @@ switcher_destroy(struct switcher *switcher)
 	struct weston_keyboard *keyboard = switcher->grab.keyboard;
 	struct workspace *ws = get_current_workspace(switcher->shell);
 
-	wl_list_for_each(view, &ws->layer.view_list.link, layer_link.link) {
-		if (is_focus_view(view))
-			continue;
-
+	wl_list_for_each(view, &ws->layer.view_list.link, layer_link.link)
 		weston_view_set_alpha(view, 1.0);
-	}
 
 	if (switcher->current && get_shell_surface(switcher->current->surface)) {
 		activate(switcher->shell, switcher->current,
