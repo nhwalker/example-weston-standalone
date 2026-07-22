@@ -1,9 +1,13 @@
 # Future plan: maintenance layer
 
-Status: **planned, not yet implemented**. Agreed in design discussion
-after T9 (minimize removal); parked for later. This plan assumes T9 is
+Status: **planned, not yet implemented — deferred indefinitely**
+behind the Rust migration (`rust-migration-plan.md` decision D7);
+reschedule, if at all, only after that plan's R3/R4. Agreed in design
+discussion after T9 (minimize removal). This plan assumes T9 is
 merged — the maintenance feature deliberately does **not** bring back
-client-facing minimize.
+client-facing minimize. If implemented post-migration, the sketch
+below translates to the `westonite-shell` crate rather than
+`shell.c`.
 
 ## Concept
 
