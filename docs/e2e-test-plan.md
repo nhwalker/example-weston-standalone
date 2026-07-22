@@ -19,6 +19,16 @@ Decisions already made (2026-07-22):
 - **Pixel tests: yes** — VNC framebuffer captures compared against
   reference images (pixman renderer for determinism).
 - **CI: push only** — no scheduled/nightly jobs.
+- **Everything lives in this repo and targets this repo.** All test
+  code, references, and CI changes land in
+  `example-weston-standalone`; the `weston` tree stays reference-only.
+  The subjects under test are exclusively the artifacts this repo
+  builds (`westonite`, `libexec_westonite.so`, our `desktop-shell.so`)
+  and the RPM built from them — never the distro `weston` package. In
+  particular the stock `weston` package is **not** installed in the
+  test container, so there is no risk of accidentally exercising its
+  binaries or its `desktop-shell.so` instead of ours; window-creating
+  test drivers are a minimal client built in this repo (§1.3).
 
 Capability inventory the tests are written against:
 [`frontend-capabilities.md`](frontend-capabilities.md) and
@@ -100,17 +110,34 @@ Bash is deliberately dropped for the new suite: image comparison,
 per-test fixtures, and VNC scripting are all painful in shell. Python 3
 is already in the CentOS Stream 10 base image.
 
-### In-session client drivers (test-only container deps)
+### In-session client drivers
 
-- EPEL **`weston`** package demo clients (`weston-terminal`,
-  `weston-simple-shm`, `weston-flower`, …): real xdg-shell clients with
-  toytoolkit decorations — titlebar/edge drags exercise the shell's
-  move/resize grabs. Installing the full `weston` package in the *test*
-  container is fine (westonite is rename-isolated by design).
-- **`wayland-info`** (`wayland-utils`): asserts advertised globals,
-  output geometry/scale/transform.
-- `WAYLAND_DEBUG=1` on a demo client, parsed by the runner: protocol-
-  level assertions (e.g. `xdg_toplevel.wm_capabilities` is empty).
+- **`wtest-client` — a minimal xdg-shell test client built in this
+  repo** (`tests/e2e/clients/`, plain `wayland-client` + `wl_shm`, no
+  toolkit; test-only, never installed by the RPM). One small C program
+  (~400 lines) that is the window-side counterpart of every shell
+  test:
+  - draws a solid-color window of a requested size (exact-color pixel
+    assertions — no fonts, no AA, golden images stay byte-stable);
+  - on pointer button press sends `xdg_toplevel.move` (or `.resize`
+    with a chosen edge), so VNC click-and-drag exercises the shell's
+    move/resize grabs without needing toolkit decorations;
+  - repaints in a distinct color on keyboard focus enter/leave
+    (focus/activation visible in the framebuffer);
+  - prints received protocol state to stdout — `wm_capabilities`,
+    configure sizes, `xdg_popup` results, ping/pong — so the runner
+    asserts protocol facts by parsing client output rather than
+    `WAYLAND_DEBUG` traces;
+  - can request fullscreen/maximize on command, to prove the trimmed
+    shell ignores them;
+  - can go intentionally unresponsive (stop dispatching) on signal,
+    for the T8 busy-grab test.
+  This deliberately does *not* rely on the distro `weston` package's
+  demo clients: installing that package would put a second
+  `desktop-shell.so` and helper binaries in the container, exactly the
+  ambiguity this repo exists to avoid.
+- **`wayland-info`** (`wayland-utils`, a small standalone package):
+  asserts advertised globals, output geometry/scale/transform.
 - X clients for Xwayland (`xdpyinfo`, `xeyes`/`xclock`, `xwininfo` from
   AppStream x11 utils).
 
@@ -162,15 +189,15 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | background-default [pix] | untouched config → solid `0xff002244` full-frame |
 | background-config [pix] | `[shell] background-color=0xff336699` → that color, full-frame |
 | background-resize [pix] | after VNC resize, new area fully covered (no stale/black bands) |
-| window-map [pix] | `weston-simple-shm` → non-background region appears, fully inside output bounds (initial placement logic) |
-| click-activate | two terminals; VNC click on each → typed keys land in the clicked one (visible echo in screenshot region) |
-| move-grab [pix] | titlebar drag via VNC pointer → window's bounding region moves by the drag delta |
-| resize-grab [pix] | edge drag → window region dimensions change |
-| wm-capabilities (T6/T9) | `WAYLAND_DEBUG` on a demo client: `wm_capabilities` advertises **no** window-state requests |
-| fullscreen-ignored (T6) [pix] | client requesting fullscreen (`weston-simple-egl -f` or toytoolkit fullscreen key) → geometry unchanged, request silently ignored |
+| window-map [pix] | `wtest-client` (solid red, 200×150) → exactly that region appears, fully inside output bounds (initial placement logic) |
+| click-activate [pix] | two `wtest-client` windows in distinct colors; VNC click on each → only the clicked one shows its focused color (activation + keyboard focus) |
+| move-grab [pix] | click-hold on a `wtest-client` (which requests `xdg_toplevel.move` on button press) and drag via VNC → window region moves by the drag delta |
+| resize-grab [pix] | same via `xdg_toplevel.resize` with a chosen edge → window region dimensions change; client's reported configure size matches |
+| wm-capabilities (T6/T9) | `wtest-client` prints the `wm_capabilities` event: advertises **no** window-state requests |
+| fullscreen-ignored (T6) [pix] | `wtest-client --request-fullscreen` (and `--request-maximize`) → geometry unchanged, no fullscreen/maximized state in configure events |
 | desktop-clicks | clicks on empty background are swallowed (focused window keeps focus, nothing crashes) |
-| transient | demo client with popup/transient (e.g. toytoolkit menu) → child stacks above parent |
-| unresponsive (T8) | SIGSTOP a focused client, click it → no move-grab starts, compositor stays healthy; SIGCONT recovers (best-effort: observable surface is "nothing bad happens") |
+| transient [pix] | `wtest-client` opens an `xdg_popup` / sets a parent → child renders above parent within expected bounds |
+| unresponsive (T8) | signal `wtest-client` to stop dispatching, click it → no move-grab starts, compositor stays healthy; resume recovers (observable surface is "nothing bad happens") |
 
 Out of scope: touch and tablet paths (VNC injects only pointer/keyboard;
 no input hardware in CI), lock/idle (removed), animations (removed),
@@ -198,12 +225,15 @@ workspaces (single, upstream).
 ## 3. Reference images & determinism
 
 - Renderer pinned to **pixman**; output size pinned per test.
-- Full-frame golden images only for client-free scenes (backgrounds) —
-  those are exact solid colors, tolerance ~0.
-- Anything containing client-rendered text (terminals) uses **geometric
-  assertions** instead: bounding box of the non-background region,
-  region deltas before/after an action, solid-color patch samples.
-  This sidesteps font-stack nondeterminism entirely.
+- Every scene is composed of solid colors: the shell's background plus
+  `wtest-client`'s flat-color windows. Full-frame golden images are
+  therefore exact (tolerance ~0) for *all* [pix] tests — no fonts, no
+  antialiasing, no toolkit theming anywhere in the pipeline. Geometric
+  assertions (bounding box of the non-background region, region deltas
+  after an action) remain the tool for move/resize tests where the
+  interesting fact is a delta, not a picture. The only text-rendering
+  clients in the suite are the X11 ones (`xeyes`/`xclock`), which get
+  geometric assertions only.
 - References live in `tests/e2e/reference/`; regenerated only inside
   the canonical build container via `scripts/regen-references.sh`
   (documented in the README so a font/pixman bump in the base image is
@@ -237,8 +267,10 @@ lived compositor instance; instances are cheap headless/VNC processes).
 - **E2 — frontend suite** — §2.1 + §2.2 + §2.3 (except mirror-resize);
   port the three smoke assertions into pytest (keep the bash smoke as
   the quick gate).
-- **E3 — shell suite** — §2.4, plus spike S2 (P0 mirror-resize
-  reproduction recipe) and the mirror-resize test.
+- **E3 — shell suite** — build `wtest-client` (§1.3, meson target under
+  `tests/e2e/clients/`, excluded from install/RPM), then §2.4, plus
+  spike S2 (P0 mirror-resize reproduction recipe) and the mirror-resize
+  test.
 - **E4 — Xwayland + install** — §2.5, §2.6 installed-suite plumbing in
   `rpm-install-test.sh`.
 - **E5 — CI + docs** — workflow wiring, artifact upload, README
