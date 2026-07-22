@@ -1,6 +1,8 @@
 # Future plan: Rust migration
 
-Status: **planned, not yet implemented**. Translates the C sources in
+Status: **planned, not yet implemented**. Four scoping decisions were
+made at review time and are folded in below (§9 records them); the
+remaining open questions are in §10. Translates the C sources in
 this repo (frontend + desktop-shell + shared, ~9.8k lines) to Rust.
 libweston 14 stays the compositor engine, consumed from the EPEL 10
 RPMs exactly as today; libwayland stays the protocol/event-loop
@@ -151,7 +153,7 @@ C boundary.
 | `frontend/executable.c` | deleted or 5-line stub | see linkage question. |
 | `frontend/main.c` | `westonite` bin, split into modules | `cli.rs`, `config.rs`, `log.rs` (weston-log ctx, flight recorder, scopes), `backend/{drm,headless,x11,wayland,rdp,vnc,pipewire}.rs`, `output.rs` (head tracking, clone/mirror, color mgmt — the big one), `input.rs`, `autolaunch.rs`, `process.rs` (sigchld + wet_process list), `xwayland.rs`. |
 | `frontend/config-helpers.c` | `weston::config` typed getters | On top of bound `weston_config_*`. |
-| `frontend/weston-screenshooter.c` | port or drop | Semi-dead today (spawns a client we don't ship); recommend **drop** during the port, keep the Super+R wcap recorder decision separate. |
+| `frontend/weston-screenshooter.c` | `westonite::screenshooter` | Ported 1:1 (decision D1). Semi-dead at runtime (Super+S spawns a client we don't ship; Super+R wcap recorder works) — behavior preserved as-is. |
 | `frontend/xwayland.c` | `westonite::xwayland` | Socketpairs via rustix, lazy spawn via the process module, SIGUSR1 via `wl_event_loop` signal source (bound). |
 | `desktop-shell/shell.c` | `westonite-shell` crate | `state.rs` (DesktopShell), `surface.rs` (ShellSurface + DesktopApi impl), `focus.rs`, `bindings.rs`, `background.rs` (curtains/output tracking), `workspace.rs`, `fullscreen.rs`. Exported entry: `wet_shell_init`-compatible `extern "C"` if cdylib, plain fn if static (linkage question). |
 
@@ -209,9 +211,9 @@ halves can be mixed and smoke-tested at every phase boundary.
   green): R2a core startup, CLI/config, logging, headless (smoke
   passes on all-Rust path); R2b output management + DRM (the largest
   block: heads, hotplug, clone/mirror, color mgmt); R2c remaining
-  backends (x11/wayland/rdp/vnc/pipewire — or fewer, per the trim
-  question); R2d xwayland (Phase-3 smoke test must pass); R2e
-  screenshooter/recorder if kept. The C `main.c` stays in-tree,
+  backends (x11/wayland/rdp/vnc/pipewire) plus the remoting/pipewire
+  virtual-output plugin loaders; R2d xwayland (Phase-3 smoke test
+  must pass); R2e screenshooter/recorder. The C `main.c` stays in-tree,
   buildable via meson, until R2 completes — it is the reference
   oracle for behavioral diffs.
 - **Phase R3 — decommission C**: delete C sources + meson, switch
@@ -265,42 +267,38 @@ C: a translation cannot be rebased with `git diff`. Replacement:
   foreign `wl_display`. Out of scope now; noted so nobody assumes the
   no-scanner simplification is free forever.
 
-## 9. Open questions
+## 9. Decisions (made at plan review)
 
-Decisions needed before R0 (recommendations inline):
+- **D1 — Port everything 1:1, no pre-trim.** The full current
+  capability surface (all seven backends' config, clone/mirror,
+  color management, `--backends`, screenshooter, idle-time plumbing)
+  is translated as-is. The drop-assessment questions in
+  `docs/frontend-capabilities.md` stay open independently — trims can
+  still happen later, in Rust.
+- **D2 — Shell linkage: cdylib during migration, static at R3.**
+  `westonite-shell` builds as `desktop-shell.so` (exporting
+  `wet_shell_init`) for the hybrid phases; once the C frontend is
+  gone it links statically into the `westonite` binary. `modules=`
+  dlopen for third-party C modules survives; `--shell` swapping of
+  our own shell does not (document in README at R3).
+- **D3 — Config parser: bind the RPM's `weston_config_*`.** Thin safe
+  wrapper over FFI; `weston.ini(5)` semantics stay bug-for-bug
+  identical (including the known 14.0.1 `binding-modifier none`
+  limitation). Revisit only if it becomes a maintenance pain.
+- **D4 — Port order: shell first** (Phase R1 as written in §6).
 
-1. **Trim first?** The frontend inventory lists deployment-dependent
-   blocks (RDP/VNC/PipeWire backends+plugins ~400 lines, clone/mirror
-   multi-head, color management/HDR, multi-backend `--backends`,
-   screenshooter, inert idle-time) totaling roughly 1–1.5k lines.
-   Porting less C means less unsafe surface and fewer parity tests.
-   **Recommend**: answer the capability-doc drop questions first and
-   port only what survives.
-2. **Shell linkage**: keep the upstream three-artifact layout
-   (`westonite` + `libexec_westonite.so` + `desktop-shell.so` cdylib,
-   dlopen'd — faithful, keeps `--shell`/`modules=` genericity) **or**
-   link `westonite-shell` statically into the binary at R3 (one
-   artifact, no cross-`.so` Rust ABI concerns, no dlopen of our own
-   code; `modules=` dlopen for *third-party* C modules can stay
-   either way). **Recommend**: cdylib during R1 (forced by the hybrid
-   phase anyway), fold to static at R3 unless `--shell` swapping is a
-   real requirement.
-3. **Config parser**: bind the RPM's exported `weston_config_*`
-   (zero drift, keeps `weston.ini(5)` semantics bug-for-bug — including
-   the known 14.0.1 `binding-modifier none` limitation) **or**
-   reimplement in Rust (idiomatic, testable, fixes that bug, but
-   risks subtle divergence). **Recommend**: bind now; revisit only if
-   the parser becomes a maintenance pain.
-4. **Bindings generation**: committed pre-generated `bindings.rs`
+## 10. Remaining open questions
+
+1. **Bindings generation**: committed pre-generated `bindings.rs`
    (recommended, §5) vs bindgen on every build.
-5. **Parity bar**: is byte-identical CLI/`--help`/log output required,
+2. **Parity bar**: is byte-identical CLI/`--help`/log output required,
    or is "same accepted inputs, same behavior, cosmetic text may
    differ" acceptable? **Recommend** the latter, documented.
-6. **Maintenance-layer feature** (`maintenance-layer-plan.md`):
+3. **Maintenance-layer feature** (`maintenance-layer-plan.md`):
    implement in C before R1 (then port it), or make it the first
    Rust-native feature after R1? **Recommend**: after — implementing
    it twice is waste, and it lands on the freshly-designed safe
    wrapper as a proof of idiomatic feature work.
-7. **Crate dependency policy**: is the §5 minimal list acceptable, or
+4. **Crate dependency policy**: is the §5 minimal list acceptable, or
    is there an org-level constraint (e.g. only crates already
    packaged in EL/EPEL, vs anything vendorable)?
