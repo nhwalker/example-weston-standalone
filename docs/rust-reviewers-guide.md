@@ -298,6 +298,92 @@ extern "C" fn output_destroyed_shim(o: *mut weston_output, data: *mut c_void) {
 the workspace sets `panic = "abort"` in release profiles as a
 backstop (plan §3e). Both together — belt and suspenders.
 
+### 2f. Conversions at the boundary: typed in, raw stays in the fence
+
+*(A cross-cutting rule, not a sixth pattern — it falls out of 2a–2e
+and is the single most likely design mistake in the safe crates.)*
+
+The raw pointer is the fence's currency. It is legal to *pass* a raw
+pointer around in safe code — what is `unsafe` is **dereferencing**
+it. That asymmetry sets a trap: a helper that turns a raw payload into
+a typed handle can be written with a *safe-looking* signature while
+secretly doing an unsafe deref inside. If that helper is callable from
+a safe crate, the fence has a hole even though no `unsafe` keyword
+appears there.
+
+Concretely — libweston signals deliver their payload as a
+`*mut c_void`. The wrong instinct is to hand that raw pointer to the
+shell's closure and convert it there:
+
+```rust
+// BAD — the raw payload and the conversion both leak into the safe
+// shell crate. `Seat::from_payload` takes a raw pointer and must
+// dereference it, so it is either:
+//   (A) an `unsafe fn`  → won't compile under #![forbid(unsafe_code)], or
+//   (B) a safe fn hiding `unsafe` inside → an UNSOUND API: it promises
+//       safety it can't keep, since a caller could pass any garbage
+//       pointer and forge a Seat from it.
+// Neither belongs in westonite-shell.
+compositor.seat_created_signal().add_listener(move |data: *mut c_void| {
+    let seat = Seat::from_payload(data);          // ← raw deref in safe code
+    shell.state.borrow_mut().add_seat(seat);
+});
+```
+
+The fix your review should push for: make the signal **typed by its
+payload**, do the one unsafe conversion inside the trampoline (in
+`weston`), and hand the safe closure an already-typed `Seat`. The raw
+pointer never appears outside the fence.
+
+```rust
+// ── in `weston` (the fence) ─────────────────────────────────────────
+impl Seat {
+    // SAFETY (on the fn, so callers must justify): `data` must be the
+    // payload of a signal libweston documents as carrying weston_seat*.
+    unsafe fn from_payload(data: *mut c_void) -> Seat { /* ... */ }
+}
+
+struct Signal<T> { raw: *mut wl_signal, _marker: PhantomData<T> }
+
+impl Signal<Seat> {
+    fn add_listener(&self, mut f: impl FnMut(Seat) + 'static) -> Listener {
+        self.add_raw(move |data| {
+            // SAFETY: this Signal<Seat> is only ever built from the
+            // seat_created signal, whose payload is a live weston_seat*
+            // for the duration of the emit.
+            let seat = unsafe { Seat::from_payload(data) };
+            f(seat)                                   // hand the shell a Seat
+        })
+    }
+}
+```
+
+```rust
+// ── in westonite-shell (safe crate) ─────────────────────────────────
+// No raw pointer, no `from_payload`, nothing to get wrong.
+compositor.seat_created_signal().add_listener(move |seat| {
+    shell.state.borrow_mut().add_seat(seat);
+});
+```
+
+Two things made the good version sound: the conversion is an
+`unsafe fn` living in `weston` (so `#![forbid(unsafe_code)]`
+*guarantees* the shell can't do it), and the "this signal's payload is
+a `weston_seat*`" knowledge is encoded as `Signal<Seat>` right next to
+the only code allowed to act on it.
+
+**Review checks — two smells, in increasing generality:**
+- **A raw pointer type (`*mut _`, `*const _`, `*mut c_void`) in a
+  signature *inside a safe crate*** — parameter, return, or closure
+  argument. The boundary is drawn one layer too high; the typed
+  conversion belongs down in `weston`.
+- **A safe `fn` whose correctness depends on the caller passing a
+  valid pointer** (or any un-checkable precondition). That is an
+  unsound API wherever it lives. The test: *"is there an input to this
+  safe function that would cause UB?"* If yes, it must be `unsafe fn`.
+  This generalizes past pointers — any safe function with a
+  precondition the type system doesn't enforce is a latent hole.
+
 ---
 
 ## 3. ABI versioning (smaller, still sharp)
@@ -516,6 +602,9 @@ For any PR in this migration:
       pinned? Is it panic-guarded? (§2a, §2e)
 - [ ] Any `borrow*()` held **across** a call into libweston? →
       reentrancy smell. (§2d)
+- [ ] Any **raw pointer type in a safe-crate signature**, or a safe
+      `fn` that derefs a caller-supplied pointer? → the conversion
+      belongs in `weston`. (§2f)
 - [ ] Every `extern "C"` function guarded by `catch_unwind`? (§2e)
 - [ ] Every `struct_size`/`version` field set from bound constants,
       never `zeroed()`? (§3)
