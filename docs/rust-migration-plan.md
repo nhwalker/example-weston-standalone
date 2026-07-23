@@ -1,8 +1,10 @@
 # Future plan: Rust migration
 
 Status: **planned, not yet implemented**. All scoping decisions were
-made at review time and are folded in below (§9 records them, D1–D8).
-No open questions remain — the plan is ready to execute at R0. Translates the C sources in
+made at review time and are folded in below (§10 records them,
+D1–D12; D9–D12 re-specify the configuration interface, superseding
+the original config-parity stance). No open questions remain — the
+plan is ready to execute at R0. Translates the C sources in
 this repo (frontend + desktop-shell + shared, ~9.8k lines) to Rust.
 libweston 14 stays the compositor engine, consumed from the EPEL 10
 RPMs exactly as today; libwayland stays the protocol/event-loop
@@ -21,22 +23,30 @@ Goals, in priority order:
    `Option`/`Result` over sentinel returns, RAII over destroy
    listeners where we own the object, iterators over intrusive-list
    macros.
-3. **Behavioral parity** with the current C build: same CLI, same
-   `westonite.ini` semantics, same installed file layout, same RPM
-   upgrade path — and the smoke scripts plus the **black-box e2e
-   suite** (`tests/e2e/`, `docs/e2e-test-plan.md`) pass unchanged.
-   The e2e suite drives the compositor exactly as a user would (VNC
-   input injection + framebuffer capture, no test hooks in shipped
-   code), so it runs identically against the C build, every hybrid
-   phase, and the final Rust build — it is the migration's fixed
-   parity oracle.
+3. **Behavioral parity** with the current C build — *except the
+   configuration interface, which is deliberately re-specified*
+   (§5). Parity means: the same set of configurable capabilities for
+   libweston and the shell, same runtime behavior and exit codes,
+   same installed file layout, same RPM upgrade path — and the smoke
+   scripts plus the **black-box e2e suite** (`tests/e2e/`,
+   `docs/e2e-test-plan.md`) pass, with only the config-interface
+   tests re-specified alongside §5. The e2e suite drives the
+   compositor exactly as a user would (VNC input injection +
+   framebuffer capture, no test hooks in shipped code), so it runs
+   identically against the C build, every hybrid phase, and the
+   final Rust build — it is the migration's fixed parity oracle.
 
 Non-goals: porting libweston itself; changing the libweston version
 (stays 14.0.1/EPEL); adding features during the port (the
-maintenance-layer plan is deferred separately — §9 D7); porting the
+maintenance-layer plan is deferred separately — §10 D7); porting the
 e2e suite itself (the Python harness and the C `wtest-client`/
 `wtest-xclient` test drivers stay as they are — a measuring stick
-must not move while the thing it measures is rebuilt).
+must not move while the thing it measures is rebuilt). One
+carve-out to the frozen-suite rule: the config-interface tests
+(config discovery in `test_cli.py`, ini-driven fixtures) are
+**re-specified deliberately** when §5 lands — updated to the new
+interface as a spec change, never silently loosened; all other
+tests stay frozen.
 
 ## 1. What makes this tractable (post-trim inventory)
 
@@ -54,8 +64,12 @@ The T-series trims did the Rust port a big favor:
   exactly one symbol from `libexec_westonite.so`: `wet_get_config()`.
   Everything else it uses is installed libweston API
   (`desktop.h`, `shell-utils.h`, `config-parser.h`).
-- The `weston_config_*` parser is **exported by the RPM's
-  libweston** — we bind it, we do not rewrite it (option below).
+- **The config interface is being re-specified anyway** (§5, D9),
+  so the C `weston_config_*`/ini machinery does not need to be
+  ported or bound at all in the end state — a small temporary
+  binding survives only through the hybrid phase R1 (the C frontend
+  still parses `westonite.ini` then; the Rust shell reads its one
+  key through it).
 
 Current C surface to port (lines at trim T9):
 
@@ -75,21 +89,25 @@ Cargo.toml                    # workspace
 crates/
 ├── weston-sys/               # UNSAFE. bindgen over the installed RPM headers:
 │                             #   libweston.h, desktop.h, shell-utils.h, weston-log.h,
-│                             #   config-parser.h, windowed-output-api.h, backend-*.h,
-│                             #   xwayland-api.h (+ the wayland-server types they embed)
+│                             #   windowed-output-api.h, backend-*.h, xwayland-api.h
+│                             #   (+ the wayland-server types they embed)
+│                             #   config-parser.h bound only through R1 (removed at R3)
 │                             # links: libweston-14, wayland-server
 ├── weston/                   # UNSAFE INSIDE, SAFE API. The fence. Hand-written safe
 │                             # wrappers: Compositor, Output/Head, Seat, Layer, View,
-│                             # Surface, DesktopApi trait, Curtain, Config, Listener<T>,
+│                             # Surface, DesktopApi trait, Curtain, Listener<T>,
 │                             # LogScope, key/button-binding registration, module loading
-├── westonite-shared/         # SAFE. Ports of shared/: option parser, process spawning
+├── westonite-config/         # SAFE. The §5 config interface: serde Config model (TOML),
+│                             # clap CLI, -o dotted overrides, defaults→file→CLI resolve
+├── westonite-shared/         # SAFE. Ports of shared/: process spawning
 │                             # (CustomEnv/Fdstr), fd/socket helpers via rustix
-├── westonite-shell/          # SAFE. desktop-shell logic (shell.c port)
+├── westonite-shell/          # SAFE. desktop-shell logic (shell.c port); receives a
+│                             # typed ShellConfig, never touches the config file
 └── westonite/                # SAFE. The frontend binary (main.c port); links
                               # westonite-shell (linkage question below)
 ```
 
-Fencing rules, enforced by `#![forbid(unsafe_code)]` on the three
+Fencing rules, enforced by `#![forbid(unsafe_code)]` on the four
 safe crates and CI grep:
 
 - `weston-sys` is machine-generated + a small `cc`-compiled shim for
@@ -100,10 +118,11 @@ safe crates and CI grep:
   block carries a `// SAFETY:` invariant comment; the crate's docs
   state the global invariants (single-threaded, callback reentrancy,
   object lifetime rules below).
-- `westonite`, `westonite-shell`, `westonite-shared` contain no
-  unsafe (one carve-out: `pre_exec` for fd setup in the spawn path
-  lives inside `westonite-shared::process` behind a safe API, or in
-  `weston` — decided during implementation).
+- `westonite`, `westonite-shell`, `westonite-shared`, and
+  `westonite-config` contain no unsafe (one carve-out: `pre_exec`
+  for fd setup in the spawn path lives inside
+  `westonite-shared::process` behind a safe API, or in `weston` —
+  decided during implementation).
 
 ## 3. The hard FFI problems and their designs
 
@@ -155,18 +174,70 @@ C boundary.
 
 | C source | Rust destination | Approach |
 |---|---|---|
-| `shared/option-parser.c` | `westonite-shared::options` | Faithful hand port (NOT clap — must keep exact weston CLI semantics: parse known options, pass the rest through). Note: `parse_options()` has no `WL_EXPORT`, so it must be reimplemented, unlike `weston_config_*`. |
+| `shared/option-parser.c` | deleted — replaced by `westonite-config` (clap) | The re-specified CLI (§5, D10) supersedes weston's option parser; no faithful port. Positional-args-become-autolaunch behavior is preserved (clap trailing args). |
 | `shared/os-compatibility.c` | mostly deleted | EL10 glibc has `memfd_create`, `mkostemp`, `strchrnul`, `posix_fallocate`; use `rustix` for the cloexec/socketpair helpers. Only `os_socketpair_cloexec` semantics kept as a thin util. |
 | `shared/process-util.c` | `westonite-shared::process` | `CustomEnv` (incl. the `ENV=x cmd arg` exec-string parser), `Fdstr`; spawn via `Command` + `pre_exec` (fd unCLOEXEC + setup), replacing the fork/exec block in `main.c`. |
 | `shared/*.h` (helpers, timespec, xalloc, string-helpers, fd-util) | deleted | std (`Duration`, `?`, `String`), `rustix`; `xalloc` is irrelevant in Rust. |
 | `frontend/executable.c` | deleted or 5-line stub | see linkage question. |
-| `frontend/main.c` | `westonite` bin, split into modules | `cli.rs`, `config.rs`, `log.rs` (weston-log ctx, flight recorder, scopes), `backend/{drm,headless,x11,wayland,rdp,vnc,pipewire}.rs`, `output.rs` (head tracking, clone/mirror, color mgmt — the big one), `input.rs`, `autolaunch.rs`, `process.rs` (sigchld + wet_process list), `xwayland.rs`. |
-| `frontend/config-helpers.c` | `weston::config` typed getters | On top of bound `weston_config_*`. |
+| `frontend/main.c` | `westonite` bin, split into modules | CLI/config parsing moves to `westonite-config` (§5); the bin keeps `log.rs` (weston-log ctx, flight recorder, scopes), `backend/{drm,headless,x11,wayland,rdp,vnc,pipewire}.rs`, `output.rs` (head tracking, clone/mirror, color mgmt — the big one), `input.rs`, `autolaunch.rs`, `process.rs` (sigchld + wet_process list), `xwayland.rs` — each consuming its typed slice of the resolved `Settings`. |
+| `frontend/config-helpers.c` | deleted | Typed `serde` deserialization makes the string→typed-value getters moot. |
 | `frontend/weston-screenshooter.c` | `westonite::screenshooter` | Ported 1:1 (decision D1). Semi-dead at runtime (Super+S spawns a client we don't ship; Super+R wcap recorder works) — behavior preserved as-is. |
-| `frontend/xwayland.c` | `westonite::xwayland` | Socketpairs via rustix, lazy spawn via the process module, SIGUSR1 via `wl_event_loop` signal source (bound). |
+| `frontend/xwayland.c` | `westonite::xwayland` | Socketpairs via rustix, lazy spawn via the process module, SIGUSR1 via `wl_event_loop` signal source (bound). The C code's lazy `[xwayland] path` config read becomes a plain field of the resolved `Settings` (§5). |
 | `desktop-shell/shell.c` | `westonite-shell` crate | `state.rs` (DesktopShell), `surface.rs` (ShellSurface + DesktopApi impl), `focus.rs`, `bindings.rs`, `background.rs` (curtains/output tracking), `workspace.rs`, `fullscreen.rs`. Exported entry: `wet_shell_init`-compatible `extern "C"` if cdylib, plain fn if static (linkage question). |
 
-## 5. Build & packaging
+## 5. Configuration interface (re-specified — D9–D12)
+
+Background (verified against the C sources and the upstream 14 tree):
+libweston itself never reads the CLI or the ini — it is configured
+purely through API calls and versioned config structs assembled by
+the frontend. The ini leaked only *within our own code* (the shell
+reads `[shell] background-color` via `wet_get_config`; xwayland
+reads `[xwayland] path` lazily) and *out of the process* via the
+`WESTON_CONFIG_FILE` env export. With config parity dropped, the
+interface is re-specified rather than ported:
+
+- **Model** (D9): one `Config` struct in `westonite-config`
+  (serde `Deserialize`), covering the **entire current option
+  surface** — every `[section]` key and CLI option in
+  `docs/frontend-capabilities.md` / `docs/desktop-shell-capabilities.md`
+  maps to a field (the completeness checklist, §9 R-G). File format
+  is **TOML** (`westonite.toml`, same XDG search order as the ini
+  had; `--config`/`--no-config` kept). Repeated `[output]` sections
+  become `[[output]]` array-of-tables. Unknown keys and type errors
+  are **startup errors with line/column spans**
+  (`deny_unknown_fields`) — replacing weston's silent-typo behavior.
+- **CLI** (D10): clap derive. Ergonomic flags for the scalar/global
+  settings (today's CLI surface), plus a generic
+  `-o`/`--set key.path=value` dotted override that patches the
+  config tree before deserialization — 100 % CLI coverage of the
+  file surface without bespoke flags for structured sections.
+  Positional trailing args remain the autolaunch command.
+- **Resolution**: defaults → file → `-o` overrides → flags, into an
+  immutable `Settings` resolved once at startup. No lazy config
+  reads anywhere; consumers receive typed slices (`ShellConfig`,
+  `XwaylandConfig`, per-backend structs). The shell never sees the
+  file or the CLI. Third-party `modules=` plugins get only their
+  argv — the `wet_get_config` contract ends at R3.
+- **Don't over-model**: values that are really weston/libweston
+  string grammars (modelines `1920x1080@60`, XKB rule names,
+  `gbm-format`, ICC paths, transform names) stay strings or thin
+  enums wrapping the existing parse points; §5 re-specifies
+  *structure and validation*, not weston's value syntaxes.
+- **Migration** (D11): docs only — an annotated
+  `westonite.toml.example` plus an ini→TOML mapping table in the
+  README/man material. No converter tool, no dual-format fallback.
+  If a legacy `westonite.ini` is found where the TOML is expected,
+  startup logs a one-line hint and otherwise ignores it.
+- **Env export** (D12): the `WESTON_CONFIG_FILE` setenv is
+  **dropped** — we ship no clients that read it and no stock client
+  could parse TOML. libweston-consumed env vars
+  (`WESTON_MODULE_MAP`, `WESTON_LIBINPUT_LOG_PRIORITY`, …) are
+  untouched.
+- **Safety dividend**: the config layer becomes 100 % safe code and
+  `weston-sys` drops the `config-parser.h` bindings at R3; the only
+  remnant is the small R1-only binding the hybrid phase needs (§2).
+
+## 6. Build & packaging
 
 - **Build**: cargo replaces meson at the end state. `weston-sys`
   resolves the RPM headers via `pkg-config libweston-14` in
@@ -183,12 +254,13 @@ C boundary.
 - **Toolchain**: EL10 AppStream `rust-toolset` (rolling, recent
   rustc). MSRV = whatever the build image's rust-toolset ships;
   edition 2024.
-- **Dependencies policy** (decision D8): the baseline runtime set is
-  `libc`, `rustix`, `bitflags`, `thiserror` (+ `cc` at build time;
-  bindgen only in the regen script). Further crates are allowed but
-  **each addition requires explicit owner approval** before it lands
-  (record the approval in the PR/VENDOR-log entry). No clap, no
-  tokio, no wayland-rs. RPM builds offline from a `cargo vendor`
+- **Dependencies policy** (decision D8): the approved runtime set is
+  `libc`, `rustix`, `bitflags`, `thiserror`, plus — approved with
+  D9/D10 — `serde`, `serde_derive`, `toml`, `clap` (+ `cc` at build
+  time; bindgen only in the regen script). Further crates are
+  allowed but **each addition requires explicit owner approval**
+  before it lands (record the approval in the PR/VENDOR-log entry).
+  No tokio, no wayland-rs. RPM builds offline from a `cargo vendor`
   tarball (`Source1`), per standard EL Rust packaging practice.
 - **RPM/installed layout unchanged**: `/usr/bin/westonite`,
   `%{_libdir}/westonite/*.so` (if the cdylib layout survives — see
@@ -199,7 +271,7 @@ C boundary.
   unchanged in shape; adds `cargo fmt --check`, `clippy -D warnings`,
   `cargo test`, and the unsafe-fence check.
 
-## 6. Phasing (strangler fig — a working compositor at every step)
+## 7. Phasing (strangler fig — a working compositor at every step)
 
 The binary and the shell `.so` are separately loadable, so C and Rust
 halves can be mixed and smoke-tested at every phase boundary.
@@ -213,7 +285,10 @@ halves can be mixed and smoke-tested at every phase boundary.
 - **Phase R1 — shell in Rust, frontend still C**: port `shell.c` →
   `westonite-shell` built as `desktop-shell.so` (cdylib exporting
   `wet_shell_init`, linking `libexec_westonite.so` for
-  `wet_get_config`). This is deliberately first: it is the smaller
+  `wet_get_config` — in this phase the C frontend still parses
+  `westonite.ini`, so the shell reads its one key through the
+  temporary config-parser binding; the §5 interface does not exist
+  yet). This is deliberately first: it is the smaller
   but *deeper* half — it exercises every §3 primitive and hardens the
   wrapper design while the battle-tested C frontend still drives
   startup. Verified by the smoke scripts plus the e2e shell suites
@@ -224,10 +299,15 @@ halves can be mixed and smoke-tested at every phase boundary.
   otherwise have needed.
 - **Phase R2 — shared + frontend in Rust** (slices, each ending
   green — "green" means smoke **and** the full e2e suite): R2a core
-  startup, CLI/config, logging, headless (`test_cli.py`,
-  `test_lifecycle.py`, `test_children.py` on the all-Rust path — the
-  CLI/config-discovery/autolaunch behaviors those tests pin are
-  exactly the main.c logic this slice ports); R2b output management +
+  startup, logging, headless, **and the §5 config interface**
+  (`westonite-config`: TOML + clap + `-o`) — this is the one slice
+  where e2e tests change by design: the config-discovery/CLI tests
+  in `test_cli.py` are re-specified to the new interface in the same
+  PR series, while `test_lifecycle.py`/`test_children.py` behaviors
+  (autolaunch, child handling, shutdown) must pass unmodified; the
+  C build stops being the oracle for config-interface behavior from
+  this slice on, and remains the oracle for everything else; R2b
+  output management +
   DRM (the largest block: heads, hotplug, clone/mirror, color mgmt;
   `test_outputs.py` covers the headless/VNC-reachable subset — DRM
   paths remain hardware-verified); R2c remaining backends
@@ -237,9 +317,12 @@ halves can be mixed and smoke-tested at every phase boundary.
   (`test_xwayland.py` + Phase-3 smoke); R2e screenshooter/recorder.
   The C `main.c` stays in-tree, buildable via meson, until R2
   completes — it is the reference oracle for behavioral diffs.
-- **Phase R3 — decommission C**: delete C sources + meson, switch
+- **Phase R3 — decommission C**: delete C sources + meson, drop the
+  temporary config-parser binding from `weston-sys` (the shell now
+  receives its typed `ShellConfig` from the Rust frontend), switch
   spec + CI to cargo-only, RPM install test in pristine container,
-  docs rewrite (README, VENDOR.md provenance model — below).
+  docs rewrite (README incl. the ini→TOML mapping table (D11),
+  VENDOR.md provenance model — below).
 - **Phase R4 — idiom & hardening pass**: with parity locked in,
   refactor away remaining C-shaped code (pointer-keyed maps →
   arenas/typed handles where it pays), clippy pedantic triage, SAFETY
@@ -249,7 +332,7 @@ Each phase = one PR series with the same discipline as the port
 phases: build container, smoke scripts + e2e suite, VENDOR.md-style
 log entries.
 
-## 7. Provenance & upstream-rebase model
+## 8. Provenance & upstream-rebase model
 
 VENDOR.md's "verbatim import + discrete patches" model dies with the
 C: a translation cannot be rebased with `git diff`. Replacement:
@@ -264,21 +347,27 @@ C: a translation cannot be rebased with `git diff`. Replacement:
   skew risk R4 from PLAN.md §9 carries over unchanged).
 - `weston-sys` bindings are regenerated per libweston bump (scripted).
 
-## 8. Risks
+## 9. Risks
 
 - **R-A Reentrancy panics** (§3d): `BorrowMutError` aborts replace C
   UB. Mitigation: narrow borrow scopes as a review rule; the e2e
   window-management suite exercises focus churn, grabs, and
   activation races under CI in R1 (headless smoke alone could not).
-- **R-B Behavior drift** in CLI/ini handling: mitigated by binding
-  the RPM's config parser (not rewriting), porting option-parser
-  faithfully with a test vector suite generated from the C
-  implementation, the e2e CLI/config/autolaunch tests pinning
+- **R-B Behavior drift** in the behaviors config *selects* (not the
+  config syntax itself, which is re-specified — §5): mitigated by
+  the e2e autolaunch/lifecycle/output/shell tests pinning
   user-visible behavior, and keeping the C build alive as an oracle
-  until R3.
+  for everything except the config interface until R3.
+- **R-G Config surface completeness**: the §5 re-spec must expose
+  *every* option the C code exposes — a silently dropped key is a
+  regression the type system can't see. Mitigation: a checklist
+  mapping every `[section]` key and CLI option from the two
+  capability inventories to a `Config` field, reviewed as part of
+  the R2a PR series; `deny_unknown_fields` catches the reverse
+  direction (phantom keys) for free.
 - **R-C ABI drift on libweston bumps**: backend-config structs use
   `struct_size`/version fields — the builders in `weston` set them
-  from the bound headers, and the pkg-config version tripwire (§5)
+  from the bound headers, and the pkg-config version tripwire (§6)
   catches silent header changes.
 - **R-D `pre_exec`/fork-safety**: the spawn path runs code after
   `fork` — only async-signal-safe rustix calls allowed there;
@@ -292,36 +381,56 @@ C: a translation cannot be rebased with `git diff`. Replacement:
   foreign `wl_display`. Out of scope now; noted so nobody assumes the
   no-scanner simplification is free forever.
 
-## 9. Decisions (made at plan review)
+## 10. Decisions (made at plan review)
 
 - **D1 — Port everything 1:1, no pre-trim.** The full current
   capability surface (all seven backends' config, clone/mirror,
   color management, `--backends`, screenshooter, idle-time plumbing)
   is translated as-is. The drop-assessment questions in
   `docs/frontend-capabilities.md` stay open independently — trims can
-  still happen later, in Rust.
+  still happen later, in Rust. *(Scope note: "1:1" applies to
+  capabilities, not to the configuration interface, which D9–D12
+  re-specify — every option survives, its spelling changes.)*
 - **D2 — Shell linkage: cdylib during migration, static at R3.**
   `westonite-shell` builds as `desktop-shell.so` (exporting
   `wet_shell_init`) for the hybrid phases; once the C frontend is
   gone it links statically into the `westonite` binary. `modules=`
   dlopen for third-party C modules survives; `--shell` swapping of
   our own shell does not (document in README at R3).
-- **D3 — Config parser: bind the RPM's `weston_config_*`.** Thin safe
-  wrapper over FFI; `weston.ini(5)` semantics stay bug-for-bug
-  identical (including the known 14.0.1 `binding-modifier none`
-  limitation). Revisit only if it becomes a maintenance pain.
-- **D4 — Port order: shell first** (Phase R1 as written in §6).
+- **D3 — ~~Config parser: bind the RPM's `weston_config_*`~~
+  Superseded by D9–D12.** The ini/`weston_config` machinery is not
+  ported; a minimal binding exists only during R1 for the hybrid
+  build (§7) and is deleted at R3. The known 14.0.1
+  `binding-modifier none` parser limitation becomes moot.
+- **D4 — Port order: shell first** (Phase R1 as written in §7).
 - **D5 — Bindings committed**, regenerated by script on libweston
-  bumps (§5).
-- **D6 — Parity bar: behavioral.** Same accepted CLI options and ini
-  keys, same runtime behavior and exit codes. Cosmetic text
-  (`--help` wording, log phrasing) may differ where Rust idioms make
-  it natural; every intentional divergence is documented in the
-  porting PR.
+  bumps (§6).
+- **D6 — Parity bar: behavioral, except the config interface.**
+  Same configurable capabilities, same runtime behavior and exit
+  codes. Cosmetic text (`--help` wording, log phrasing) may differ
+  where Rust idioms make it natural; the configuration interface is
+  re-specified wholesale per D9–D12; every other intentional
+  divergence is documented in the porting PR.
 - **D7 — Maintenance-layer feature deferred indefinitely.** The
   migration takes priority; `maintenance-layer-plan.md` stays parked
   and is rescheduled (if at all) only after R3/R4. It is *not* a
   milestone of this plan.
 - **D8 — Crate policy: anything vendorable, per-crate approval.**
-  Baseline set in §5; each addition beyond it needs explicit owner
+  Approved set in §6; each addition beyond it needs explicit owner
   sign-off before merging.
+- **D9 — Config re-specified as typed TOML.** No config-format
+  parity: one serde `Config` model in `westonite-config`, TOML file
+  (`westonite.toml`, XDG search kept), full option surface preserved
+  (R-G checklist), strict validation with span errors. Crates
+  approved: `serde`, `serde_derive`, `toml`.
+- **D10 — CLI: clap flags + dotted `-o` overrides.** Ergonomic flags
+  for scalar settings plus generic `-o key.path=value` for 100 %
+  coverage of the file surface; trailing positional args remain the
+  autolaunch command. Crate approved: `clap`.
+- **D11 — ini migration: docs only.** Annotated
+  `westonite.toml.example` + ini→TOML mapping table; no converter
+  tool, no dual-format reading; startup logs a hint if a legacy
+  `westonite.ini` is found.
+- **D12 — `WESTON_CONFIG_FILE` export dropped.** No shipped consumer
+  and no stock client could parse TOML; libweston-consumed env vars
+  are untouched.
