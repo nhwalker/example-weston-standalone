@@ -36,6 +36,11 @@ Goals, in priority order:
    identically against the C build, every hybrid phase, and the
    final Rust build — it is the migration's fixed parity oracle.
 
+A companion **`rust-reviewers-guide.md`** turns §3's FFI patterns and
+§9's risks into a review procedure (spot / check / test) with
+good-vs-bad code examples, aimed at reviewers from a GC-language
+background.
+
 Non-goals: porting libweston itself; changing the libweston version
 (stays 14.0.1/EPEL); adding features during the port (the
 maintenance-layer plan is deferred separately — §10 D7); porting the
