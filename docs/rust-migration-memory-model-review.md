@@ -1,11 +1,33 @@
 # Review: memory-model fencing in the Rust migration plan
 
-Status: **review notes, not yet folded into the plan**. Reviews
-`docs/rust-migration-plan.md` (§2, §3, §6, §9) against the actual C
-sources in this repo and the installed libweston 14 API, with one
-question in focus: *does the plan, as written, guarantee that all
+Status: **proposed changes to `docs/rust-migration-plan.md`. This
+document does not modify the plan** — the plan is unchanged and should
+be read alongside this file. Every item here is a proposed edit, with
+its target plan section named; §17 is the consolidated edit map and
+decision list.
+
+Reviews `docs/rust-migration-plan.md` (§2, §3, §6, §9) against the
+actual C sources in this repo and the installed libweston 14 API, with
+one question in focus: *does the plan, as written, guarantee that all
 complex memory models stay inside `weston-sys`/`weston`, and that the
 four safe crates get the most straightforward model available?*
+
+**Requirement agreed at review (2026-07-24), and the yardstick for
+everything below:**
+
+> **All `unsafe` *and all unsoundness* live in one crate.** `weston`'s
+> public API must be sound for arbitrary safe callers — including
+> callers that misuse it, store handles indefinitely, or hold handles
+> to objects that have since died. It must not be possible to cause
+> undefined behavior from a `#![forbid(unsafe_code)]` crate.
+
+This is stronger than the plan's goal 1, which says only that all
+`unsafe` lives in one crate. The difference matters: a fence around the
+`unsafe` *keyword* is not a fence around unsoundness. If `weston`
+accepts a handle that may be dangling and dereferences it, every
+memory-safety bug in the system is still authorable from a crate that
+claims to be safe, and `forbid(unsafe_code)` is decoration. Plan edit:
+sharpen goal 1's wording to the paragraph above.
 
 Verdict: the plan names the fence correctly and picks the right five
 FFI primitives, but it under-specifies the fence in four ways that
@@ -34,6 +56,8 @@ are marked **(needs D-number)**; §17 collects them.
 
 ## 1. The core soundness gap: `Copy` pointer handles
 
+### 1.1 Why the current design breaks the requirement
+
 §3(b) says: *"Handles in the safe layer are lightweight `Copy` newtypes
 around `NonNull<T>`"*. Combined with the §2 rule that the safe crates
 are `#![forbid(unsafe_code)]`, that is a contradiction: if
@@ -47,8 +71,20 @@ let out = shell.outputs[0];      // handle copied into shell state
 let w = out.width();             // use-after-free
 ```
 
-The C code *does* let objects die under us, and it *does* carry the
-resulting invalidation by hand:
+No `unsafe` block appears on the failing line, and no lint fires. The
+`unsafe` that dereferences lives in `weston` and was written correctly
+— it was handed a pointer that used to be valid.
+
+Rust's usual protection does not apply here, and it is worth stating
+plainly in the plan so the design is not mistaken for paranoia: the
+borrow checker prevents use-after-free only for memory **Rust owns**.
+These objects are owned and freed by C on its own schedule
+(monitor unplug, client crash, deferred DRM teardown), which the
+compiler cannot see. So the liveness check has to be built once, by
+hand, inside the wrapper — it is not inherited from the language.
+
+The C code carries the same hazard, and pays for it by hand at every
+site:
 
 - `destroy_shell_grab_shsurf()` nulls a back-pointer on death —
   `desktop-shell/shell.c:178`.
@@ -58,55 +94,221 @@ resulting invalidation by hand:
 - `shsurf->desktop_surface = NULL` leaves a *half-dead* shell surface
   that is still used afterwards — `desktop-shell/shell.c:1290`.
 
-A safe API that can be handed a dangling handle is a broken fence, no
-matter how clean `weston`'s internals are. Rust does not need to
-reproduce this manual nulling — but it does need one mechanism.
+### 1.2 Two shapes satisfy the requirement; the choice is ergonomics
 
-**Proposal (needs D13): generational handles resolved through a
-registry owned by `weston`.**
+The requirement does not mandate ids. It mandates: *no safe crate may
+hold something that can be dereferenced without a liveness check.* Two
+shapes do that, and both are equally sound:
 
-- `weston` keeps one registry per object kind: `SlotMap<Key, NonNull<T>>`
-  (or `HashMap<*mut T, (Key, Generation)>` for the reverse direction,
-  needed when a callback hands us a pointer).
-- Safe crates receive `OutputId`, `SurfaceId`, `ViewId`, `SeatId`,
-  `HeadId` — `Copy + Eq + Ord + Hash + Debug`, containing an index and
-  a generation, **no pointer**.
-- A destroy listener is attached the moment an object first crosses the
-  fence; its trampoline bumps the generation and drops the slot.
-- Every accessor resolves the id first and returns
-  `Option<…>`/`Result<…, Dead>`. A stale id is `None` — a deterministic,
-  loggable, testable outcome, never UB.
+**(a) Generational ids + slot table** *(recommended)*
 
-Consequences worth stating in the plan, because they are the *dividend*
-the safe crates get:
+- `weston` keeps a per-kind slot table: `Vec<Slot>` where
+  `Slot = { ptr: Option<NonNull<T>>, generation: u32 }`.
+- Safe crates hold `OutputId`, `SurfaceId`, `ViewId`, `SeatId`,
+  `HeadId` — `Copy + Eq + Ord + Hash + Debug`, carrying
+  `(slot, generation)` and **no pointer**.
+- Resolution is an array index plus an integer compare — **not a hash
+  lookup**. (Correcting a loose earlier phrasing: hashing is needed
+  only for the reverse direction, pointer → id, which is a cold path
+  only — see 1.5.)
+- The generation is what closes the recycled-address hole: slot 12 is
+  freed and reused by a new object, its generation goes 7 → 8, and
+  every id minted for the old occupant is permanently stale. A `Copy`
+  pointer handle cannot close this hole at all — two different objects
+  really can share an address, so comparing two pointer handles can
+  report a dead object and a live one as *equal*.
+- Registration and destroy-listener attachment must happen in **one
+  function**, so an object is never in the table without the listener
+  that removes it. Otherwise a stale entry plus a recycled pointer
+  arriving in a later callback resolves to the wrong object.
 
-- Safe state can hold ids for as long as it likes — including in
-  `HashMap` keys and in `Option<SurfaceId>` back-references — with no
-  lifetimes, no `Rc`, no `Weak`, no cycles, and no `Drop` ordering
-  puzzles. This is the "most straightforward memory model" the goals
-  ask for: **ids into a map**.
-- `find_shell_output_from_weston_output()`
-  (`desktop-shell/shell.c:163-175`) and `get_shell_seat()`
-  (`desktop-shell/shell.c:1179-1193`) become ordinary safe map lookups.
-- Derived `Eq`/`Hash` on ids is safe; derived `Eq`/`Hash` on pointer
-  newtypes invites comparing a dead pointer to a recycled live one
-  (allocators reuse addresses — a real false-positive source).
+**(b) Invalidatable wrapper object** — `Rc<Cell<Option<NonNull<T>>>>`;
+the destroy listener sets the cell to `None` once, and every holder
+sees it. Resolution is a deref plus a null test.
 
-Cost: one lookup per API call. At libweston's call rates (input events,
-commits) this is noise; say so explicitly so it does not get
-re-litigated during implementation. If a hot path ever shows up, the
-escape hatch is a `&Ctx`-scoped resolved borrow (§7), not a raw handle
-in safe state.
+| | (a) ids | (b) `Rc` cell |
+|---|---|---|
+| Resolve cost | ~1–2 ns (index + compare) | ~1–2 ns (deref + test) |
+| Per-object allocation | none | one cell |
+| Copy semantics | `Copy`, free to store anywhere | `Clone`, refcount traffic per copy |
+| As a map key | trivial and correct | awkward (inner pointer → ABA hole; cell address → obscure) |
+| Leak classes | none | `Rc` cycles possible |
+| Reverse lookup (C → us) | slot id fits in a `void*` user-data slot | cell pointer in the user-data slot |
 
-Alternative considered: `Rc<ObjectRef>`/`Weak` with a dead-flag.
-Equivalent soundness, but it puts refcount plumbing and `upgrade()`
-noise into every safe call site, and `Rc` cycles between shell state
-and per-object state are easy to build by accident. Recommend the
-registry; record the rejection so it is not revisited.
+Recommend (a) for shell ergonomics, not for speed. Record in D13 that
+(b) is equally sound and is a **wrapper-internal** change — so if shell
+code reads badly, switching later is not a safety question.
 
-Add as **R-H** to §9: *"`Copy` pointer handles would make the safe
-crates capable of UB; handles are generational ids resolved through the
-wrapper's registry."*
+Also considered and rejected: `Rc`/`Weak` with `upgrade()` at every
+call site (same as (b) plus plumbing); branded/`GhostCell` lifetimes
+(sound, zero-cost, but viral lifetime parameters through all shell
+code); shadow state that mirrors libweston in our own arenas (simplest
+of all, but duplicated state and a synchronisation problem). Record the
+rejections so they are not revisited.
+
+### 1.3 Callback subjects are live by construction — do not check them
+
+A refinement that removes most of the `Option` noise, and the answer to
+"why would we ever be handed a stale id?": **the object a callback is
+*about* is always alive.** libweston is calling us because something
+happened to it; it has not been freed. So the fence has two handle
+kinds, not one:
+
+| What | Given to safe code as | Check needed |
+|---|---|---|
+| The callback's subject | a **live borrowed wrapper** (`Surface<'_>`, `Output<'_>`) valid for the call | **none** |
+| Anything the shell **stored earlier** | an id | resolved on use |
+
+A handler that only touches its own subject therefore has zero
+liveness checks. Only cross-references — the focused surface, a parent,
+the output a window was on, the grabbed surface — go through
+resolution. Plan edit: state both kinds explicitly in §3(b), because
+the current text implies one uniform handle type.
+
+### 1.4 Where staleness genuinely comes from
+
+Six structural sources, five of them already live in the C code. This
+list is the justification for checked cross-references; without it the
+checks look like defensive programming:
+
+1. **Cleanup is itself a callback, and other state still points at the
+   dying object.** `desktop_surface_removed()` walks every seat nulling
+   `focused_surface` (`shell.c:1263-1291`) — the comment says otherwise
+   `activate()` touches a just-removed surface. Same shape in the
+   children-list fixup (`shell.c:213-217`) and in
+   `focus_state_surface_destroy()` (`shell.c:362-394`), which runs
+   *inside* a destroy handler and goes looking for another window to
+   focus.
+2. **Our objects deliberately outlive the C objects.**
+   `shsurf->desktop_surface = NULL` (`shell.c:1290`) — the shell
+   surface is used for the rest of teardown after the C object is gone.
+3. **libweston destroys things in the middle of our outbound calls.**
+   `shell_grab_start()` calls `weston_seat_break_desktop_grabs()`
+   (`shell.c:238`), which synchronously cancels and frees other grabs,
+   running our handlers before returning — so ids can go stale between
+   two statements of one function.
+4. **libweston's own destruction is sometimes deferred.**
+   `wet_output_destroy()` (`main.c:2688-2694`): *"output->output
+   destruction may be deferred in some cases (see drm_output_destroy()),
+   so we need to forcibly trigger the destruction callback now, or
+   otherwise would later access data that we are about to free."*
+5. **Some objects never announce death.** `weston_keyboard` and
+   `weston_touch` have no destroy signal (§2), so
+   cleanup-on-notification is impossible for them by construction.
+6. **Deferred dispatch (§8) creates a new window by design.** A queued
+   click drained after the C frame returns can target an object that
+   died in between. This is the reason deferral and checked ids belong
+   together.
+
+The registry does not *replace* the cleanup those C sites do — it does
+the same cleanup once, centrally. What changes is the failure mode when
+a cleanup site is missed:
+
+| | A missed cleanup site |
+|---|---|
+| C today, and `Copy` pointer handles | use-after-free: silent, or a crash later in unrelated code |
+| Checked ids | resolution returns "gone": skipped work, one log line |
+
+Roughly a dozen scattered hand-cleanup sites today become one. The
+check is what stops "did we cover every site?" from being a correctness
+cliff in teardown paths — the least-tested code in the shell.
+
+### 1.5 Cost, with numbers
+
+Raised at review: a compositor is performance-critical and some
+callbacks run at high rates. Order-of-magnitude estimates for *this*
+compositor (not measurements):
+
+| Callback | Realistic peak rate |
+|---|---|
+| Pointer motion (1 kHz mouse) | 125–1000/s |
+| Surface commits (20 clients @ 60 Hz) | ~1200/s |
+| Output repaint | 60–144/s per output |
+| Keyboard, focus, hotplug, seat caps | <100/s |
+
+A few thousand callbacks per second, against resolution costs of ~1–2 ns
+(slot table or `Rc` cell) and ~5–25 ns (hash lookup, `FxHash`/`SipHash`).
+At 5,000 callbacks/s the *expensive* option costs ~125 µs per second —
+about 0.01 % of one core, against 1–5 ms of real work per repaint.
+
+Three design points keep it there:
+
+- **Resolve once per callback, then borrow.** The subject arrives
+  already resolved (1.3); a cross-reference is resolved once and used as
+  a borrowed wrapper for the rest of the handler — one check per
+  callback, not one per field access.
+- **No lookup at all on the two hottest entry paths.** Listener
+  callbacks arrive via the `container_of` trampoline, which hands us our
+  own struct directly (the listener *is* the back-pointer). Desktop
+  surfaces — the once-per-client-per-frame `committed` path — use
+  libweston's one real user-data slot, and an id fits in that
+  pointer-sized word with no allocation.
+- **The reverse lookup (pointer → id) is cold-path only**: output
+  created/destroyed, head hotplug, seat added.
+
+Plan edit: put these three points in §3(b) explicitly, so the cost
+question is settled once rather than re-litigated as a "hot path"
+optimisation during implementation. If a genuinely hot loop appears, the
+escape hatch is a longer-lived `&Ctx`-scoped borrow (§7) or iterating
+the wrapper's own already-resolved records — **never** a raw pointer
+stored in safe state.
+
+**Where the per-event cost actually is** (§10 collects these as rules):
+string marshalling per commit, a `Vec` allocation per list snapshot, an
+allocation per deferred event, and eager log formatting. Each is
+100–1000× the resolution cost.
+
+### 1.6 Stale cross-reference policy (open sub-question of D13)
+
+Both are sound; a panic is not UB:
+
+- **`Option` + skip** *(recommend)*:
+  `let Some(s) = cx.surface(id) else { return };`. A missed cleanup
+  degrades to skipped work plus a log line.
+- **`expect` + panic**: reads cleaner, but converts our bugs into
+  session-killing aborts.
+
+Suggested rule: `Option` by default; `expect` only where the invariant
+is genuinely guaranteed and documented — the places the C code already
+asserts, e.g. `assert(sh_output)` in `get_output_work_area()`
+(`shell.c:266`).
+
+### 1.7 Design-level enforcement options (summary)
+
+For the record, the full menu considered against the requirement, since
+only the first lever can give the safe crates a simple memory model
+(the second only prevents regressions):
+
+| Option | Enforces soundness how | Safe-side model |
+|---|---|---|
+| Generational ids + slot table *(rec.)* | dead id resolves to `None`; no deref | plain structs + maps; no lifetimes, `Rc`, or `RefCell` |
+| Invalidatable `Rc` cell | cell nulled on death | sound; `Clone` + refcount + cycle risk |
+| Scoped borrows only | handle cannot outlive the callback | simplest, but nothing can be stored across dispatches — correct for `weston_keyboard`/`weston_touch` (§2), unusable alone |
+| Shadow state (mirror C state in our arenas) | safe code never names a C object | simple, but duplicated state and sync risk |
+| Branded lifetimes / `GhostCell` | compile-time validity proof | sound, zero-cost, viral lifetimes — rejected on readability |
+| `Copy` raw handles + review discipline *(plan today)* | nothing | rejected: unsound |
+
+Recommendation: ids for stored state, scoped borrows for objects that
+cannot be invalidated, live borrows for callback subjects. Mechanical
+enforcement (dependency-graph rule, public-API snapshot, opaque id
+types, zero-exception `forbid(unsafe_code)`, ASAN/destroy-storm testing)
+is §13.
+
+### 1.8 Plan edits
+
+- **Goal 1** — restate as the requirement quoted at the top of this
+  document (unsoundness, not just `unsafe`, is confined to `weston`).
+- **§3(b)** — replace the `Copy`/`NonNull` sentence with: the two
+  handle kinds (1.3); generational ids in a slot table with paired
+  registration/destroy-listener attachment (1.2); the three cost points
+  (1.5); and the rule that no `weston-sys` type, no `NonNull`, and no
+  raw pointer appears in `weston`'s public API.
+- **§9** — add risk **R-H**: *"`Copy` pointer handles would let the
+  `forbid(unsafe_code)` crates author use-after-free; handles are
+  generational ids resolved through the wrapper's registry, and callback
+  subjects are passed as borrows that cannot escape the call."*
+- **§10** — record **D13** (handle model) including the rejected
+  alternatives, the (b)-is-equally-sound note, and the 1.6 policy.
 
 ## 2. Object-death inventory (the fact base the handle model needs)
 
@@ -418,6 +620,33 @@ not each decide:
   and the `bitflags` dependency; state it as a fence rule so no
   `u32`-typed flag reaches the shell.
 
+### 10a. Boundary cost rules (needs D19)
+
+Raised at review: the compositor is performance-critical. Handle
+resolution is not where the cost is (§1.5) — **boundary marshalling
+is**, at 100–1000× the per-call cost of a liveness check. Four rules,
+worth stating in §3 so they are designed in rather than profiled out:
+
+- **Cache strings; do not fetch per event.** `get_title`/`get_app_id`
+  per commit means a `strlen` + copy + allocation on the hottest
+  callback. Fetch on the change notification, cache in shell state.
+- **Do not allocate a `Vec` per list snapshot** (§9). Use `SmallVec`
+  with an inline capacity sized for the realistic count (outputs, seats,
+  a window's children), or a scratch buffer reused across callbacks.
+- **Do not allocate per deferred event** (§8). A reusable `VecDeque` of
+  a fixed-size `Event` enum; keep `Event` small enough to stay inline
+  (box the rare large variant instead of widening all of them).
+- **Format log messages lazily**, behind a scope-enabled check —
+  `weston_log_scope_is_enabled()` (weston-log.h:85) exists for exactly
+  this, and the C code already guards its hot scopes with it
+  (`main.c:221` for the flight recorder, `main.c:283` for the protocol
+  scope). The safe logging macros must preserve that guard rather than
+  formatting eagerly and discarding.
+
+These are the only places in the port where a per-event allocation is
+plausible; naming them keeps the "is this fast enough?" conversation
+attached to the things that actually matter.
+
 ## 11. Variadic C APIs need the shim — the plan's shim scope is too narrow
 
 §2 and §6 scope the `cc` shim to the ~28 `static inline` helpers.
@@ -475,6 +704,11 @@ where it matters. Stronger, cheap, and mechanical:
   no `NonNull`, and no `weston_sys::*` types. Enforce with a
   `cargo public-api` snapshot test (also gives a reviewable diff every
   time the fence moves).
+- **Opaque ids**: handle types have private fields, no public
+  constructor, and no `From`/`Into` conversions to or from pointers or
+  integers. Even with `weston` in scope, safe code then cannot fabricate
+  a handle or unwrap one back into something dereferenceable — the §1
+  soundness property cannot be bypassed by a caller.
 - `#![deny(unsafe_op_in_unsafe_fn)]` in `weston`, and
   `clippy::undocumented_unsafe_blocks` to enforce the `// SAFETY:` rule
   mechanically rather than by the R4 audit alone.
@@ -567,22 +801,30 @@ the most mixed-ownership risk:
 
 ## 17. Proposed decisions
 
+Requirement agreed at review and assumed by all of these: **all
+`unsafe` and all unsoundness live in one crate** (see the header).
+
 | # | Question | Recommendation |
 |---|---|---|
-| **D13** | Handle model for C-owned objects | Generational ids resolved through a registry in `weston`; no pointers, no `NonNull`, no bindgen types in safe APIs. Reject `Copy` pointer newtypes (unsound) and `Rc`/`Weak` (plumbing, cycles). §1 |
+| **D13** | Handle model for C-owned objects | Two handle kinds: callback **subjects** arrive as live borrows needing no check; **stored** references are generational ids (slot + generation) resolved through `weston`'s slot table. No pointers, no `NonNull`, no bindgen types in safe APIs; ids opaque and unforgeable. Registration and destroy-listener attachment paired in one function. Rejected: `Copy` pointer newtypes (unsound), branded lifetimes (viral), shadow state (duplicated). The `Rc`-cell shape is **equally sound** and wrapper-internal, so it remains a fallback if shell ergonomics disappoint. Open sub-question: `Option`-and-skip (recommended) vs `expect`-and-panic for stale cross-references. §1 |
 | **D14** | Reentrancy strategy | Two-tier dispatch: deferrable callbacks queue events drained with no C frame live; a named, inventoried sync tier is the audited exception. Safe crates carry **no** interior mutability. §7, §8 |
 | **D15** | `pre_exec` carve-out placement | Fifth crate `westonite-spawn` (unsafe allowed, one audited module); the four safe crates keep an unqualified `forbid(unsafe_code)`. §13 |
 | **D16** | Panic policy | `panic = "unwind"` + `catch_unwind` + log + `abort()` at every trampoline; hook installed by `wet_shell_init` too. §14 |
 | **D17** | Fence enforcement | Dependency-graph check + public-API snapshot + `clippy::undocumented_unsafe_blocks`, replacing the CI grep. §13 |
 | **D18** | Wrapper validation | ASAN/UBSAN smoke+e2e job and a destroy-storm stress test from R0/R1 (not optional at R4); fake-C-object unit tests for each primitive. §13 |
+| **D19** | Boundary cost rules | Cached strings, no per-callback `Vec`/event allocation, scope-guarded lazy log formatting — the places per-event cost actually lands, as opposed to handle resolution. §10a |
 
 Plan edits these imply, by section:
 
-- **§2** — add the dependency/public-API fence rules; resolve the
-  `pre_exec` carve-out (D15); extend the shim's scope to variadics.
-- **§3** — rewrite (b) around the registry and the ownership taxonomy;
-  fix the user-data-slot framing; add **(f) grabs** and
-  **(g) boundary value rules**; replace (d) with the two-tier dispatch
+- **Goals** — restate goal 1 as "all `unsafe` **and all unsoundness**
+  live in one crate; `weston`'s public API is sound for arbitrary safe
+  callers" (§1).
+- **§2** — add the dependency/public-API/opaque-id fence rules; resolve
+  the `pre_exec` carve-out (D15); extend the shim's scope to variadics.
+- **§3** — rewrite (b) around the two handle kinds, the slot table, and
+  the cost points; add the ownership taxonomy; fix the user-data-slot
+  framing; add **(f) grabs**, **(g) boundary value rules**, and
+  **(h) boundary cost rules**; replace (d) with the two-tier dispatch
   and the one-borrow-at-the-edge invariant; fix (e)'s panic
   inconsistency; correct the "65 uses" count.
 - **§6** — add the CI checks (dep graph, public API, ASAN job, clippy
@@ -593,7 +835,13 @@ Plan edits these imply, by section:
   cases and the hybrid hazards of §15.
 - **§9** — add R-H (handle soundness) and note that deferral-induced
   ordering changes are parity bugs, not D6 divergences.
-- **§10** — record D13–D18.
+- **§10** — record D13–D19.
+
+Reviewer's note: this document supersedes nothing in the plan on its
+own. Where an item here contradicts the plan's current text (most
+sharply §3(b)'s `Copy`/`NonNull` handles and §3(d)'s `RefCell`-in-the-
+shell reentrancy answer), the plan's text still stands until the
+corresponding decision is recorded.
 
 ## 18. What this does *not* change
 
