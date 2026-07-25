@@ -1,0 +1,33 @@
+# Cargo workspace for the Rust migration (docs/rust-migration-plan.md).
+# Hybrid phase: this workspace lives alongside the meson tree until R3.
+#
+# Crate roles and the unsafe/safe fence are normative in the plan §2:
+#   weston-sys       UNSAFE  bindgen over the installed libweston 14 headers
+#   weston           UNSAFE INSIDE, SAFE API — the fence crate
+# (westonite-spawn, westonite-config, westonite-shell, westonite arrive in
+# later phases; do not add them here early.)
+
+[workspace]
+resolver = "2"
+members = [
+    "crates/weston-sys",
+    "crates/weston",
+]
+
+[workspace.package]
+version = "14.0.1"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/nhwalker/example-weston-standalone"
+
+[workspace.dependencies]
+weston-sys = { path = "crates/weston-sys" }
+weston = { path = "crates/weston" }
+bitflags = "2"
+libc = "0.2"
+
+[profile.release]
+# D16: panics unwind in ALL profiles so the trampoline catch_unwind +
+# logged-abort barrier works in release, where it matters.
+panic = "unwind"
+debug = "line-tables-only"

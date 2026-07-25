@@ -41,6 +41,15 @@ RUN dnf -y install epel-release \
         python3-cryptography \
         wayland-utils \
         libxcb-devel \
+        rust \
+        cargo \
+        clippy \
+        rustfmt \
+        clang-libs \
+        clang-devel \
+        clang-tools-extra \
+        valgrind \
+        libasan \
     && dnf clean all
 
 # Sanity marker used by CI/smoke scripts: fail the image build early if the
@@ -49,5 +58,10 @@ RUN pkg-config --exists 'libweston-14 >= 14.0.1' \
     && test -e /usr/lib64/libweston-14/headless-backend.so \
     && test -e /usr/lib64/libweston-14/xwayland.so \
     && test -e /usr/include/libweston-14/libweston/xwayland-api.h
+
+# Rust toolchain marker (rust migration, phase R0): cargo + rustc must be
+# usable, and libclang must be present for the bindgen regen script.
+RUN cargo --version && rustc --version \
+    && ls /usr/lib64/libclang.so* >/dev/null
 
 WORKDIR /src
