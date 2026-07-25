@@ -94,6 +94,18 @@ thread_local! {
     /// context.  Holding an `Rc` clone keeps resolution entirely safe;
     /// single-threadedness is guaranteed by `Rc`'s `!Send`.
     static CURRENT: RefCell<Option<Rc<CtxInner>>> = const { RefCell::new(None) };
+
+    /// Boxes that must outlive even teardown.  The compositor-destroy
+    /// trampoline tears the wrapper down while **its own listener's
+    /// frame is still on the stack** (C has the identical shape:
+    /// shell_destroy free()s the struct containing the executing
+    /// wl_listener — but C never touches it afterwards, while our
+    /// trampoline's RefMut guard writes the borrow flag on return).
+    /// Teardown therefore detaches and PARKS boxes here instead of
+    /// dropping them; they stay reachable until process exit.  Found by
+    /// valgrind in the destroy-storm stress (invalid write in
+    /// weston_compositor_destroy's destroy_signal emission).
+    static GRAVEYARD: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
 }
 
 /// The public handle.  Cloning is cheap (`Rc`); all clones refer to the
@@ -151,8 +163,30 @@ impl Ctx {
     pub(crate) fn teardown(&self) {
         self.inner.shutting_down.set(true);
         self.inner.queue.borrow_mut().clear();
-        self.inner.pending_drop.borrow_mut().clear();
-        self.inner.listeners.borrow_mut().clear();
+        // Listeners: detach now (their signals are still valid during
+        // the destroy emission), but never drop the boxes — one of them
+        // is the compositor-destroy listener whose trampoline frame is
+        // executing this very function.  Parked in the GRAVEYARD (see
+        // its doc comment); Drop at thread exit is a no-op detach.
+        let parked: Vec<Box<dyn Any>> = self
+            .inner
+            .listeners
+            .borrow_mut()
+            .drain(..)
+            .map(|(_, l)| {
+                l.detach();
+                Box::new(l) as Box<dyn Any>
+            })
+            .collect();
+        // Pending-drop boxes may likewise have frames on the stack
+        // deeper in this emission: park, don't drop.
+        let pending: Vec<Box<dyn Any>> =
+            std::mem::take(&mut *self.inner.pending_drop.borrow_mut());
+        GRAVEYARD.with(|g| {
+            let mut g = g.borrow_mut();
+            g.extend(parked);
+            g.extend(pending);
+        });
         self.inner.surface_recs.borrow_mut().clear();
         self.inner.curtains.borrow_mut().clear();
         self.inner.active_grabs.borrow_mut().clear();
