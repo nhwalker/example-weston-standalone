@@ -1,0 +1,25 @@
+[package]
+name = "weston"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "The fence crate (plan §2/§3): safe, sound wrappers over libweston 14. All unsafe and all unsoundness in the westonite stack live here (and in westonite-spawn); the public API is sound for arbitrary safe callers."
+
+[dependencies]
+weston-sys = { workspace = true }
+bitflags = { workspace = true }
+libc = { workspace = true }
+
+[features]
+# Pulls in the fake-C-object shim so primitives are testable without a
+# compositor (D18).
+testsupport = ["weston-sys/testsupport"]
+
+[dev-dependencies]
+weston-sys = { workspace = true, features = ["testsupport"] }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"
