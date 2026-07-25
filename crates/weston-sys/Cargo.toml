@@ -1,0 +1,21 @@
+[package]
+name = "weston-sys"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UNSAFE: raw bindgen bindings to the installed libweston 14 RPM headers, plus the C shim (static inlines, va_list log interfaces, fake-C-object test support)."
+links = "weston-14"
+
+[dependencies]
+
+[build-dependencies]
+cc = "1"
+pkg-config = "0.3"
+
+[features]
+# Compiles the fake-C-object test harness (shim/testsupport.c) so the
+# `weston` crate's primitives are unit-testable without a compositor (D18).
+testsupport = []
+# R1-only: config-parser.h + frontend/weston.h compat surface for the hybrid
+# phase; removed at R3 (plan §2). Not yet populated at R0.
+hybrid-r1 = []
