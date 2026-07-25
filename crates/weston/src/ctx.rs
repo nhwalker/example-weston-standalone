@@ -180,8 +180,7 @@ impl Ctx {
             .collect();
         // Pending-drop boxes may likewise have frames on the stack
         // deeper in this emission: park, don't drop.
-        let pending: Vec<Box<dyn Any>> =
-            std::mem::take(&mut *self.inner.pending_drop.borrow_mut());
+        let pending: Vec<Box<dyn Any>> = std::mem::take(&mut *self.inner.pending_drop.borrow_mut());
         GRAVEYARD.with(|g| {
             let mut g = g.borrow_mut();
             g.extend(parked);
