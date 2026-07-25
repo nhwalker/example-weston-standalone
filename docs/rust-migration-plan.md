@@ -1,7 +1,7 @@
 # Plan: Rust migration
 
 Status: **final — ready to execute at R0**. All scoping decisions
-(D1–D12) and all memory-model decisions (D13–D20, taken at the
+(D1–D12) and all memory-model decisions (D13–D21, taken at the
 2026-07-24/25 reviews) are folded into the body below; §11 is the
 decision log. The former standalone review document
 (`rust-migration-memory-model-review.md`) is superseded by this file
@@ -114,9 +114,10 @@ sites, **6** binding registrations with our own callbacks (plus
 ## 2. Crate architecture
 
 Cargo workspace, replacing the meson tree at the end of the
-migration (hybrid during it — see §7). Six crates: three may contain
-`unsafe`, three are unconditionally `#![forbid(unsafe_code)]` with
-zero exceptions.
+migration (hybrid during it — see §7). Six long-lived crates: three
+may contain `unsafe`, three are unconditionally
+`#![forbid(unsafe_code)]` with zero exceptions — plus one R1-only
+packaging shim (in the tree below) that is deleted at R3.
 
 ```
 Cargo.toml                    # workspace
@@ -146,6 +147,15 @@ crates/
 ├── westonite-shell/          # SAFE. desktop-shell logic (shell.c port); written against
 │                             # the ShellHost trait, receives a typed ShellConfig, never
 │                             # touches the config file, the CLI, or `weston-sys`
+├── westonite-shell-plugin/   # R1 ONLY, deleted at R3 (D2). Packaging shim that
+│                             # produces the hybrid-phase desktop-shell.so:
+│                             # crate-type = cdylib, depends on weston + westonite-shell,
+│                             # and contains just the `#[unsafe(no_mangle)] extern "C"
+│                             # wet_shell_init` entry point (opaque raw pointers in its
+│                             # signature — no weston-sys dependency, no other unsafe),
+│                             # which hands the compositor pointer to weston's hybrid-r1
+│                             # bootstrap. cargo emits libwestonite_shell_plugin.so; the
+│                             # build step installs it as desktop-shell.so.
 └── westonite/                # SAFE. The frontend binary (main.c port); links
                               # westonite-shell statically at R3 (D2); absorbs the
                               # residual safe helpers of shared/ (socketpair via rustix)
@@ -168,7 +178,10 @@ spawn crate's API surface is exactly its audit surface.)*
 - **Public-API rule**: `weston`'s and `westonite-spawn`'s public APIs
   contain no raw pointers, no `NonNull`, and no `weston_sys::*`
   types. Enforced with a `cargo public-api` snapshot test, which also
-  gives a reviewable diff every time the fence moves.
+  gives a reviewable diff every time the fence moves. (Single R1
+  exception, visible in the snapshot: the `hybrid-r1` bootstrap entry
+  consumed by `westonite-shell-plugin` takes the raw compositor
+  pointer; it and the feature disappear at R3.)
 - **Opaque ids**: handle types (§3b) have private fields, no public
   constructor, and no `From`/`Into` conversions to or from pointers
   or integers. Even with `weston` in scope, safe code cannot
@@ -485,23 +498,21 @@ it through VNC. Cost accepted: one trait boundary kept in sync with
 logic (output layout/clone-mirror resolution); its plumbing modules
 do not need a mock boundary.
 
-**Callback inventory table (R0 deliverable).** Every `wl_listener`
-field (28), every attach site (23), the 6 bindings, and the 14
-`weston_desktop_api` entries — each with: tier (sync/deferred), the
-event it enqueues or the data it answers from, its reentrancy
-hazards, and, for sync-tier entries that borrow app state, the
-non-reentrancy proof (A3). The table is small enough to be
-exhaustive and it is the audit surface for the whole fence — a
-reviewer checks the "no unsoundness outside `weston`" claim against
-it, not against 9.7k lines.
-
-A compile-checked skeleton of this design — slot table + ids, depth-
-counted drain with nested-trampoline flattening, grab deferred-drop
-(including the break-desktop-grabs cancel-during-start shape), a
-borrow-free sync-tier out-param callback, and the shell-with-mock
-test pattern — was built and its stress tests run green during plan
-finalization; the primitives are implementable exactly as specified
-here with no dependencies beyond std.
+**Callback inventory table (R0 deliverable — lives at
+`docs/callback-inventory.md`).** Every `wl_listener` field (28),
+every attach site (23), the 6 bindings, and every
+`weston_desktop_api` field of the bound 14.0.1 struct (the "14
+entries" of §1 count struct fields; the C vtable at
+`shell.c:1607-1619` installs 10 — unfilled fields get one-line "not
+installed" rows so the counts reconcile). Fixed columns, one row per
+callback: symbol/API entry; kind (listener / binding / desktop-api /
+grab / log); C attach site (file:line); tier (sync/deferred); the
+event it enqueues or the data it answers from; reentrancy hazards;
+the non-reentrancy proof (A3 — required for sync-tier entries that
+borrow app state, `—` otherwise); port status. The table is small
+enough to be exhaustive and it is the audit surface for the whole
+fence — a reviewer checks the "no unsoundness outside `weston`"
+claim against it, not against 9.7k lines.
 
 ### (f) Grabs: the sixth primitive, and the sharpest
 
@@ -614,6 +625,24 @@ if it obtains an id.** `debug_assert!(on_main_thread())` at every
 `Ctx` entry point, kept enabled in CI builds. Safe crates spawn no
 threads (§2).
 
+**How trampolines reach `Ctx` (D21).** One private thread-local
+slot in `weston` (`Cell<Option<NonNull<CtxInner>>>` or equivalent),
+set when the `Ctx` is created (`wet_shell_init` in R1, `main` at R3)
+and cleared when it is destroyed. Every trampoline — listener (§3c),
+vtable (§3d), grab (§3f), and the Rust side of the log shim (§3k) —
+resolves `Ctx` through this slot; `Inner` boxes carry no `Ctx`
+pointer. One mechanism because at least one registration API has no
+user-data pointer at all (`weston_log_set_handler`'s handlers,
+installed at `main.c:4511`) and so needs a thread-local regardless —
+a second, per-box mechanism would only add audit surface. The slot is
+not `static mut` (per-thread, safe accessors); its soundness rests on
+the single-thread rules above: `!Send` wrapper types mean no other
+thread can set or read it. A trampoline firing while the slot is
+empty would be a teardown-ordering bug inside `weston` itself (every
+attachment is bounded by `Ctx`'s lifetime — `Listener::drop`
+detaches); it `debug_assert!`s and returns a benign default in
+release.
+
 ### (k) The C shim: static inlines **and** variadics
 
 The `cc`-compiled shim in `weston-sys` covers (1) the `static
@@ -654,7 +683,7 @@ ordinary loop.
 | `frontend/config-helpers.c` | deleted | Typed serde deserialization makes the string→typed-value getters moot. |
 | `frontend/weston-screenshooter.c` | `westonite::screenshooter` | Ported 1:1 (D1). Semi-dead at runtime (Super+S spawns a client we don't ship; Super+R wcap recorder works) — behavior preserved as-is. **Ownership fix at R3**: today the *shell* calls `screenshooter_create()` (`shell.c:2232`); in the end state the frontend initializes its own screenshooter after `shell_init`, and the shell no longer references it. Same bindings registered at the same point in startup — behavior-identical, recorded under §10 as a structural (not behavioral) change. |
 | `frontend/xwayland.c` | `westonite::xwayland` | Socketpairs via rustix, lazy spawn via `westonite-spawn`, SIGUSR1 via `wl_event_loop` signal source (bound). The C code's lazy `[xwayland] path` config read (`xwayland.c:153-155`) becomes a plain field of the resolved `Settings` (§5). |
-| `desktop-shell/shell.c` | `westonite-shell` crate | `state.rs` (Shell root state), `surface.rs` (per-surface state + desktop-api handlers), `focus.rs`, `grabs.rs` (policy enums only — §3f), `background.rs` (curtains/output tracking), `workspace.rs`. All against `ShellHost`. Exported entry: `wet_shell_init`-compatible `extern "C"` in the R1 cdylib (glue in `weston`, not in the shell crate), plain fn once static at R3. |
+| `desktop-shell/shell.c` | `westonite-shell` crate | `state.rs` (Shell root state), `surface.rs` (per-surface state + desktop-api handlers), `focus.rs`, `grabs.rs` (policy enums only — §3f), `background.rs` (curtains/output tracking), `workspace.rs`. All against `ShellHost`. Exported entry: `wet_shell_init`-compatible `extern "C"` in the R1-only `westonite-shell-plugin` cdylib (§2 — entry point there, bootstrap in `weston`, logic in this crate), plain fn once static at R3. |
 
 **A latent C bug the port must not transliterate** (found at
 finalization): `has_keyboard_focused_child_callback()`
@@ -688,6 +717,10 @@ interface is re-specified rather than ported:
   become `[[output]]` array-of-tables. Unknown keys and type errors
   are **startup errors with line/column spans**
   (`deny_unknown_fields`) — replacing weston's silent-typo behavior.
+  Key spelling is **kebab-case** throughout (one
+  `#[serde(rename_all = "kebab-case")]`) — matching the ini's
+  hyphenated keys, so the D11 mapping table is near-diagonal: most
+  entries change section syntax only, not key names.
 - **CLI** (D10): clap derive. Ergonomic flags for the scalar/global
   settings (today's CLI surface), plus a generic
   `-o`/`--set key.path=value` dotted override that patches the
@@ -744,7 +777,7 @@ interface is re-specified rather than ported:
   before it lands (record the approval in the PR/VENDOR-log entry).
   No tokio, no wayland-rs. The §3 primitives (slot table, event
   queue, small-vec) are hand-rolled in `weston` (~a few hundred
-  lines total, compile-checked at plan time) rather than pulling
+  lines total) rather than pulling
   `slotmap`/`smallvec` — fewer supply-chain surfaces in the fence
   crate; revisit per-crate under D8 only if the hand-rolled versions
   grow past their audit value. RPM builds offline from a
@@ -781,8 +814,10 @@ halves can be mixed and smoke-tested at every phase boundary.
   renderer, runs the event loop, exits 0 on SIGTERM (mirrors the
   Phase-1 smoke test), under ASAN.
 - **Phase R1 — shell in Rust, frontend still C**: port `shell.c` →
-  `westonite-shell` built as `desktop-shell.so` (cdylib exporting
-  `wet_shell_init`; glue in `weston`), linking `libexec_westonite.so`
+  `westonite-shell`, shipped as `desktop-shell.so` via the
+  `westonite-shell-plugin` cdylib (§2 — entry point there, bootstrap
+  in `weston`; the build step renames cargo's artifact on install),
+  linking `libexec_westonite.so`
   for **both** contract symbols (§1): `wet_get_config` — the C
   frontend still parses `westonite.ini`, so the shell reads its one
   key through the temporary config-parser binding — and
@@ -953,6 +988,8 @@ Scoping decisions (2026-07 plan review):
 - **D2 — Shell linkage: cdylib during migration, static at R3.**
   `modules=` dlopen for third-party C modules survives; `--shell`
   swapping of our own shell does not (document in README at R3).
+  The hybrid-phase cdylib is produced by the R1-only
+  `westonite-shell-plugin` packaging crate (§2), deleted at R3.
 - **D3 — superseded by D9–D12.** The ini/`weston_config` machinery
   is not ported; a minimal binding exists only during R1 (§2, §7)
   and is deleted at R3. The known 14.0.1 `binding-modifier none`
@@ -966,15 +1003,14 @@ Scoping decisions (2026-07 plan review):
   milestone of this plan; rescheduled (if at all) only after R3/R4.
 - **D8 — Crate policy: anything vendorable, per-crate approval**
   (§6).
-- **D9 — Config re-specified as typed TOML** (§5).
+- **D9 — Config re-specified as typed TOML, kebab-case keys** (§5).
 - **D10 — CLI: clap flags + dotted `-o` overrides** (§5).
 - **D11 — ini migration: docs only** (§5).
 - **D12 — `WESTON_CONFIG_FILE` export dropped** (§5).
 
 Memory-model decisions (2026-07-24/25 review; rejected alternatives
 recorded so they are not silently revisited; A1–A5 are the
-finalization amendments, each verified against the sources and the
-compile-checked sketch):
+finalization amendments, each verified against the sources):
 
 - **D13 — Handle model: generational ids + slot table; `Option`
   everywhere, no `unwrap`/`expect` in safe crates** (§3b).
@@ -1022,3 +1058,8 @@ compile-checked sketch):
   call site); calling `weston` directly (e2e-only verification of
   the deepest logic). *Amendment A5*: the trait carries ids + plain
   data only, matching A2.
+- **D21 — Trampolines reach `Ctx` through one thread-local slot**
+  (§3j; 2026-07-25 implementability review). *Rejected*: a `Ctx`
+  pointer captured in each `Inner` box — the no-user-data
+  registrations (the log handlers) need a thread-local anyway, so
+  per-box pointers would mean two mechanisms where one suffices.
