@@ -51,8 +51,14 @@ decide the answer:
    (§11).
 
 Everything below is evidence-backed against file:line so the plan edits
-can be made without re-deriving. Sections that need an owner decision
-are marked **(needs D-number)**; §17 collects them.
+can be made without re-deriving.
+
+**All open choices were decided by the owner on 2026-07-25** — D13–D20,
+collected in §17 with the rejected alternatives kept for the record. Two
+picks came out stricter than this review recommended, and are flagged
+where they land: no `unwrap`/`expect` anywhere in the safe crates
+(§1.6), and all four fence-enforcement checks adopted rather than a
+subset (§13).
 
 ## 1. The core soundness gap: `Copy` pointer handles
 
@@ -135,9 +141,11 @@ sees it. Resolution is a deref plus a null test.
 | Leak classes | none | `Rc` cycles possible |
 | Reverse lookup (C → us) | slot id fits in a `void*` user-data slot | cell pointer in the user-data slot |
 
-Recommend (a) for shell ergonomics, not for speed. Record in D13 that
-(b) is equally sound and is a **wrapper-internal** change — so if shell
-code reads badly, switching later is not a safety question.
+**Decided (D13): (a), generational ids** — chosen for shell ergonomics,
+not for speed; the two shapes cost the same. Recorded with it: (b) is
+**equally sound** and is a *wrapper-internal* change, so if shell code
+reads badly, switching later is an implementation question and not a
+safety one.
 
 Also considered and rejected: `Rc`/`Weak` with `upgrade()` at every
 call site (same as (b) plus plumbing); branded/`GhostCell` lifetimes
@@ -258,20 +266,35 @@ string marshalling per commit, a `Vec` allocation per list snapshot, an
 allocation per deferred event, and eager log formatting. Each is
 100–1000× the resolution cost.
 
-### 1.6 Stale cross-reference policy (open sub-question of D13)
+### 1.6 Stale cross-reference policy
 
-Both are sound; a panic is not UB:
+**Decided (D13): `Option` everywhere, no exceptions.** Every resolution
+is checked and handled; **no `unwrap` or `expect` on a value obtained
+from `weston` appears anywhere in the safe crates**, enforced by
+`clippy::unwrap_used` and `clippy::expect_used` denied at crate level
+with no `allow` escapes. This is stricter than this review proposed
+(which would have permitted `expect` where an invariant is provable) —
+recorded deliberately: the argument that carried it is that a panic in a
+compositor kills the user's session, and "provable" invariants in
+teardown paths are exactly the ones that stop being true after a
+refactor.
 
-- **`Option` + skip** *(recommend)*:
-  `let Some(s) = cx.surface(id) else { return };`. A missed cleanup
-  degrades to skipped work plus a log line.
-- **`expect` + panic**: reads cleaner, but converts our bugs into
-  session-killing aborts.
+Consequences to write into the plan:
 
-Suggested rule: `Option` by default; `expect` only where the invariant
-is genuinely guaranteed and documented — the places the C code already
-asserts, e.g. `assert(sh_output)` in `get_output_work_area()`
-(`shell.c:266`).
+- The normal shape is `let Some(s) = cx.surface(id) else { return };` —
+  a missed cleanup site degrades to skipped work plus one log line.
+- Functions that must yield a value need a **documented fallback**
+  rather than a panic. The one place the C code asserts on exactly this
+  is `get_output_work_area()`, which zero-initialises the rectangle
+  (`shell.c:257-260`) and then `assert(sh_output)` (`shell.c:266`); the
+  Rust version logs and returns the zeroed rectangle. That is a
+  deliberate divergence from the C behavior under `NDEBUG` (which
+  continues and fills the area from the still-valid `weston_output`), so
+  it must be recorded in the porting PR under the plan's D6.
+- The rule bans *choosing* panic as the stale-reference policy; it does
+  not ban panics generally. The `catch_unwind` trampoline barrier (D16)
+  still exists for genuine bugs, and `debug_assert!` remains available
+  for invariants that are not resolution results.
 
 ### 1.7 Design-level enforcement options (summary)
 
@@ -288,11 +311,12 @@ only the first lever can give the safe crates a simple memory model
 | Branded lifetimes / `GhostCell` | compile-time validity proof | sound, zero-cost, viral lifetimes — rejected on readability |
 | `Copy` raw handles + review discipline *(plan today)* | nothing | rejected: unsound |
 
-Recommendation: ids for stored state, scoped borrows for objects that
-cannot be invalidated, live borrows for callback subjects. Mechanical
-enforcement (dependency-graph rule, public-API snapshot, opaque id
-types, zero-exception `forbid(unsafe_code)`, ASAN/destroy-storm testing)
-is §13.
+**Decided:** ids for stored state, scoped borrows for objects that
+cannot be invalidated (§2), live borrows for callback subjects (§1.3).
+Mechanical enforcement — dependency-graph rule, public-API snapshot,
+opaque id types, clippy unsafe lints, zero-exception
+`forbid(unsafe_code)`, ASAN/destroy-storm testing — all adopted; see
+§13.
 
 ### 1.8 Plan edits
 
@@ -532,8 +556,12 @@ is §8.
 an improvement over UB, but in a compositor it is still an abort: the
 session dies. And it is avoidable for most callbacks.
 
-Proposal (needs D14): **two-tier dispatch**, with each callback
-classified in the plan.
+**Decided (D14): two-tier dispatch**, with each callback classified in
+the plan. The alternatives considered and rejected: keeping §3(d)'s
+`RefCell`-discipline-by-review, and a middle option (synchronous
+inbound, deferred outbound effects only) that would have avoided the
+event queue but left a per-call-site judgement about which outbound
+calls re-enter.
 
 - **Deferrable tier** — trampoline pushes an `Event` onto a queue; the
   wrapper drains the queue with no C frame on the stack, calling the
@@ -620,7 +648,7 @@ not each decide:
   and the `bitflags` dependency; state it as a fence rule so no
   `u32`-typed flag reaches the shell.
 
-### 10a. Boundary cost rules (needs D19)
+### 10a. Boundary cost rules (D19 — adopted)
 
 Raised at review: the compositor is performance-critical. Handle
 resolution is not where the cost is (§1.5) — **boundary marshalling
@@ -694,7 +722,9 @@ Rules to state:
 ## 13. Fence enforcement: make it structural, and say what validates the unsafe
 
 §2 relies on `#![forbid(unsafe_code)]` plus a "CI grep". Both are weak
-where it matters. Stronger, cheap, and mechanical:
+where it matters. **Decided (D17): all four checks below are adopted**
+(the review offered them as a menu; the owner took the whole set), plus
+the `clippy::unwrap_used`/`expect_used` denial that D13 implies (§1.6):
 
 - **Dependency-graph rule**: the four safe crates must not depend on
   `weston-sys` at all (only on `weston`). Checked with `cargo metadata`
@@ -712,18 +742,30 @@ where it matters. Stronger, cheap, and mechanical:
 - `#![deny(unsafe_op_in_unsafe_fn)]` in `weston`, and
   `clippy::undocumented_unsafe_blocks` to enforce the `// SAFETY:` rule
   mechanically rather than by the R4 audit alone.
-- **Resolve the `pre_exec` carve-out now (needs D15).** §2 leaves it to
-  "decided during implementation", which breaks the "four safe crates"
-  invariant and forces the CI rule to carry an exception.
-  Recommendation: a fifth small crate (`westonite-spawn`, unsafe
-  allowed, audited, one module) so the four remain unqualified. It also
-  isolates R-D (fork-safety: only async-signal-safe calls between fork
-  and exec) in a crate whose entire contents are that audit —
-  the relevant C code is `shared/process-util.c` and the fork/exec block
-  reached via `wet_client_launch`/`sigchld_handler` (`main.c:367-446`).
+**Decided (D15): the `pre_exec` carve-out becomes a fifth crate.** §2
+currently leaves it to "decided during implementation", which breaks the
+"four safe crates" invariant and forces the CI rule to carry a permanent
+exception. `westonite-spawn` — unsafe allowed, one audited module — lets
+the four safe crates keep an unqualified `#![forbid(unsafe_code)]` with
+zero exceptions, and isolates risk R-D (fork safety: only
+async-signal-safe calls between fork and exec) in a crate whose entire
+contents are that audit. The C code it replaces is
+`shared/process-util.c` plus the fork/exec block reached via
+`wet_client_launch`/`sigchld_handler` (`main.c:367-446`). Rejected:
+putting it in `weston` (mixes fork safety with the FFI wrapper — two
+unrelated audit surfaces in one crate) and the `allow(unsafe_code)`
+carve-out inside `westonite-shared` as the plan has it.
 
-**What validates the unsafe crate?** The plan is silent, and Miri
-cannot cross FFI. Add:
+Note the consequence for the plan's §2 crate diagram: the workspace has
+**six** crates, not five — `weston-sys`, `weston`, `westonite-spawn`
+(all unsafe-bearing) and `westonite-config`, `westonite-shared`,
+`westonite-shell`, `westonite` (safe). The fence rule then reads: exactly
+three crates may contain `unsafe`, and the dependency check asserts the
+safe four reach C only through `weston` and `westonite-spawn`.
+
+**What validates the unsafe crates?** The plan is silent, and Miri
+cannot cross FFI. **Decided (D18): sanitizers and stress tests both land
+at R0/R1**, not as R4 hardening:
 
 - An ASAN+UBSAN build running smoke + e2e — at **R0/R1**, when the
   primitives are new, not "optional at R4" (§7). This is the only tool
@@ -745,16 +787,15 @@ cannot cross FFI. Add:
 never runs, so the intended `weston_log` line before dying is lost —
 in release, which is where it matters.
 
-Pick one (needs D16):
+**Decided (D16): `panic = "unwind"` + `catch_unwind` at every trampoline
++ log through `weston_log` + deliberate `abort()`.** Keeps the
+trampoline barrier and, more importantly, keeps the diagnostic with its
+callback context in release builds. Cost: unwind tables. Rejected:
+`panic = "abort"` plus a `std::panic::set_hook` logger — smaller, but the
+message loses per-callback context and a panic in a `Drop` during
+teardown says little.
 
-- **`panic = "unwind"` + `catch_unwind` at every trampoline + log +
-  `abort()`** (recommended): keeps the trampoline barrier and the log
-  line; costs unwind tables.
-- **`panic = "abort"` + `std::panic::set_hook`** that logs through
-  `weston_log`: cheaper, but no per-trampoline context, and a panic in
-  a `Drop` during teardown gives a less useful message.
-
-Either way, two things need saying: the hook/handler must be installed
+Two things still need saying: the handler must be installed
 by `wet_shell_init` as well (R1's cdylib is loaded by the C frontend,
 which installs nothing), and the child side of `pre_exec` must abort
 rather than unwind (§13).
@@ -792,56 +833,73 @@ the most mixed-ownership risk:
   removing an entire unsafe surface that a transliteration would
   recreate.
 - `weston_layer` embedded by value (§3, kind 4) — no plan mention today.
-- Consider defining the shell's dependency on the wrapper as a
-  **trait** (`ShellHost`) implemented by `weston`, so `westonite-shell`
-  is unit-testable against a mock host without libweston. For the
-  "deep half" that lands first (D4), that is the difference between
-  testing focus/stacking logic in `cargo test` and only being able to
-  test it through VNC.
+- **Decided (D20): the shell reaches the wrapper through a `ShellHost`
+  trait** implemented by `weston`, with a mock implementation for tests,
+  so `westonite-shell`'s state machine (focus, stacking, grab state, xdg
+  lifecycle) is unit-testable without a compositor. For the deep half
+  that lands first (plan D4), this is the difference between testing that
+  logic in `cargo test` and only ever reaching it through VNC — and it is
+  the cheapest way to construct the focus-race and teardown-ordering
+  cases that §1.4 says are the risky ones. Cost: a trait boundary to
+  define and keep in sync with `Ctx`. Rejected: a trait covering only the
+  state-machine subset (boundary judged per call site), and calling
+  `weston` directly. Plan edits: §2 (crate description) and §7 (R1 exit
+  criteria gain shell unit tests, not only e2e).
 
-## 17. Proposed decisions
+## 17. Decisions taken at review (2026-07-25)
 
 Requirement agreed at review and assumed by all of these: **all
-`unsafe` and all unsoundness live in one crate** (see the header).
+`unsafe` and all unsoundness live in one crate** (see the header). All
+eight were decided by the owner; the rejected alternatives are kept so
+they are not silently revisited.
 
-| # | Question | Recommendation |
-|---|---|---|
-| **D13** | Handle model for C-owned objects | Two handle kinds: callback **subjects** arrive as live borrows needing no check; **stored** references are generational ids (slot + generation) resolved through `weston`'s slot table. No pointers, no `NonNull`, no bindgen types in safe APIs; ids opaque and unforgeable. Registration and destroy-listener attachment paired in one function. Rejected: `Copy` pointer newtypes (unsound), branded lifetimes (viral), shadow state (duplicated). The `Rc`-cell shape is **equally sound** and wrapper-internal, so it remains a fallback if shell ergonomics disappoint. Open sub-question: `Option`-and-skip (recommended) vs `expect`-and-panic for stale cross-references. §1 |
-| **D14** | Reentrancy strategy | Two-tier dispatch: deferrable callbacks queue events drained with no C frame live; a named, inventoried sync tier is the audited exception. Safe crates carry **no** interior mutability. §7, §8 |
-| **D15** | `pre_exec` carve-out placement | Fifth crate `westonite-spawn` (unsafe allowed, one audited module); the four safe crates keep an unqualified `forbid(unsafe_code)`. §13 |
-| **D16** | Panic policy | `panic = "unwind"` + `catch_unwind` + log + `abort()` at every trampoline; hook installed by `wet_shell_init` too. §14 |
-| **D17** | Fence enforcement | Dependency-graph check + public-API snapshot + `clippy::undocumented_unsafe_blocks`, replacing the CI grep. §13 |
-| **D18** | Wrapper validation | ASAN/UBSAN smoke+e2e job and a destroy-storm stress test from R0/R1 (not optional at R4); fake-C-object unit tests for each primitive. §13 |
-| **D19** | Boundary cost rules | Cached strings, no per-callback `Vec`/event allocation, scope-guarded lazy log formatting — the places per-event cost actually lands, as opposed to handle resolution. §10a |
+| # | Question | **Decision** | Rejected |
+|---|---|---|---|
+| **D13** | Handle model for C-owned objects | Two handle kinds: callback **subjects** arrive as live borrows needing no check; **stored** references are generational ids (slot + generation) resolved through `weston`'s slot table — opaque, unforgeable, no pointers or bindgen types in safe APIs; registration and destroy-listener attachment paired in one function. Stale resolution → `Option`, **no `unwrap`/`expect` anywhere in the safe crates** (stricter than this review proposed). §1 | `Copy` pointer newtypes (unsound); branded lifetimes (viral); shadow state (duplicated). `Rc`-cell handles are equally sound and wrapper-internal — retained as a fallback, not a safety question. `expect`-where-provable rejected: a panic kills the session. |
+| **D14** | Reentrancy strategy | Two-tier dispatch: deferrable callbacks queue events drained with no C frame live; a named, inventoried sync tier is the audited exception. Safe crates carry **no** interior mutability. §7, §8 | §3(d)'s `RefCell`-discipline-by-review; the sync-in/deferred-out middle option (leaves a per-call-site judgement about re-entrancy). |
+| **D15** | `pre_exec` carve-out placement | New crate `westonite-spawn` (unsafe allowed, one audited module). Workspace becomes **six** crates; the safe four keep an unqualified `forbid(unsafe_code)` with zero exceptions. §13 | Putting it in `weston` (mixes fork safety with the FFI wrapper); an `allow(unsafe_code)` carve-out in `westonite-shared` as the plan has it. |
+| **D16** | Panic policy | `panic = "unwind"` + `catch_unwind` at every trampoline + `weston_log` + deliberate `abort()`; handler also installed by `wet_shell_init`. §14 | `panic = "abort"` + `set_hook` (loses per-callback context). |
+| **D17** | Fence enforcement | **All four**: dependency-graph check, public-API snapshot, opaque id types, clippy unsafe lints (`unsafe_op_in_unsafe_fn`, `undocumented_unsafe_blocks`) — plus `clippy::unwrap_used`/`expect_used` from D13. Replaces the CI grep. §13 | Adopting a subset. |
+| **D18** | Wrapper validation | ASAN/UBSAN smoke+e2e **and** the destroy-storm stress test land at R0/R1, with fake-C-object unit tests per primitive and registry `debug_assert`s on in CI. §13 | Sanitizers deferred to R2; the plan's "optional at R4". |
+| **D19** | Boundary cost rules | Cached strings, no per-callback `Vec`/event allocation, scope-guarded lazy log formatting — where per-event cost actually lands, as opposed to handle resolution. §10a | — |
+| **D20** | Shell testability | `westonite-shell` reaches the wrapper through a `ShellHost` trait implemented by `weston`, with a mock host for unit tests. §16 | A trait covering only the state-machine subset; calling `weston` directly (e2e-only verification). |
 
 Plan edits these imply, by section:
 
 - **Goals** — restate goal 1 as "all `unsafe` **and all unsoundness**
   live in one crate; `weston`'s public API is sound for arbitrary safe
   callers" (§1).
-- **§2** — add the dependency/public-API/opaque-id fence rules; resolve
-  the `pre_exec` carve-out (D15); extend the shim's scope to variadics.
+- **§2** — add the dependency/public-API/opaque-id fence rules; add the
+  sixth crate `westonite-spawn` to the diagram and restate the fence as
+  "exactly three crates may contain `unsafe`" (D15); note that
+  `westonite-shell` depends on `weston` through the `ShellHost` trait
+  (D20); extend the shim's scope to variadics.
 - **§3** — rewrite (b) around the two handle kinds, the slot table, and
   the cost points; add the ownership taxonomy; fix the user-data-slot
   framing; add **(f) grabs**, **(g) boundary value rules**, and
   **(h) boundary cost rules**; replace (d) with the two-tier dispatch
   and the one-borrow-at-the-edge invariant; fix (e)'s panic
   inconsistency; correct the "65 uses" count.
-- **§6** — add the CI checks (dep graph, public API, ASAN job, clippy
-  SAFETY lint).
+- **§6** — add the CI checks: dependency graph, public-API snapshot,
+  clippy unsafe lints, `unwrap_used`/`expect_used`, ASAN/UBSAN job
+  (D17, D18).
 - **§7** — R0 exit criteria gain the callback inventory table, the
   registry/deferred-dispatch/grab primitives, the fake-C-object test
   harness, and the ASAN job; R1 gains the grab/destroy-storm stress
-  cases and the hybrid hazards of §15.
+  cases, shell unit tests against the mock `ShellHost` (D20), and the
+  hybrid hazards of §15.
 - **§9** — add R-H (handle soundness) and note that deferral-induced
   ordering changes are parity bugs, not D6 divergences.
-- **§10** — record D13–D19.
+- **§10** — record D13–D20.
+- **D6 (parity bar)** — note the one behavioral divergence D13 creates:
+  where the C code aborts on a stale lookup (`assert(sh_output)`,
+  `shell.c:266`), the Rust version logs and returns a zeroed rectangle
+  (§1.6).
 
 Reviewer's note: this document supersedes nothing in the plan on its
-own. Where an item here contradicts the plan's current text (most
-sharply §3(b)'s `Copy`/`NonNull` handles and §3(d)'s `RefCell`-in-the-
-shell reentrancy answer), the plan's text still stands until the
-corresponding decision is recorded.
+own — the plan's text is unchanged and still says `Copy`/`NonNull`
+handles (§3b) and `RefCell`s in the shell (§3d). D13–D20 record what
+those sections *should* say; applying them is a separate edit.
 
 ## 18. What this does *not* change
 
