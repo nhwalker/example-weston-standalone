@@ -800,7 +800,7 @@ interface is re-specified rather than ported:
 The binary and the shell `.so` are separately loadable, so C and Rust
 halves can be mixed and smoke-tested at every phase boundary.
 
-- **Phase R0 — foundation**: workspace, `weston-sys` (bindings for
+- **Phase R0 — foundation** ✅ *(done — see PROVENANCE.md log)*: workspace, `weston-sys` (bindings for
   the full header set, **verified against the installed 14.0.1
   headers** — §3a caveat), `weston` with the primitives of §3:
   registry + ids, `Listener`, vtable builders, two-tier dispatch
@@ -813,7 +813,7 @@ halves can be mixed and smoke-tested at every phase boundary.
   Rust binary brings up compositor + headless backend + noop
   renderer, runs the event loop, exits 0 on SIGTERM (mirrors the
   Phase-1 smoke test), under ASAN.
-- **Phase R1 — shell in Rust, frontend still C**: port `shell.c` →
+- **Phase R1 — shell in Rust, frontend still C** ✅ *(done — see PROVENANCE.md log)*: port `shell.c` →
   `westonite-shell`, shipped as `desktop-shell.so` via the
   `westonite-shell-plugin` cdylib (§2 — entry point there, bootstrap
   in `weston`; the build step renames cargo's artifact on install),

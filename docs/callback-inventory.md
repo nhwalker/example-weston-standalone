@@ -26,6 +26,16 @@ is a deferred event.
 Port status legend: `—` not yet ported · `R0` implemented in the R0
 foundation · statuses advance to `R1`/`R2x` as phases land.
 
+**R1 status note (2026-07-25):** every shell-side row is live — the
+desktop-shell listener set (L11–L28) is implemented in
+`crates/weston/src/shell_init.rs` (seat/output/session/transform/
+compositor-destroy wiring), `grab.rs` (all three pointer grabs + touch
+move, L14/L15 deleted per §3c as designed), `desktop.rs` (the full
+vtable), and `input_bindings.rs` (B3–B6); the shell policy behind them
+is `crates/westonite-shell`.  Frontend rows (L1–L10, B1/B2) remain C
+until R2.  The Status column below is updated per row group rather than
+per cell; `git log` on the named modules is the per-row audit trail.
+
 ## 1. `wl_listener` fields and their attach sites
 
 ### frontend/main.c (7 fields)
@@ -109,9 +119,9 @@ plain deferred notifications.  Field count: 7 + 3 + 18 = 28.)*
 
 | Vtable | Entries | Tier | Status |
 |---|---|---|---|
-| pointer grab (`shell_grab`) | focus/motion/button/axis/axis_source/frame/cancel | sync, **no app borrow** (state lives in the grab box; policy events deferred; free deferred to depth-zero drain) | R0 (primitive + tests) |
-| touch grab (`shell_touch_grab`) | down/up/motion/frame/cancel | same | — (R1) |
-| busy-cursor grab | pointer iface | same | — (R1) |
+| pointer grab (`shell_grab`) | focus/motion/button/axis/axis_source/frame/cancel | sync, **no app borrow** (state lives in the grab box; policy events deferred; free deferred to depth-zero drain) | R1 (move/resize/busy live) |
+| touch grab (`shell_touch_grab`) | down/up/motion/frame/cancel | same | R1 |
+| busy-cursor grab | pointer iface | same | R1 |
 
 ## 5. Log handlers (§3k)
 

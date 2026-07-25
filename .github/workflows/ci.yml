@@ -25,6 +25,13 @@ jobs:
           docker run --rm -v "$PWD":/src -v "$PWD/test-results":/results \
             westonite-build /src/scripts/e2e-test.sh /results
 
+      - name: Destroy-storm stress test (valgrind, D18)
+        run: docker run --rm -v "$PWD":/src westonite-build sh -c
+          '/src/scripts/rust-shell-install.sh >/dev/null 2>&1 || true;
+           cd /src && meson setup build --prefix=/usr -De2e-test-client=true --wipe >/dev/null
+           && ninja -C build >/dev/null && ninja -C build install >/dev/null
+           && /src/scripts/rust-shell-install.sh && /src/scripts/rust-stress-test.sh'
+
       - name: Build the RPM
         run: |
           mkdir -p out

@@ -18,6 +18,10 @@ meson setup build --prefix=/usr -De2e-test-client=true
 ninja -C build
 ninja -C build install
 
+# R1+: the shipping shell is the Rust plugin (docs/rust-migration-plan.md
+# §7); WESTONITE_C_ORACLE=1 keeps the C shell as the behavioral oracle.
+/src/scripts/rust-shell-install.sh
+
 mkdir -p -m 1777 /tmp/.X11-unix   # Xwayland needs it; bare containers lack it
 
 E2E_USER=e2e

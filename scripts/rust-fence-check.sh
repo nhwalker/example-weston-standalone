@@ -13,10 +13,10 @@ set -euo pipefail
 
 cd /src 2>/dev/null || cd "$(dirname "$0")/.."
 
-# Safe crates, per plan §2.  Grows at R1/R2 (westonite-config,
-# westonite-shell, westonite); update here AND in the plan when it does.
-SAFE_CRATES=()
-UNSAFE_CRATES=(weston-sys weston)
+# Safe crates, per plan §2.  Grows at R2 (westonite-config, westonite);
+# update here AND in the plan when it does.
+SAFE_CRATES=(westonite-shell)
+UNSAFE_CRATES=(weston-sys weston westonite-shell-plugin)
 
 echo "== fence 1: dependency graph (safe crates never see weston-sys)"
 cargo metadata --format-version 1 --no-deps > /tmp/meta.json
