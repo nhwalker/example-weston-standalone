@@ -1,0 +1,20 @@
+[package]
+name = "westonite-shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SAFE: the desktop-shell policy state machine (shell.c port), written against weston::ShellHost; never touches weston-sys, the config file, or the CLI."
+
+[dependencies]
+weston = { workspace = true }
+
+[dev-dependencies]
+weston = { workspace = true, features = ["test-ids"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+# D13: no unwrap/expect on wrapper results — a panic kills the session.
+unwrap_used = "deny"
+expect_used = "deny"

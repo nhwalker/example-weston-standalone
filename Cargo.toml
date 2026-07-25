@@ -12,6 +12,8 @@ resolver = "2"
 members = [
     "crates/weston-sys",
     "crates/weston",
+    "crates/westonite-shell",
+    "crates/westonite-shell-plugin",
 ]
 
 [workspace.package]
@@ -23,6 +25,7 @@ repository = "https://github.com/nhwalker/example-weston-standalone"
 [workspace.dependencies]
 weston-sys = { path = "crates/weston-sys" }
 weston = { path = "crates/weston" }
+westonite-shell = { path = "crates/westonite-shell" }
 bitflags = "2"
 libc = "0.2"
 
