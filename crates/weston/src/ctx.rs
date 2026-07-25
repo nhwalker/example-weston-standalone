@@ -105,6 +105,16 @@ thread_local! {
     /// dropping them; they stay reachable until process exit.  Found by
     /// valgrind in the destroy-storm stress (invalid write in
     /// weston_compositor_destroy's destroy_signal emission).
+    ///
+    /// Active grab boxes are parked here too: C still holds
+    /// pointer->grab / touch->grab (there is no detach for a grab), and
+    /// weston_compositor_destroy shuts the backends down AFTER the
+    /// destroy emission — the backends' input teardown then cancels any
+    /// current grab through the embedded vtable
+    /// (weston_seat_release_pointer/touch → weston_*_cancel_grab), so
+    /// the box must outlive teardown.  The late cancel finds no Ctx and
+    /// no-ops (grab.rs guard_ctx); the C shell leaks the allocation at
+    /// the same point for the same reason.
     static GRAVEYARD: RefCell<Vec<Box<dyn Any>>> = const { RefCell::new(Vec::new()) };
 }
 
@@ -181,14 +191,27 @@ impl Ctx {
         // Pending-drop boxes may likewise have frames on the stack
         // deeper in this emission: park, don't drop.
         let pending: Vec<Box<dyn Any>> = std::mem::take(&mut *self.inner.pending_drop.borrow_mut());
+        // Active grabs: C still holds pointer->grab / touch->grab, and
+        // the backends' input teardown runs AFTER this emission,
+        // cancelling any current grab through the embedded vtable —
+        // dropping the boxes here would send that cancel through freed
+        // memory.  Park them (see the GRAVEYARD doc); the late cancel
+        // no-ops in grab.rs's guard_ctx once the slot below is cleared.
+        let grabs: Vec<Box<dyn Any>> = self
+            .inner
+            .active_grabs
+            .borrow_mut()
+            .drain(..)
+            .map(|g| Box::new(g) as Box<dyn Any>)
+            .collect();
         GRAVEYARD.with(|g| {
             let mut g = g.borrow_mut();
             g.extend(parked);
             g.extend(pending);
+            g.extend(grabs);
         });
         self.inner.surface_recs.borrow_mut().clear();
         self.inner.curtains.borrow_mut().clear();
-        self.inner.active_grabs.borrow_mut().clear();
         self.inner.shell_layers.borrow_mut().take();
         self.inner.app.borrow_mut().take();
         CURRENT.with(|c| c.borrow_mut().take());

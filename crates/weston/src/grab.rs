@@ -27,9 +27,13 @@ const EDGE_BOTTOM: u32 = 2;
 const EDGE_LEFT: u32 = 4;
 const EDGE_RIGHT: u32 = 8;
 
-// wl_fixed_* are static inlines; the 24.8 math is one line each.
+// wl_fixed_* are static inlines, mirrored here.  `fixed_from` is
+// wl_fixed_from_double's union trick: adding the 3 << 43 magic double
+// leaves the rounded-to-nearest 24.8 value in the low mantissa bits (a
+// plain `(d * 256.0) as i32` would truncate and diverge from C by one
+// fixed-point unit).
 fn fixed_from(d: f64) -> i32 {
-    (d * 256.0) as i32
+    ((d + (3i64 << (51 - 8)) as f64).to_bits() as i64) as i32
 }
 fn fixed_to_int(f: i32) -> i32 {
     f / 256
@@ -149,7 +153,14 @@ unsafe fn tinner<'a>(grab: *mut weston_sys::weston_touch_grab) -> &'a TouchGrabI
 fn guard_ctx(what: &'static str, f: impl FnOnce(&Ctx)) {
     panic_barrier::guard(what, || {
         let Some(ctx) = Ctx::current() else {
-            debug_assert!(false, "grab callback with no live Ctx");
+            // Expected post-teardown, not a bug (unlike listeners, which
+            // are detached before the Ctx goes away): grabs live at
+            // compositor destroy are parked in the GRAVEYARD with C
+            // still holding pointer->grab / touch->grab, and the
+            // backends' input teardown cancels them AFTER the Ctx is
+            // gone (weston_seat_release_pointer/touch →
+            // weston_*_cancel_grab).  Graceful no-op; the pointer is
+            // being destroyed anyway.
             return;
         };
         ctx.with_depth(|| f(&ctx));
@@ -187,8 +198,10 @@ unsafe extern "C" fn move_motion(
             return;
         };
         let (dx, dy) = g.delta.get();
-        // SAFETY: live pointer/view; POD math mirrors
-        // move_grab_motion + constrain_position.
+        // SAFETY: live pointer/view; POD math mirrors the trimmed
+        // shell's move_grab_motion + constrain_position, which is plain
+        // pointer->pos + delta (upstream's panel work-area clamp was
+        // dropped from the trimmed shell along with the panels).
         unsafe {
             let pos = (*pointer).pos;
             let new = weston_sys::weston_coord_global {
@@ -490,7 +503,14 @@ fn end_pointer_grab(ctx: &Ctx, grab: *mut weston_sys::weston_pointer_grab) {
     clear_surface_grab_flags(ctx, g.surface);
     let surface = g.surface;
     // SAFETY: grab->pointer was set by weston_pointer_start_grab and is
-    // live (grabs cannot outlive their pointer: cancel fires first).
+    // live here: every caller is either one of this grab's own
+    // callbacks (the pointer is dispatching on us) or the
+    // end_busy_grabs path, which first proves the grab is still the
+    // current grab of a registry-live pointer.  Runtime device removal
+    // cancels the current grab (weston_seat_release_pointer) while the
+    // pointer is still live, and post-teardown cancels never get here —
+    // guard_ctx bails with no Ctx and teardown parks the boxes in the
+    // GRAVEYARD instead.
     unsafe { weston_sys::weston_pointer_end_grab((*grab).pointer) };
     let taken = {
         let mut grabs = ctx.inner.active_grabs.borrow_mut();
@@ -513,7 +533,12 @@ fn end_touch_grab(ctx: &Ctx, grab: *mut weston_sys::weston_touch_grab) {
     }
     clear_surface_grab_flags(ctx, g.surface);
     let surface = g.surface;
-    // SAFETY: grab->touch set by weston_touch_start_grab, live here.
+    // SAFETY: grab->touch was set by weston_touch_start_grab and is
+    // live here: the only callers are this grab's own callbacks, so the
+    // touch is dispatching on us.  Runtime device removal cancels the
+    // current grab (weston_seat_release_touch) while the touch is still
+    // live, and post-teardown cancels never get here — guard_ctx bails
+    // with no Ctx and teardown parks the boxes in the GRAVEYARD.
     unsafe { weston_sys::weston_touch_end_grab((*grab).touch) };
     let taken = {
         let mut grabs = ctx.inner.active_grabs.borrow_mut();
@@ -526,6 +551,33 @@ fn end_touch_grab(ctx: &Ctx, grab: *mut weston_sys::weston_touch_grab) {
         ctx.defer_drop(Box::new(a));
     }
     ctx.enqueue(Event::GrabEnded { surface });
+}
+
+/// Retire a pointer grab that C no longer references (superseded: some
+/// other grab replaced it via `weston_pointer_start_grab`, which never
+/// cancels the old one).  The box leaves `active_grabs` and rides the
+/// pending-drop list, but **no libweston call is made** — calling
+/// `weston_pointer_end_grab` here would tear down the *superseding*
+/// grab — and the surface's grab flags are left alone (they belong to
+/// the superseding grab now).  No `GrabEnded` either: C never notices
+/// a superseded grab, and policy-wise the surface's grab continues.
+fn retire_superseded_pointer_grab(ctx: &Ctx, grab: *mut weston_sys::weston_pointer_grab) {
+    // SAFETY: trampoline contract (see `inner`): the box is still owned
+    // by active_grabs or the pending-drop list.
+    let g = unsafe { inner(grab) };
+    if g.ended.replace(true) {
+        return;
+    }
+    let taken = {
+        let mut grabs = ctx.inner.active_grabs.borrow_mut();
+        grabs
+            .iter()
+            .position(|a| a.matches_pointer(grab))
+            .map(|i| grabs.swap_remove(i))
+    };
+    if let Some(a) = taken {
+        ctx.defer_drop(Box::new(a));
+    }
 }
 
 /// Common pointer-grab start (C shell_grab_start): break existing
@@ -784,14 +836,56 @@ pub(crate) fn end_busy_grabs_for_client_of(ctx: &Ctx, id: DesktopSurfaceId) {
         })
         .collect();
 
+    // Snapshot the registry-live weston_pointers (§3l): a busy grab's
+    // back-pointer is dereferenced only after it matches one of these —
+    // a superseded grab on a seat that has since died never saw a
+    // cancel, so its `pointer` field may dangle.
+    let seats: Vec<NonNull<weston_sys::weston_seat>> = {
+        let t = ctx.inner.seats.borrow();
+        t.live_ids()
+            .into_iter()
+            .filter_map(|i| t.resolve(i))
+            .collect()
+    };
+    let mut live_pointers: Vec<*mut weston_sys::weston_pointer> = Vec::new();
+    for s in seats {
+        // SAFETY: registry-live seat; pure query, NULL when the seat
+        // has no pointer capability.
+        let p = unsafe { weston_sys::weston_seat_get_pointer(s.as_ptr()) };
+        if !p.is_null() {
+            live_pointers.push(p);
+        }
+    }
+
     for (raw, surf) in busy {
         let Some(ds) = ctx.inner.desktop_surfaces.borrow().resolve(surf.0) else {
             continue;
         };
         // SAFETY: live desktop surface; pure query.
         let client = unsafe { weston_sys::weston_desktop_surface_get_client(ds.as_ptr()) };
-        if client == target_client {
+        if client != target_client {
+            continue;
+        }
+        // C parity (end_busy_cursor checks pointer->grab->interface ==
+        // &busy_cursor_grab_interface): only end a busy grab that is
+        // still its pointer's CURRENT grab.  The grabbed=0 quirk in
+        // set_busy_cursor lets a move/resize grab supersede a busy grab
+        // via weston_pointer_start_grab — which never cancels the old
+        // grab — and ending a superseded grab would reset the pointer
+        // out of the *superseding* grab, stranding it.
+        // SAFETY: `raw` is a live box (snapshotted from active_grabs
+        // and only retirable through the deferred-drop path); reading
+        // its `pointer` field is a POD read of our own allocation, and
+        // `(*p).grab` is read only for a `p` proven registry-live
+        // above.
+        let is_current = unsafe {
+            let p = (*raw).pointer;
+            live_pointers.contains(&p) && std::ptr::eq((*p).grab, raw)
+        };
+        if is_current {
             end_pointer_grab(ctx, raw);
+        } else {
+            retire_superseded_pointer_grab(ctx, raw);
         }
     }
 }

@@ -20,6 +20,8 @@ mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
 SOCKET=stress-0
 LOG=/tmp/stress-westonite.log
 VG=/tmp/stress-valgrind.log
+CLIENTS=/tmp/stress-clients.log
+: > "$CLIENTS"
 
 valgrind --error-exitcode=42 --leak-check=full \
 	--errors-for-leak-kinds=definite --log-file="$VG" \
@@ -36,7 +38,7 @@ export WAYLAND_DISPLAY="$SOCKET"
 
 echo "== storm 1: sequential add/kill churn (surface add/remove + focus hunt)"
 for i in $(seq 1 25); do
-	"$WTEST" --size 200x100 --title "churn-$i" &
+	"$WTEST" --size 200x100 --title "churn-$i" >>"$CLIENTS" 2>&1 &
 	CPID=$!
 	sleep 0.15
 	kill -9 "$CPID" 2>/dev/null || true
@@ -46,7 +48,7 @@ done
 echo "== storm 2: concurrent clients, staggered kills (focus churn)"
 PIDS=()
 for i in $(seq 1 6); do
-	"$WTEST" --size 160x120 --title "pack-$i" &
+	"$WTEST" --size 160x120 --title "pack-$i" >>"$CLIENTS" 2>&1 &
 	PIDS+=($!)
 	sleep 0.1
 done
@@ -58,17 +60,40 @@ done
 for p in "${PIDS[@]}"; do wait "$p" 2>/dev/null || true; done
 sleep 0.5
 
-echo "== storm 3: parent/child churn (xdg transient stacking teardown)"
+# NOTE: wtest-client has no transient/child mode; all three storms churn
+# single xdg toplevels.  Transient (parent/child) teardown is covered by
+# the e2e suite only.
+echo "== storm 3: rapid short-lived toplevel churn (map/kill singles)"
 for i in $(seq 1 10); do
-	"$WTEST" --size 200x100 --title "parent-$i" &
-	PPID2=$!
+	"$WTEST" --size 200x100 --title "single-$i" >>"$CLIENTS" 2>&1 &
+	CPID3=$!
 	sleep 0.15
-	kill -9 "$PPID2" 2>/dev/null || true
-	wait "$PPID2" 2>/dev/null || true
+	kill -9 "$CPID3" 2>/dev/null || true
+	wait "$CPID3" 2>/dev/null || true
 done
 
+# The storms must have exercised something real: wtest-client prints
+# "mapped: WxH" once its first configure is acked.  Zero mapped clients
+# means the whole run tested nothing (shell rejecting surfaces, client
+# protocol error) — fail instead of reporting a hollow valgrind-clean.
+MAPPED=$(grep -c '^mapped:' "$CLIENTS" || true)
+if [ "${MAPPED:-0}" -eq 0 ]; then
+	echo "FAIL: no wtest-client ever mapped a surface (storms exercised nothing)"
+	cat "$CLIENTS"
+	kill -9 "$WPID" 2>/dev/null || true
+	wait "$WPID" 2>/dev/null || true
+	tail -20 "$LOG"
+	exit 1
+fi
+echo "clients mapped during storms: $MAPPED"
+
 kill -TERM "$WPID"
-wait "$WPID" || { echo "FAIL: compositor exited non-zero (or valgrind errors)"; tail -40 "$VG"; tail -20 "$LOG"; exit 1; }
+# Teardown watchdog: a hung teardown must fail in minutes, not at the CI
+# job timeout.  120s is generous even under valgrind.
+( sleep 120; kill -9 "$WPID" 2>/dev/null ) &
+WDOG=$!
+wait "$WPID" || { echo "FAIL: compositor exited non-zero (valgrind errors, crash, or teardown hang >120s)"; tail -40 "$VG"; tail -20 "$LOG"; exit 1; }
+kill "$WDOG" 2>/dev/null || true
 grep -q "ERROR SUMMARY: 0 errors" "$VG" || { echo "FAIL: valgrind errors"; tail -40 "$VG"; exit 1; }
 
-echo "DESTROY-STORM STRESS PASSED (valgrind clean)"
+echo "DESTROY-STORM STRESS PASSED (valgrind clean, $MAPPED clients mapped)"

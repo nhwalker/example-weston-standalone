@@ -556,17 +556,39 @@ fn register_output(ctx: &Ctx, output: NonNull<weston_sys::weston_output>, name: 
     ctx.inner.listeners.borrow_mut().push((key, l));
 }
 
+thread_local! {
+    /// Track-surface refcounts, keyed by registry id (several seats may
+    /// focus — and therefore track — the same surface).  There is one
+    /// destroy listener per tracked surface regardless of count.
+    /// Entries are removed on untrack-to-zero and on surface death; the
+    /// fresh-insert path *resets* its entry to 1 (rather than
+    /// incrementing), so entries orphaned by a teardown with live
+    /// tracked surfaces can never bleed a stale count into a later Ctx
+    /// whose table re-mints the same id shape.
+    static TRACK_COUNTS: std::cell::RefCell<std::collections::HashMap<crate::ids::RawId, u32>> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
 /// Track a weston_surface for keyboard-focus bookkeeping
 /// (C focus_state_set_focus's destroy listener, centralized §3b).
-/// Ref-counted: several seats may focus the same surface.
+/// Ref-counted: several seats may focus the same surface; each
+/// `track_surface` acquisition must be balanced by one
+/// [`untrack_surface`] release (the C analogue is one focus_state
+/// destroy listener per seat — here one shared listener plus a count).
 pub(crate) fn track_surface(
     ctx: &Ctx,
     es: NonNull<weston_sys::weston_surface>,
 ) -> crate::ids::SurfaceId {
     if let Some(existing) = ctx.inner.surfaces.borrow().id_of(es) {
+        TRACK_COUNTS.with(|m| {
+            *m.borrow_mut().entry(existing).or_insert(0) += 1;
+        });
         return crate::ids::SurfaceId(existing);
     }
     let id = crate::ids::SurfaceId(ctx.inner.surfaces.borrow_mut().insert(es));
+    TRACK_COUNTS.with(|m| {
+        m.borrow_mut().insert(id.0, 1);
+    });
     let key = es.as_ptr() as usize;
     let l = Listener::new(
         "shell.tracked_surface_destroy",
@@ -586,6 +608,9 @@ pub(crate) fn track_surface(
                     NonNull::new(m).and_then(|m| ctx.ds_id_of_wsurf(m))
                 }
             };
+            TRACK_COUNTS.with(|m| {
+                m.borrow_mut().remove(&id.0);
+            });
             ctx.inner.surfaces.borrow_mut().invalidate_ptr(p);
             ctx.retire_listener(p.as_ptr() as usize);
             ctx.enqueue(Event::TrackedSurfaceGone { surface: id, main });
@@ -599,4 +624,34 @@ pub(crate) fn track_surface(
     l.mark_attached();
     ctx.own_listener(key, l);
     id
+}
+
+/// Release one [`track_surface`] acquisition.  Only when the last
+/// holder releases does the registry entry stale and the destroy
+/// listener retire — a seat still focused on the surface keeps its
+/// `TrackedSurfaceGone` delivery.
+pub(crate) fn untrack_surface(ctx: &Ctx, id: crate::ids::SurfaceId) {
+    let Some(p) = ctx.inner.surfaces.borrow().resolve(id.0) else {
+        return;
+    };
+    let last = TRACK_COUNTS.with(|m| {
+        let mut m = m.borrow_mut();
+        match m.get_mut(&id.0) {
+            Some(c) if *c > 1 => {
+                *c -= 1;
+                false
+            }
+            // Count 1 — or a missing entry, which would be a wrapper
+            // bookkeeping bug: treat as last release so the listener
+            // cannot leak.
+            _ => {
+                m.remove(&id.0);
+                true
+            }
+        }
+    });
+    if last {
+        ctx.inner.surfaces.borrow_mut().invalidate_ptr(p);
+        ctx.retire_listener(p.as_ptr() as usize);
+    }
 }

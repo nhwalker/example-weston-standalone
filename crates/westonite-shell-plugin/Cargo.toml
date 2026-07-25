@@ -3,7 +3,7 @@ name = "westonite-shell-plugin"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "R1-ONLY packaging shim (deleted at R3, plan D2): the cdylib installed as desktop-shell.so. Contains just the wet_shell_init entry point (opaque pointers, no weston-sys dependency); logic lives in westonite-shell, the fence in weston."
+description = "R1-ONLY packaging shim (deleted at R3, plan D2): the cdylib installed as desktop-shell.so. Contains just the wet_shell_init entry point (opaque pointers; never names weston-sys types, though it transitively links weston-sys via weston's hybrid-r1 — hence UNSAFE in the fence rules); logic lives in westonite-shell, the fence in weston."
 
 [lib]
 crate-type = ["cdylib"]

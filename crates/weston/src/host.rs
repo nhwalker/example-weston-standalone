@@ -82,13 +82,17 @@ pub trait ShellHost {
     /// `weston_surface` that received focus, registered with a destroy
     /// listener that will emit `TrackedSurfaceGone` (+ its main-surface
     /// payload).  This is the C `focus_state` listener, centralized.
+    /// Tracking is ref-counted: every returned id counts as one
+    /// acquisition and must be balanced by one [`untrack_surface`] call
+    /// (several seats focusing the same surface share one listener).
     fn activate_input(
         &self,
         target: ActivateTarget,
         seat: SeatId,
         flags: ActivateFlags,
     ) -> Option<SurfaceId>;
-    /// Stop watching a previously returned focus surface.
+    /// Release one acquisition of a previously returned focus surface;
+    /// watching stops only when every acquisition has been released.
     fn untrack_surface(&self, id: SurfaceId);
     fn set_activated(&self, id: DesktopSurfaceId, active: bool);
     /// Move the surface's view to the top of the workspace layer and
@@ -359,11 +363,7 @@ impl ShellHost for Ctx {
     }
 
     fn untrack_surface(&self, id: SurfaceId) {
-        let ptr = self.inner.surfaces.borrow().resolve(id.0);
-        if let Some(p) = ptr {
-            self.inner.surfaces.borrow_mut().invalidate_ptr(p);
-            self.retire_listener(p.as_ptr() as usize);
-        }
+        crate::compositor::untrack_surface(self, id);
     }
 
     fn set_activated(&self, id: DesktopSurfaceId, active: bool) {

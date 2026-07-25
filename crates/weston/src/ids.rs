@@ -57,8 +57,10 @@ define_id!(
 
 /// Test-only id forgery, for the safe crates' mock-`ShellHost` unit
 /// tests (D20).  Feature-gated so production dependency graphs cannot
-/// enable it — the opaque-id fence rule (§2) holds outside tests; a
-/// forged id used against the real wrapper still just resolves `None`.
+/// enable it — the opaque-id fence rule (§2) holds outside tests.
+/// Forged ids carry generation 0, which `SlotTable` never mints (live
+/// generations start at 1 — see `registry.rs`), so a forged id used
+/// against the real wrapper always resolves `None`.
 #[cfg(feature = "test-ids")]
 #[doc(hidden)]
 pub mod forge {

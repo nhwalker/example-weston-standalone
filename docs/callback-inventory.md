@@ -103,10 +103,10 @@ plain deferred notifications.  Field count: 7 + 3 + 18 = 28.)*
 | `ping_timeout` | yes | deferred | unresponsive flag + busy cursor | — |
 | `pong` | yes | deferred | — | — |
 | `surface_added` | yes | **sync** (§3e closed list: brackets the C object's life; registry insert + user-data id write must happen inside the call) | — | — |
-| `surface_removed` | yes | **sync+inval / deferred-policy** (the half-dead window, §3a) | eager payload capture for the removal event | — |
+| `surface_removed` | yes | **sync policy + sync inval** (the half-dead window, §3a: `SurfaceRemoved` is dispatched sync while the id still resolves — A3: no app borrow can be live inside a desktop-api request — then state teardown and id invalidation follow in the same call) | — | — |
 | `committed` | yes | **sync** (must map the surface inside commit processing) | — | — |
 | `show_window_menu` | no — "not installed" | — | — | — |
-| `set_parent` | yes | deferred | children fixup on death is shape-1 staleness | — |
+| `set_parent` | yes | **sync** (deferring would reorder against stacking updates from the same request; A3: desktop-api request context, no app borrow live) | children fixup on death is shape-1 staleness | — |
 | `move` | yes | **sync** (reads pointer serial/button inside the request frame; starts grab) | — | — |
 | `resize` | yes | sync (as move) | — | — |
 | `fullscreen_requested` | no — "not installed" | — | — | — |

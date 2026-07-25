@@ -3,7 +3,9 @@
 //! One `SlotTable<T>` per object kind.  A slot holds the raw pointer and
 //! the generation ids were minted with; invalidation clears the pointer
 //! and bumps the generation, permanently staling every id minted for the
-//! old occupant.  The reverse direction (pointer → id) is a linear scan —
+//! old occupant.  Live generations start at 1 and never revisit 0, so a
+//! generation-0 id (the `test-ids` forge, a zeroed id) can never alias a
+//! live entry.  The reverse direction (pointer → id) is a linear scan —
 //! cold paths only (§3b); per-object user-data slots are a private
 //! optimization added where profiling demands it.
 
@@ -48,13 +50,15 @@ impl<T> SlotTable<T> {
             }
         } else {
             let slot = u32::try_from(self.slots.len()).expect("slot table overflow");
+            // Generation 0 is never minted (module doc): fresh slots
+            // start live at 1.
             self.slots.push(Slot {
                 ptr: Some(ptr),
-                generation: 0,
+                generation: 1,
             });
             RawId {
                 slot,
-                generation: 0,
+                generation: 1,
             }
         }
     }
@@ -83,6 +87,11 @@ impl<T> SlotTable<T> {
         };
         s.ptr = None;
         s.generation = s.generation.wrapping_add(1);
+        if s.generation == 0 {
+            // Keep the "generation 0 is never live" invariant even
+            // across a (theoretical) u32 wrap.
+            s.generation = 1;
+        }
         self.free.push(staled.slot);
         Some(staled)
     }
@@ -146,5 +155,23 @@ mod tests {
     fn invalidate_unknown_ptr_is_noop() {
         let mut t = SlotTable::<u8>::default();
         assert!(t.invalidate_ptr(p(0x2000)).is_none());
+    }
+
+    #[test]
+    fn generation_zero_is_never_live() {
+        // The test-ids forge (and any zeroed id) uses generation 0; it
+        // must never alias a real entry, fresh or recycled.
+        let mut t = SlotTable::<u8>::default();
+        let id = t.insert(p(0x1000));
+        assert_ne!(id.generation, 0);
+        let forged = RawId {
+            slot: id.slot,
+            generation: 0,
+        };
+        assert!(t.resolve(forged).is_none());
+        t.invalidate_ptr(p(0x1000)).unwrap();
+        let recycled = t.insert(p(0x3000));
+        assert_ne!(recycled.generation, 0);
+        assert!(t.resolve(forged).is_none());
     }
 }

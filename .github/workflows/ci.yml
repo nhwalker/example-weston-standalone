@@ -26,9 +26,15 @@ jobs:
             westonite-build /src/scripts/e2e-test.sh /results
 
       - name: Destroy-storm stress test (valgrind, D18)
+        # Reuses the build tree the e2e step left in the workspace mount
+        # (configuring it from scratch when absent, so the step also
+        # works in isolation); installs are container-local, so ninja
+        # install + rust-shell-install must rerun here regardless.
         run: docker run --rm -v "$PWD":/src westonite-build sh -c
-          '/src/scripts/rust-shell-install.sh >/dev/null 2>&1 || true;
-           cd /src && meson setup build --prefix=/usr -De2e-test-client=true --wipe >/dev/null
+          'cd /src
+           && if [ -f build/build.ninja ];
+              then meson configure build -De2e-test-client=true >/dev/null;
+              else meson setup build --prefix=/usr -De2e-test-client=true >/dev/null; fi
            && ninja -C build >/dev/null && ninja -C build install >/dev/null
            && /src/scripts/rust-shell-install.sh && /src/scripts/rust-stress-test.sh'
 

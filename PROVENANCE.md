@@ -34,8 +34,10 @@ Rebase procedure on an EPEL weston bump: plan §8.
     shell; `WESTONITE_C_ORACLE=1` restores the C oracle).
   - Exit criteria met: all 3 smoke tests green; **full e2e suite green
     (44 passed, 1 skipped)** against the Rust shell; destroy-storm
-    stress (`scripts/rust-stress-test.sh`: sequential churn, staggered
-    concurrent kills, parent/child churn) valgrind-clean.  D18 note:
+    stress (`scripts/rust-stress-test.sh`: sequential add/kill churn,
+    staggered concurrent kills, rapid short-lived toplevel churn — all
+    single xdg toplevels; transient/parent-child teardown is covered by
+    the e2e suite only) valgrind-clean.  D18 note:
     the hybrid process (C frontend + Rust cdylib) is validated under
     valgrind; nightly-ASAN covers the pure-Rust legs
     (rust-asan-smoke.sh), since Rust ASAN cannot instrument the C half.
@@ -43,6 +45,11 @@ Rebase procedure on an EPEL weston bump: plan §8.
     handlers from the plugin hijacks the frontend's --log file — the
     hybrid shell must not touch weston_log_set_handler (recorded in
     shell_init.rs).
+  - Post-review hardening: grab teardown parking, busy-grab
+    current-grab check, ref-counted pointer-focus tracking, and a fixed
+    hybrid double-init guard; CI now runs the `westonite-shell` unit
+    tests, and the stress script asserts real client churn (mapped
+    count) and adds a teardown watchdog.
 - **R0 (2026-07-25)** — foundation phase (plan §7 R0), branch
   `claude/rust-migration-j84b2p`:
   - Cargo workspace beside the meson tree; `weston-sys` (bindgen over

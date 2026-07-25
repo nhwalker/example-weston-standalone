@@ -305,7 +305,37 @@ fn each_compositor_item<T>(
 
 /// The whole C `wet_shell_init`, hybrid edition.  `make_app` receives
 /// the resolved `[shell] background-color`.
+///
+/// D16 at the module entry point: the body runs under `catch_unwind`
+/// (the plugin's `extern "C"` shim cannot reach the wrapper's log
+/// path), so a panic during init is logged through weston_log and
+/// reported as init failure instead of unwinding into — or aborting —
+/// the dlopening frontend.
 pub fn shell_init(ec_opaque: *mut c_void, make_app: impl FnOnce(u32) -> Box<dyn ShellApp>) -> bool {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        shell_init_body(ec_opaque, make_app)
+    })) {
+        Ok(ok) => ok,
+        Err(payload) => {
+            let msg: &str = if let Some(s) = payload.downcast_ref::<&str>() {
+                s
+            } else if let Some(s) = payload.downcast_ref::<String>() {
+                s
+            } else {
+                "<non-string panic payload>"
+            };
+            crate::log::log_line(&format!(
+                "westonite: fatal: Rust panic in shell init: {msg}; failing wet_shell_init"
+            ));
+            false
+        }
+    }
+}
+
+fn shell_init_body(
+    ec_opaque: *mut c_void,
+    make_app: impl FnOnce(u32) -> Box<dyn ShellApp>,
+) -> bool {
     let ec = ec_opaque.cast::<weston_sys::weston_compositor>();
     if ec.is_null() {
         return false;
@@ -313,16 +343,16 @@ pub fn shell_init(ec_opaque: *mut c_void, make_app: impl FnOnce(u32) -> Box<dyn 
     // NOTE: no install_stderr_handlers() here — in the hybrid phase the
     // C frontend owns weston_log's handlers (--log/flight recorder);
     // replacing them would hijack the log file (found live in smoke 3).
-    let ctx = Ctx::new();
-    ctx.inner.compositor.set(ec);
-    // SAFETY: compositor live; wl_display field is its display.
-    ctx.inner.display.set(unsafe { (*ec).wl_display });
-
-    let bg = read_background_color(ec);
 
     // Compositor-destroy → full shell teardown (sync tier; the C
-    // shell_destroy).  add_destroy_listener_once mirrors the C guard
-    // against double init.
+    // shell_destroy).  The handler resolves the context through its
+    // `&Ctx` parameter, so the listener can — and must — be created
+    // before `Ctx::new`: the once-API below is the C double-init guard,
+    // and it has to run before any wrapper state exists.  A second
+    // shell instance must return the C already-initialized success
+    // without ever constructing a Ctx — `Ctx::new`/`teardown` would
+    // overwrite and then clear the *live* shell's thread-local CURRENT
+    // slot (D21), bricking it.
     let destroy = Listener::new(
         "shell.compositor_destroy",
         true,
@@ -357,10 +387,19 @@ pub fn shell_init(ec_opaque: *mut c_void, make_app: impl FnOnce(u32) -> Box<dyn 
         )
     };
     if !added {
-        ctx.teardown();
+        // Already initialized: no wrapper state was touched; dropping
+        // the never-attached listener is a plain free.
         return true; // C returns 0 (success, already-initialized)
     }
     destroy.mark_attached();
+
+    let ctx = Ctx::new();
+    ctx.inner.compositor.set(ec);
+    // SAFETY: compositor live; wl_display field is its display.
+    ctx.inner.display.set(unsafe { (*ec).wl_display });
+
+    let bg = read_background_color(ec);
+
     ctx.own_listener(ec as usize, destroy);
 
     // Transform listener: wrapper-internal xwayland position sender.

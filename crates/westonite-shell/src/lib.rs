@@ -123,6 +123,14 @@ impl Shell {
                 // C desktop_surface_ping_timeout: busy cursor on every
                 // seat whose pointer focus is one of the client's
                 // surfaces.
+                //
+                // Deliberate divergence from C: `pointer_focus` resolves
+                // through get_main_surface, so hovering a *subsurface*
+                // of the busy client also shows the busy cursor.  C's
+                // get_shell_surface(pointer->focus->surface) returns
+                // NULL for a subsurface and silently skips it — an
+                // omission, not policy; the user is hovering the
+                // unresponsive window either way.
                 for seat in host.seats() {
                     let Some(focus) = host.pointer_focus(seat) else {
                         continue;
@@ -184,6 +192,9 @@ impl Shell {
                 self.seats.insert(seat, SeatState::default());
             }
             Event::SeatGone { seat } => {
+                // Ref-count contract: drop this seat's one tracked
+                // reference; other seats focused on the same surface
+                // keep theirs (C: per-seat focus_state listeners).
                 if let Some(old) = self.focus.remove(&seat) {
                     host.untrack_surface(old);
                 }
@@ -197,22 +208,54 @@ impl Shell {
                     .filter_map(|(s, st)| st.focused_surface.map(|f| (*s, f)))
                     .collect();
                 for (seat, focused) in entries {
-                    host.activate_input(
+                    let es = host.activate_input(
                         ActivateTarget::SurfaceView(focused),
                         seat,
                         ActivateFlags::empty(),
                     );
+                    // Ref-count contract: activate_input tracked the
+                    // surface once; fold the fresh reference into the
+                    // per-seat slot and drop the one it replaces so each
+                    // seat holds exactly one tracked reference.  (C's
+                    // notify_session leaves its focus_state untouched;
+                    // re-pointing ours at the surface that actually took
+                    // focus is equivalent on surface death.)
+                    if let Some(es) = es
+                        && let Some(old) = self.focus.insert(seat, es)
+                    {
+                        host.untrack_surface(old);
+                    }
                 }
             }
             Event::Shutdown => {
                 // C shell_destroy → desktop_shell_destroy_layer: destroy
-                // every shell surface, then drop all bookkeeping.
-                let ids: Vec<DesktopSurfaceId> = self.surfaces.keys().copied().collect();
+                // every shell surface top of the stacking order first
+                // (C walks the layer list); never-stacked leftovers
+                // follow in id order so the teardown is deterministic.
+                let mut ids: Vec<DesktopSurfaceId> = Vec::new();
+                for v in host.workspace_views_top_down() {
+                    if self.surfaces.contains_key(&v) && !ids.contains(&v) {
+                        ids.push(v);
+                    }
+                }
+                let mut rest: Vec<DesktopSurfaceId> = self
+                    .surfaces
+                    .keys()
+                    .copied()
+                    .filter(|id| !ids.contains(id))
+                    .collect();
+                rest.sort();
+                ids.extend(rest);
                 for id in ids {
                     host.destroy_surface_state(id);
                 }
                 self.surfaces.clear();
                 self.seats.clear();
+                // Deliberately no untrack_surface here (C removes its
+                // focus_state listeners): wrapper teardown clears the
+                // tracking registry wholesale and parks live listeners
+                // in its graveyard, so late TrackedSurfaceGone events
+                // land on these (now empty) maps as no-ops.
                 self.focus.clear();
             }
             // Wrapper-internal grab bookkeeping already done; frontend
@@ -431,35 +474,52 @@ impl Shell {
         if !self.surfaces.contains_key(&surface) {
             return;
         }
-        if let Some(child) = self.last_mapped_child(host, surface) {
-            // Activate the last xdg child instead of the parent.
-            return self.activate(host, child, seat, flags, ActivateTarget::SurfaceView(child));
+        // Activate the last xdg child instead of the parent, following
+        // chains (child of child).  C recurses unboundedly here; walk
+        // with a cap instead so a client-made parent cycle (self-parent
+        // or A↔B) cannot overflow the stack — an overflow is an abort
+        // the panic barrier cannot catch.
+        let mut surface = surface;
+        let mut target = target;
+        let mut hops = 0;
+        while let Some(child) = self.last_mapped_child(host, surface) {
+            surface = child;
+            target = ActivateTarget::SurfaceView(child);
+            hops += 1;
+            if hops > 64 {
+                break; // cycle guard; parents are client-controlled
+            }
         }
 
         let focused_es = host.activate_input(target, seat, flags);
 
-        let prev = self.seats.entry(seat).or_default().focused_surface;
-        if let Some(p) = prev
-            && p != surface
-            && self.surfaces.contains_key(&p)
-        {
-            self.change_focus_count(host, p, -1);
-        }
-        if prev != Some(surface) {
-            self.change_focus_count(host, surface, 1);
-            if let Some(st) = self.seats.get_mut(&seat) {
-                st.focused_surface = Some(surface);
+        // Focus-count bookkeeping only for known seats (C: get_shell_seat
+        // returning NULL skips this block; seats arrive via SeatCreated).
+        if let Some(prev) = self.seats.get(&seat).map(|st| st.focused_surface) {
+            if let Some(p) = prev
+                && p != surface
+                && self.surfaces.contains_key(&p)
+            {
+                self.change_focus_count(host, p, -1);
+            }
+            if prev != Some(surface) {
+                self.change_focus_count(host, surface, 1);
+                if let Some(st) = self.seats.get_mut(&seat) {
+                    st.focused_surface = Some(surface);
+                }
             }
         }
 
-        // C ensure_focus_state + focus_state_set_focus.
-        if let Some(es) = focused_es {
-            let old = self.focus.insert(seat, es);
-            if let Some(old) = old
-                && old != es
-            {
-                host.untrack_surface(old);
-            }
+        // C ensure_focus_state + focus_state_set_focus.  Ref-count
+        // contract: activate_input tracked `es` once for this
+        // acquisition, so drop exactly one reference to whatever this
+        // seat held before — even when it is the same surface (the new
+        // acquisition replaces the old one).  Untracking only this
+        // seat's reference keeps other seats' death tracking alive.
+        if let Some(es) = focused_es
+            && let Some(old) = self.focus.insert(seat, es)
+        {
+            host.untrack_surface(old);
         }
 
         host.raise_to_workspace_top(surface);
@@ -533,6 +593,9 @@ impl Shell {
                     .into_iter()
                     .find(|v| self.surfaces.contains_key(v))
             });
+            // No untrack here: the surface's death already retired the
+            // wrapper's tracked reference(s) wholesale, and the id is
+            // stale (untrack_surface would no-op anyway).
             self.focus.remove(&seat);
             if let Some(next) = next {
                 self.activate(

@@ -82,12 +82,31 @@ unsafe extern "C" fn tramp_surface_added(
         // SAFETY: ds live inside this callback; create_view may fail.
         let view = unsafe { weston_sys::weston_desktop_surface_create_view(ds.as_ptr()) };
         let Some(view) = NonNull::new(view) else {
+            // The surface stays alive but unregistered: every later
+            // callback for it no-ops.  Loud, so the silent no-ops are
+            // attributable (the C shell fails this path loudly too).
+            crate::log::log_line(
+                "westonite-shell: surface_added: view creation failed; \
+                 surface will be unmanaged",
+            );
             return;
         };
         // SAFETY: ds live; the underlying surface outlives the desktop
         // surface.
         let wsurf = unsafe { weston_sys::weston_desktop_surface_get_surface(ds.as_ptr()) };
         let Some(wsurf) = NonNull::new(wsurf) else {
+            crate::log::log_line(
+                "westonite-shell: surface_added: desktop surface has no \
+                 weston_surface; surface will be unmanaged",
+            );
+            // Don't leak the just-created view (unlink → destroy, the
+            // documented order — shell.c:218-220).
+            // SAFETY: view was created above and is still live; it was
+            // never linked to a layer or registered anywhere.
+            unsafe {
+                weston_sys::weston_desktop_surface_unlink_view(view.as_ptr());
+                weston_sys::weston_view_destroy(view.as_ptr());
+            }
             return;
         };
 
