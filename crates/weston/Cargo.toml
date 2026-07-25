@@ -14,6 +14,12 @@ libc = { workspace = true }
 # Pulls in the fake-C-object shim so primitives are testable without a
 # compositor (D18).
 testsupport = ["weston-sys/testsupport"]
+# R1 hybrid phase: the shell bootstrap that reads westonite.ini through
+# the C frontend and dlsym-resolves the two libexec contract symbols.
+# Deleted at R3 (plan §2).
+hybrid-r1 = ["weston-sys/hybrid-r1"]
+# Test-only opaque-id forgery for mock-ShellHost unit tests (D20).
+test-ids = []
 
 [dev-dependencies]
 weston-sys = { workspace = true, features = ["testsupport"] }

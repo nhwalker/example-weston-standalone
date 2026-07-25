@@ -555,3 +555,48 @@ fn register_output(ctx: &Ctx, output: NonNull<weston_sys::weston_output>, name: 
     l.mark_attached();
     ctx.inner.listeners.borrow_mut().push((key, l));
 }
+
+/// Track a weston_surface for keyboard-focus bookkeeping
+/// (C focus_state_set_focus's destroy listener, centralized §3b).
+/// Ref-counted: several seats may focus the same surface.
+pub(crate) fn track_surface(
+    ctx: &Ctx,
+    es: NonNull<weston_sys::weston_surface>,
+) -> crate::ids::SurfaceId {
+    if let Some(existing) = ctx.inner.surfaces.borrow().id_of(es) {
+        return crate::ids::SurfaceId(existing);
+    }
+    let id = crate::ids::SurfaceId(ctx.inner.surfaces.borrow_mut().insert(es));
+    let key = es.as_ptr() as usize;
+    let l = Listener::new(
+        "shell.tracked_surface_destroy",
+        true,
+        Box::new(move |ctx, data| {
+            let Some(p) = NonNull::new(data.cast::<weston_sys::weston_surface>()) else {
+                return;
+            };
+            // Eager payload: the main surface's desktop id, while the
+            // object is still readable (§3e destroy split).
+            // SAFETY: surface still live during its destroy emission.
+            let main = unsafe {
+                let m = weston_sys::weston_surface_get_main_surface(p.as_ptr());
+                if m.is_null() || m == p.as_ptr() {
+                    None
+                } else {
+                    NonNull::new(m).and_then(|m| ctx.ds_id_of_wsurf(m))
+                }
+            };
+            ctx.inner.surfaces.borrow_mut().invalidate_ptr(p);
+            ctx.retire_listener(p.as_ptr() as usize);
+            ctx.enqueue(Event::TrackedSurfaceGone { surface: id, main });
+        }),
+    );
+    // SAFETY: surface live; its destroy_signal announces death through
+    // this listener (§3b pairing).
+    unsafe {
+        weston_sys::wsys_wl_signal_add(&raw mut (*es.as_ptr()).destroy_signal, l.raw_ptr());
+    }
+    l.mark_attached();
+    ctx.own_listener(key, l);
+    id
+}

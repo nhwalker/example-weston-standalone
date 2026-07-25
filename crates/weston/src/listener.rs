@@ -147,7 +147,6 @@ impl Listener {
         self.inner.attached.set(true);
     }
 
-    #[cfg(test)]
     pub(crate) fn is_attached(&self) -> bool {
         self.inner.attached.get()
     }

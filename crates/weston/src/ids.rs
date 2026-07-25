@@ -54,3 +54,32 @@ define_id!(
     /// A `weston_curtain` (kind 2: we destroy it).
     CurtainId
 );
+
+/// Test-only id forgery, for the safe crates' mock-`ShellHost` unit
+/// tests (D20).  Feature-gated so production dependency graphs cannot
+/// enable it — the opaque-id fence rule (§2) holds outside tests; a
+/// forged id used against the real wrapper still just resolves `None`.
+#[cfg(feature = "test-ids")]
+#[doc(hidden)]
+pub mod forge {
+    use super::*;
+
+    fn raw(n: u32) -> RawId {
+        RawId {
+            slot: n,
+            generation: 0,
+        }
+    }
+    pub fn ds(n: u32) -> DesktopSurfaceId {
+        DesktopSurfaceId(raw(n))
+    }
+    pub fn seat(n: u32) -> SeatId {
+        SeatId(raw(n))
+    }
+    pub fn output(n: u32) -> OutputId {
+        OutputId(raw(n))
+    }
+    pub fn surf(n: u32) -> SurfaceId {
+        SurfaceId(raw(n))
+    }
+}

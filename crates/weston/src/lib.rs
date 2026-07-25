@@ -16,17 +16,28 @@
 //! * Kind-3/kind-4 allocations (listener inners, grab inners, vtables,
 //!   embedded `weston_layer`s) live behind `Pin<Box<_>>` created here;
 //!   safe crates cannot name the types (§3a).
-//! * Dispatch is two-tier with a depth-counted drain-at-the-edge (§3e):
+//! * Dispatch is two-tier with a depth-counted drain-at-edge (§3e):
 //!   trampolines and outbound FFI calls increment the depth; whoever
 //!   returns it to zero drains the deferred-event queue and then the
-//!   pending-drop list.  The app (shell/frontend) state is borrowed once
-//!   per drained event, never across FFI.
-//! * Every trampoline body runs inside [`panic_barrier`]: panics are
+//!   pending-drop list.  The app state is borrowed once per delivered
+//!   event, never across FFI.
+//! * Every trampoline body runs inside the panic barrier: panics are
 //!   caught, logged via weston_log, and turned into `abort()` — no
 //!   unwinding crosses the C boundary (D16).
 //! * Wrapper types are `!Send + !Sync`; ids are inert data, but resolving
-//!   one requires `&Ctx`/`&mut Ctx`, which never leaves the libweston
-//!   thread (§3j).
+//!   one requires `&Ctx`, which never leaves the libweston thread (§3j).
+
+/// The one `container_of` helper (wrapper-internal; §3c keeps the idiom
+/// in exactly one place per shape — this macro serves the read-only
+/// intrusive-list walks).
+macro_rules! container_of {
+    ($ptr:expr, $T:ty, $field:ident) => {
+        $ptr.cast::<u8>()
+            .sub(core::mem::offset_of!($T, $field))
+            .cast::<$T>()
+    };
+}
+pub(crate) use container_of;
 
 pub mod compositor;
 pub mod events;
@@ -35,13 +46,20 @@ pub mod ids;
 pub mod log;
 
 pub(crate) mod ctx;
+pub(crate) mod curtain;
+pub(crate) mod desktop;
 pub(crate) mod grab;
+pub(crate) mod input_bindings;
+pub(crate) mod layer;
 pub(crate) mod listener;
 pub(crate) mod panic_barrier;
 pub(crate) mod registry;
 
+#[cfg(feature = "hybrid-r1")]
+pub mod shell_init;
+
 pub use compositor::{BackendKind, Compositor, CompositorBuilder, CompositorError, RendererKind};
-pub use ctx::{Ctx, EventSink};
-pub use events::Event;
-pub use host::ShellHost;
+pub use ctx::{Ctx, ShellApp};
+pub use events::{ActivateVia, Event};
+pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
