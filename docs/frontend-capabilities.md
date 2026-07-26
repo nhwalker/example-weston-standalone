@@ -56,7 +56,7 @@ Per-backend config blocks (each pairs CLI options + ini sections; the
 | Backend | Loader | Config surface |
 |---|---|---|
 | DRM (real hardware) | `load_drm_backend` (3375) | `--seat`, `--drm-device`, `--additional-devices`, `--current-mode`, `[core] require-input`, per-output DRM settings |
-| headless | `load_headless_backend` (3472) | `--width/height`, `--no-outputs`, `--refresh-rate` |
+| headless | `load_headless_backend` (3472) | `--width/height/scale`, `--transform`, `--no-outputs`, `--refresh-rate`, `--use-pixman/gl` |
 | x11 (nested) | `load_x11_backend` (3924) | `--width/height/scale`, `--fullscreen`, `--output-count`, `--no-input` |
 | wayland (nested) | `load_wayland_backend` (4044) | `--width/height/scale`, `--fullscreen`, `--sprawl`, `--display` |
 | RDP (remote desktop server) | `load_rdp_backend` (3732) | `--port`, TLS cert/key, RemoteFX toggles, `[rdp]` section |

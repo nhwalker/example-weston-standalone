@@ -44,6 +44,7 @@ pub mod events;
 pub mod host;
 pub mod ids;
 pub mod log;
+pub mod output_policy;
 
 pub(crate) mod ctx;
 pub(crate) mod curtain;
@@ -63,3 +64,6 @@ pub use ctx::{Ctx, ShellApp};
 pub use events::{ActivateVia, Event};
 pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
+pub use output_policy::{
+    OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform,
+};

@@ -80,6 +80,10 @@ pub struct Cli {
     /// Output scale (x11/wayland).
     #[arg(long)]
     pub scale: Option<i32>,
+    /// Output transform: normal, rotate-90/180/270,
+    /// flipped[-rotate-90/180/270] (headless, x11, wayland).
+    #[arg(long)]
+    pub transform: Option<String>,
     /// Fullscreen (x11/wayland nested).
     #[arg(long)]
     pub fullscreen: bool,

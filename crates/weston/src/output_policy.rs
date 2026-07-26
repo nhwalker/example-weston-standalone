@@ -1,0 +1,231 @@
+//! Output configuration policy (plan §7 R2b).
+//!
+//! Plain data, not callbacks: the frontend resolves its `Settings` into
+//! an [`OutputPolicy`] once at startup and hands it to the builder.
+//! The sync-tier heads-changed handler (§3e) consults it per head —
+//! since deciding is a pure table lookup, the A3 proof for that
+//! trampoline stays "wrapper state only, no app borrow".
+//!
+//! Precedence per head mirrors C `wet_configure_windowed_output_from_
+//! config`: backend defaults → the name-matched `[[output]]` section →
+//! CLI overrides.
+
+/// wl_output_transform, typed (C main.c `transforms[]` grammar).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OutputTransform {
+    #[default]
+    Normal,
+    Rotate90,
+    Rotate180,
+    Rotate270,
+    Flipped,
+    FlippedRotate90,
+    FlippedRotate180,
+    FlippedRotate270,
+}
+
+impl OutputTransform {
+    /// C `weston_parse_transform` names, exactly.
+    pub fn parse(s: &str) -> Option<OutputTransform> {
+        Some(match s {
+            "normal" => OutputTransform::Normal,
+            "rotate-90" => OutputTransform::Rotate90,
+            "rotate-180" => OutputTransform::Rotate180,
+            "rotate-270" => OutputTransform::Rotate270,
+            "flipped" => OutputTransform::Flipped,
+            "flipped-rotate-90" => OutputTransform::FlippedRotate90,
+            "flipped-rotate-180" => OutputTransform::FlippedRotate180,
+            "flipped-rotate-270" => OutputTransform::FlippedRotate270,
+            _ => return None,
+        })
+    }
+
+    pub(crate) fn to_c(self) -> weston_sys::wl_output_transform::Type {
+        use weston_sys::wl_output_transform as t;
+        match self {
+            OutputTransform::Normal => t::WL_OUTPUT_TRANSFORM_NORMAL,
+            OutputTransform::Rotate90 => t::WL_OUTPUT_TRANSFORM_90,
+            OutputTransform::Rotate180 => t::WL_OUTPUT_TRANSFORM_180,
+            OutputTransform::Rotate270 => t::WL_OUTPUT_TRANSFORM_270,
+            OutputTransform::Flipped => t::WL_OUTPUT_TRANSFORM_FLIPPED,
+            OutputTransform::FlippedRotate90 => t::WL_OUTPUT_TRANSFORM_FLIPPED_90,
+            OutputTransform::FlippedRotate180 => t::WL_OUTPUT_TRANSFORM_FLIPPED_180,
+            OutputTransform::FlippedRotate270 => t::WL_OUTPUT_TRANSFORM_FLIPPED_270,
+        }
+    }
+}
+
+/// One `[[output]]` section, already parsed by the frontend (mode
+/// string → size, transform string → enum; parse errors were startup
+/// errors there).
+#[derive(Debug, Clone, Default)]
+pub struct OutputRule {
+    /// Head name this rule configures (C `[output] name=`).
+    pub name: String,
+    /// `off = true` / `mode = "off"`: leave this head unenabled.
+    pub off: bool,
+    /// Parsed `mode = "WxH"`, if present and valid.
+    pub size: Option<(i32, i32)>,
+    pub scale: Option<i32>,
+    pub transform: Option<OutputTransform>,
+}
+
+/// CLI-level overrides (win over any section, C parsed_options).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct OutputCliOverrides {
+    pub width: Option<i32>,
+    pub height: Option<i32>,
+    pub scale: Option<i32>,
+    pub transform: Option<OutputTransform>,
+}
+
+/// The resolved per-head decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutputSetup {
+    pub width: i32,
+    pub height: i32,
+    pub scale: i32,
+    pub transform: OutputTransform,
+}
+
+/// The whole policy: defaults come from the backend (headless:
+/// 1024x640, scale 1, normal — C headless_backend_output_configure).
+#[derive(Debug, Clone)]
+pub struct OutputPolicy {
+    pub default_size: (i32, i32),
+    pub default_scale: i32,
+    pub default_transform: OutputTransform,
+    pub cli: OutputCliOverrides,
+    pub rules: Vec<OutputRule>,
+}
+
+impl OutputPolicy {
+    /// Backend defaults only (the R0 smoke path).
+    pub fn defaults(width: i32, height: i32) -> OutputPolicy {
+        OutputPolicy {
+            default_size: (width, height),
+            default_scale: 1,
+            default_transform: OutputTransform::Normal,
+            cli: OutputCliOverrides::default(),
+            rules: Vec::new(),
+        }
+    }
+
+    /// Decide the setup for a head.  `None` = leave the head unenabled
+    /// (`off`).  Precedence: defaults → section → CLI (C
+    /// parse_simple_mode / wet_output_set_scale / _set_transform).
+    pub fn decide(&self, head_name: &str) -> Option<OutputSetup> {
+        let rule = self.rules.iter().find(|r| r.name == head_name);
+        if let Some(r) = rule
+            && r.off
+        {
+            return None;
+        }
+        let (mut width, mut height) = self.default_size;
+        let mut scale = self.default_scale;
+        let mut transform = self.default_transform;
+        if let Some(r) = rule {
+            if let Some((w, h)) = r.size {
+                width = w;
+                height = h;
+            }
+            if let Some(s) = r.scale {
+                scale = s;
+            }
+            if let Some(t) = r.transform {
+                transform = t;
+            }
+        }
+        if let Some(w) = self.cli.width {
+            width = w;
+        }
+        if let Some(h) = self.cli.height {
+            height = h;
+        }
+        if let Some(s) = self.cli.scale {
+            scale = s;
+        }
+        if let Some(t) = self.cli.transform {
+            transform = t;
+        }
+        Some(OutputSetup {
+            width,
+            height,
+            scale,
+            transform,
+        })
+    }
+}
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn precedence_defaults_section_cli() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        assert_eq!(
+            p.decide("headless").unwrap(),
+            OutputSetup {
+                width: 1024,
+                height: 640,
+                scale: 1,
+                transform: OutputTransform::Normal
+            }
+        );
+        p.rules.push(OutputRule {
+            name: "headless".into(),
+            off: false,
+            size: Some((640, 480)),
+            scale: Some(2),
+            transform: Some(OutputTransform::Rotate90),
+        });
+        assert_eq!(
+            p.decide("headless").unwrap(),
+            OutputSetup {
+                width: 640,
+                height: 480,
+                scale: 2,
+                transform: OutputTransform::Rotate90
+            }
+        );
+        // A section for another head is inert (C name-matched lookup).
+        assert_eq!(p.decide("X1").unwrap().width, 1024);
+        // CLI wins over the section.
+        p.cli.width = Some(800);
+        p.cli.scale = Some(1);
+        let s = p.decide("headless").unwrap();
+        assert_eq!((s.width, s.height, s.scale), (800, 480, 1));
+        assert_eq!(s.transform, OutputTransform::Rotate90);
+    }
+
+    #[test]
+    fn off_rule_disables_only_its_head() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        p.rules.push(OutputRule {
+            name: "X1".into(),
+            off: true,
+            ..OutputRule::default()
+        });
+        assert!(p.decide("X1").is_none());
+        assert!(p.decide("headless").is_some());
+    }
+
+    #[test]
+    fn transform_grammar_matches_c() {
+        for (s, t) in [
+            ("normal", OutputTransform::Normal),
+            ("rotate-90", OutputTransform::Rotate90),
+            ("rotate-180", OutputTransform::Rotate180),
+            ("rotate-270", OutputTransform::Rotate270),
+            ("flipped", OutputTransform::Flipped),
+            ("flipped-rotate-90", OutputTransform::FlippedRotate90),
+            ("flipped-rotate-180", OutputTransform::FlippedRotate180),
+            ("flipped-rotate-270", OutputTransform::FlippedRotate270),
+        ] {
+            assert_eq!(OutputTransform::parse(s), Some(t));
+        }
+        assert_eq!(OutputTransform::parse("rotate-45"), None);
+    }
+}

@@ -17,6 +17,103 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2b headless slice (2026-07-26)** — output management, the
+  e2e-verifiable half (plan §7 R2b), branch
+  `claude/rust-migration-j84b2p`:
+  - New fence module `output_policy`: typed `OutputTransform` (the C
+    `transforms[]` grammar exactly), `OutputRule`/`OutputPolicy` —
+    plain data resolved once by the frontend, so the heads-changed
+    trampoline's A3 proof stays "wrapper state only".  Precedence per
+    head mirrors C: backend defaults → name-matched `[[output]]`
+    section → CLI overrides (unit-pinned).
+  - heads-changed handler now implements all three C
+    `simple_heads_changed` branches (enable / disable on unplug /
+    device-changed log + flag reset) plus the policy lookup;
+    `weston_output_lazy_align` ported (tail-of-output-list placement);
+    enable path applies scale/transform/size per decision.  `off =
+    true` / `mode = "off"` leaves a head unenabled (re-spec extension;
+    logged).  Builder: `with_output_policy`, `with_no_outputs` (C
+    --no-outputs skips head creation), `with_refresh_mhz`
+    (C --refresh-rate passthrough).
+  - Frontend: `--transform` CLI flag added (real C headless option the
+    R-G sweep missed), `--scale`/`--no-outputs`/`--refresh-rate` and
+    `[[output]]` scale/transform/off unblocked; invalid transform is a
+    startup error with the C wording; invalid mode logs C's "Invalid
+    mode … Using defaults.".  Still fail-loud (DRM-bound):
+    clone-of/mirror-of, icc/eotf/colorimetry/color-characteristics/
+    max-bpc/vrr, [core] color-management.
+  - E2e: rust leg now runs `test_outputs.py`'s headless subset —
+    geometry from CLI and scale+transform from config pass against
+    `westonite-rs` (30 passed / 4 deselected: VNC tests wait for R2c).
+  - Validation: workspace clippy-clean; 3 new policy unit tests;
+    live probes (--no-outputs, off-rule, bad transform fatal,
+    --refresh-rate) green; valgrind clean on the rotate-90/scale-2
+    config incl. shutdown (0 errors, 0 definite leaks); smoke + fence
+    checks green.
+  - Review fixes (branch `claude/review-pr-20-vcjjei`):
+    - **Startup no longer succeeds with missing outputs.**  C keeps
+      `wet_compositor.init_failed` and checks it right after
+      `weston_compositor_flush_heads_changed`; the wrapper had no
+      equivalent, so a create/configure/enable failure only logged and
+      left a compositor running with no outputs and exiting 0 — the
+      silent degradation the fail-loud gate exists to prevent, newly
+      reachable now that config decides the geometry.  `Ctx` carries
+      the flag; `build()` turns it into `CompositorError::OutputInit`.
+      The three failure log lines now use C's wording
+      (`Could not create an output for head "%s".` / `Cannot
+      configure output "%s".`; the enable failure is left to
+      libweston, which already logs C's exact line).
+    - **heads-changed filters by backend.**  C keys the listener off
+      `struct wet_backend` and iterates only that backend's heads
+      (`wet_backend_iterate_heads`).  The wrapper installs one
+      compositor-wide listener and walked every head, which is
+      indistinguishable today (headless only) but would configure
+      foreign heads with this backend's policy and enable them through
+      the *headless* windowed API the moment R2c lands a second
+      backend — exactly what the deselected
+      `test_multi_backend_headless_plus_vnc` covers.  The backend
+      pointer is recorded at load and compared per head.
+    - **Output registration moved after `weston_output_enable`**, as C
+      does with `wet_head_tracker_create`.  Registering first claimed
+      the registry slot before `output_created_signal` fired, so the
+      shell's listener took its already-registered early return and
+      `Event::OutputCreated` — which is what creates the background
+      curtain — was never dispatched under the Rust frontend.  It also
+      left two destroy listeners keyed on one output address, and
+      emitted `OutputGone` for an output the app had never been told
+      about.  The hybrid R1 path (C frontend + Rust shell) never hit
+      this because C does not call the wrapper's registration.
+    - `lazy_align` now uses the crate's one `container_of!` (§3c)
+      instead of open-coding the same pointer arithmetic; the
+      `off`-rule log is gated to once per head (it sits on a head that
+      stays connected-and-unenabled, so every later flush re-logged);
+      `disable_head` lost its unused `ctx` parameter.
+    - `[[output]] scale` positivity moved to `westonite-config`,
+      beside the `--width`/`--height`/`--scale` checks it shares a
+      rule with.  `parse_mode` no longer trims, so `1024 x 640` is
+      rejected as C rejects it.  The two remaining deliberate
+      divergences from C's section handling (all sections validated
+      eagerly rather than lazily; no `Invalid mode` warning for a
+      section with no `mode` key at all) are now stated in
+      `build_output_policy`/`reject_unported` and
+      docs/config-migration.md instead of being contradicted by their
+      own doc comments.
+    - Coverage: `test_outputs.py` gains `--transform` from CLI, bad
+      transform fatal, invalid-mode fallback, `--no-outputs`, and
+      (Rust-only) `off = true` plus its scoping; `parse_mode` and the
+      `[[output]] scale` rule get unit tests.  `lazy_align`'s peer
+      branch is still unreachable on a single-head backend — noted at
+      the function, covered when R2c brings a second backend.  The
+      redundant `--deselect` for the already-`skip`ped VNC resize test
+      is gone.
+    - Docs: plan §7 records the R2b split (headless half done, DRM
+      remainder with R2c) rather than leaving it in a PR description;
+      callback-inventory L2 moves to R2c; frontend-capabilities'
+      headless row lists the options the R-G sweep had missed
+      (`--scale`, `--transform`, `--fake-seat`, the renderer forces);
+      `westonite.toml.example` documents the `[[output]]` keys and
+      `off`.
+
 - **R2a (2026-07-26)** — Rust frontend core: config + spawn + headless
   (plan §7 R2a), branch `claude/rust-migration-j84b2p`:
   - New safe crates: `westonite-config` (§5 re-spec, D9–D12: serde

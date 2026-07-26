@@ -869,7 +869,17 @@ halves can be mixed and smoke-tested at every phase boundary.
   oracle for everything else. R2b output management + DRM (the
   largest block: heads, hotplug, clone/mirror, color mgmt;
   `test_outputs.py` covers the headless/VNC-reachable subset — DRM
-  paths remain hardware-verified). R2c remaining backends
+  paths remain hardware-verified), **split in two on landing**:
+  *R2b-headless* ✅ *(done — see PROVENANCE.md log)* is the
+  e2e-verifiable half — the output policy (`[[output]]`
+  mode/scale/transform/off, `--scale`/`--transform`/
+  `--no-outputs`/`--refresh-rate`) and all three
+  `simple_heads_changed` branches, proven against the headless
+  subset of `test_outputs.py`; the DRM-bound remainder
+  (clone/mirror-of, color management, the DRM output attributes)
+  stays fail-loud and lands with R2c, where VNC gives the e2e
+  control plane the reach to verify mirror-of instead of asserting
+  it by inspection. R2c remaining backends
   (x11/wayland/rdp/vnc/pipewire — VNC is load-bearing for the whole
   e2e control plane, so it lands first in this slice) plus the
   remoting/pipewire virtual-output plugin loaders. R2d xwayland

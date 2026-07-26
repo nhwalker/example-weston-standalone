@@ -59,4 +59,16 @@ before startup (stderr), not logged as `unhandled option:`.
 may be combined with `--renderer` (C: `Conflicting renderer
 specifications`).  `--width`, `--height` and `--scale` must be
 positive; C silently treated `0` as "use the default", which hid
-typos.
+typos.  `[[output]] scale` follows the same rule — C passed it
+straight to `weston_output_set_scale`, where `0` trips an assert.
+
+`[[output]]` sections are validated at startup, all of them, not
+lazily when a head of that name turns up: an unknown `transform` name
+is fatal (C's `Invalid transform "…"` wording), as is a section with
+no `name` key, and so is any key whose behaviour is not ported yet
+(`clone-of`, `mirror-of`, the colour-management attributes).  C
+resolves a section only when its head appears, so a section that
+matches nothing is silently inert there — indistinguishable, from the
+outside, from one that was honoured.  An unparseable `mode` is the
+exception and stays non-fatal, matching C: it logs `Invalid mode for
+output NAME. Using defaults.` and falls back to the backend default.

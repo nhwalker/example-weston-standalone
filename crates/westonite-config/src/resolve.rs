@@ -115,6 +115,9 @@ pub struct Settings {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub scale: Option<i32>,
+    /// `--transform` (weston transform-name grammar, validated by the
+    /// frontend against the typed enum).
+    pub transform: Option<String>,
     pub fullscreen: bool,
     pub output_count: Option<u32>,
     pub no_input: bool,
@@ -357,6 +360,22 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         }
     }
 
+    // Same rule for the per-output section scale.  C reads it with
+    // weston_config_section_get_int and hands it straight to
+    // weston_output_set_scale, whose `assert(output->current_scale)`
+    // then aborts on 0 (and a negative scale produces nonsense
+    // geometry) — reject both here, where --scale is already rejected.
+    for out in &config.output {
+        if let Some(v) = out.scale
+            && v <= 0
+        {
+            let name = out.name.as_deref().unwrap_or("<unnamed>");
+            return Err(ConfigError::Invalid(format!(
+                "[output] '{name}': scale must be positive (got {v})"
+            )));
+        }
+    }
+
     // Backend-specific sections belong to the backend that is actually
     // loaded: keying only off "vnc first, else rdp" would let a stray
     // [vnc] port hijack an RDP run.
@@ -403,6 +422,7 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         sprawl: cli.sprawl,
         parent_display: cli.display.clone(),
         no_outputs: cli.no_outputs,
+        transform: cli.transform.clone(),
         refresh_rate: cli.refresh_rate,
         drm_seat: cli.seat.clone(),
         drm_device: cli.drm_device.clone(),
@@ -682,6 +702,22 @@ mod tests {
                 .to_string();
             assert!(err.starts_with(flag), "{err}");
         }
+    }
+
+    #[test]
+    fn non_positive_output_section_scale_is_rejected() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("westonite.toml");
+        std::fs::write(&path, "[[output]]\nname = \"headless\"\nscale = 0\n").unwrap();
+        let cfg = format!("--config={}", path.display());
+        let err = resolve_from(&cli(&[&cfg]), &no_env())
+            .unwrap_err()
+            .to_string();
+        assert_eq!(err, "[output] 'headless': scale must be positive (got 0)");
+
+        std::fs::write(&path, "[[output]]\nname = \"headless\"\nscale = 2\n").unwrap();
+        let s = resolve_from(&cli(&[&cfg]), &no_env()).unwrap();
+        assert_eq!(s.config.output[0].scale, Some(2));
     }
 
     #[test]
