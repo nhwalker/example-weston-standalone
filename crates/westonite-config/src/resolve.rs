@@ -190,6 +190,11 @@ fn discover(env: &HashMap<String, String>) -> (Option<PathBuf>, Option<PathBuf>)
             dirs.push(home_config);
         }
     }
+    // Deliberate divergence, documented in docs/config-migration.md:
+    // libweston reads the ini from a hard-coded `weston/` SUBDIR of
+    // each entry (/etc/xdg/weston/weston.ini); the TOML lives in the
+    // entry itself (/etc/xdg/westonite.toml) — no foreign project name
+    // in a rebranded compositor's path.
     match env.get("XDG_CONFIG_DIRS").filter(|v| !v.is_empty()) {
         Some(list) => {
             for d in list.split(':').filter(|d| !d.is_empty()) {

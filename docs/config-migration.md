@@ -13,9 +13,12 @@ An annotated example lives at the repo root:
 - The **search order**: `$XDG_CONFIG_HOME`, then `$HOME/.config`, then
   `$XDG_CONFIG_DIRS` (default `/etc/xdg`) — each location is tried in
   turn, so setting `XDG_CONFIG_HOME` does not mask a config in
-  `$HOME/.config`; `--config=PATH` and `--no-config` still work.  Only
-  the file *name* changes: `westonite.toml` instead of
-  `westonite.ini`.
+  `$HOME/.config`; `--config=PATH` and `--no-config` still work.  The
+  file *name* changes (`westonite.toml` instead of `westonite.ini`),
+  and one system-config path moves: libweston read the ini from a
+  hard-coded `weston/` subdirectory of each `$XDG_CONFIG_DIRS` entry
+  (`/etc/xdg/weston/westonite.ini`); the TOML lives in the entry
+  itself (`/etc/xdg/westonite.toml`).
 - **Key names**: kebab-case throughout, matching the ini's hyphenated
   keys — most entries change section syntax only, not spelling.
 - **Value grammars** that are really weston's own (modelines like
