@@ -1,0 +1,27 @@
+[package]
+name = "westonite"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "SAFE: the westonite frontend binary (main.c port, R2 — growing by slice; headless core at R2a). Links westonite-shell statically; reaches C only through the weston fence."
+
+[[bin]]
+name = "westonite-rs"
+path = "src/main.rs"
+
+[dependencies]
+# `hybrid-r1` gates the whole shell_init module today (attach_shell_native
+# included); the native binary needs it for with_shell.  The feature split
+# (native vs dlsym hybrid extras) happens when the plugin is deleted at R3.
+weston = { workspace = true, features = ["hybrid-r1"] }
+westonite-shell = { workspace = true }
+westonite-config = { workspace = true }
+westonite-spawn = { workspace = true }
+clap = { workspace = true }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"

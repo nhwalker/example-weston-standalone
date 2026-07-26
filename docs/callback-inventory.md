@@ -130,7 +130,14 @@ plain deferred notifications.  Field count: 7 + 3 + 19 = 29.)*
 
 | Handler | Via | Tier | Status |
 |---|---|---|---|
-| `vlog` / `vlog_continue` | shim `wsys_install_log_handlers` → `wsys_rust_log_sink` | sync, no app borrow (writes stderr; R2a adds scopes/flight recorder) | R0 |
+| `vlog` / `vlog_continue` | shim `wsys_install_log_handlers` → `wsys_rust_log_sink` | sync, no app borrow (writes stderr, or the `--log` file since R2a; scope subscription/flight recorder not yet ported) | R0 (file sink R2a) |
+
+## 6. Event-loop signal sources (fd callbacks, not `wl_listener`s — C main.c `signals[]`)
+
+| Source | Handler | Site | Tier | Status |
+|---|---|---|---|---|
+| SIGTERM / SIGINT | `on_term_signal` | `compositor.rs` `install_signal_sources` (C main.c:4553 block) | sync, no app borrow (`wl_display_terminate` only; delivered via signalfd on the loop, not async signal context) | R0 |
+| SIGCHLD | `on_sigchld` | same site — installed in `build()`, deliberately **before** the frontend spawns any client (C installs signals[] before `execute_autolaunch`; a watched client exiting in that window must not be lost) | sync, no app borrow (panic-guarded `waitpid` WNOHANG loop; autolaunch-watch match terminates the display) | R2a |
 
 Maintenance rule: growing the sync tier or adding a callback without a
 row here fails review; the R1/R2 porting PRs update the Status column

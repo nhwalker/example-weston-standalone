@@ -1,0 +1,15 @@
+[package]
+name = "westonite-spawn"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "UNSAFE (one audited module): process spawning for the westonite frontend — exec-string env parsing, fd passing, and the pre_exec block (fd unCLOEXEC, setsid, sigmask reset) with only async-signal-safe calls between fork and exec (plan §2, risk R-D lives here and only here)."
+
+[dependencies]
+libc = { workspace = true }
+
+[lints.rust]
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+undocumented_unsafe_blocks = "deny"

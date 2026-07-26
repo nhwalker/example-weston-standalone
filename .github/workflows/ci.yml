@@ -97,6 +97,20 @@ jobs:
       - name: Build, unit tests, headless smoke, valgrind
         run: docker run --rm -v "$PWD":/src -w /src westonite-build /src/scripts/rust-smoke.sh
 
+      - name: Rust frontend e2e subset (R2a — re-specified CLI/config + lifecycle/children)
+        run: |
+          mkdir -p test-results
+          docker run --rm -v "$PWD":/src -v "$PWD/test-results":/results \
+            westonite-build /src/scripts/rust-e2e-test.sh /results
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-rust
+          path: test-results/
+          if-no-files-found: ignore
+
   # Sanitizer leg (D18): Rust sanitizers are nightly-only, so this job
   # pulls a rustup nightly inside the same container.  Validation tool
   # only — shipped binaries stay on the EL10 rust-toolset (plan §6).

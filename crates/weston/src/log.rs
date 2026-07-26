@@ -5,8 +5,32 @@
 //! string (§3i).  Inbound, the shim's C `vlog`/`vlog_continue` handlers
 //! forward formatted lines to [`wsys_rust_log_sink`].
 
+use std::cell::RefCell;
 use std::ffi::CString;
+use std::fs::File;
 use std::io::Write;
+
+thread_local! {
+    /// Destination for the shim's log handlers: a --log file when the
+    /// frontend set one, stderr otherwise.  Thread-local per §3j (all
+    /// logging happens on the libweston thread).
+    static LOG_FILE: RefCell<Option<File>> = const { RefCell::new(None) };
+}
+
+/// Route subsequent log output to `path` (append, like the C
+/// frontend's weston_log_file_open).  Called once at startup by the
+/// Rust frontend before any other logging.
+pub fn set_log_file(path: &std::path::Path) -> std::io::Result<()> {
+    let f = File::options().create(true).append(true).open(path)?;
+    LOG_FILE.with(|l| *l.borrow_mut() = Some(f));
+    Ok(())
+}
+
+/// Public logging entry for the safe frontend crates: one line through
+/// weston_log (reaches the file/stderr sink installed above).
+pub fn message(msg: &str) {
+    log_line(msg);
+}
 
 /// Emit one line through weston_log (goes to the handlers installed via
 /// the shim; before a compositor/log context exists it still reaches the
@@ -43,8 +67,18 @@ extern "C" fn wsys_rust_log_sink(buf: *const libc::c_char, len: usize, _cont: bo
         // SAFETY: the shim passes a buffer of exactly `len` initialized
         // bytes, valid for the duration of this call.
         let bytes = unsafe { std::slice::from_raw_parts(buf.cast::<u8>(), len) };
-        let mut err = std::io::stderr().lock();
-        let _ = err.write_all(bytes);
+        LOG_FILE.with(|l| {
+            let mut slot = l.borrow_mut();
+            match slot.as_mut() {
+                Some(f) => {
+                    let _ = f.write_all(bytes);
+                    let _ = f.flush();
+                }
+                None => {
+                    let _ = std::io::stderr().lock().write_all(bytes);
+                }
+            }
+        });
         len as libc::c_int
     })
 }

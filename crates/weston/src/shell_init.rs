@@ -444,8 +444,95 @@ fn shell_init_body(
     // SAFETY: compositor live; wl_display field is its display.
     ctx.inner.display.set(unsafe { (*ec).wl_display });
 
-    let bg = read_background_color(ec);
+    let background_color = read_background_color(ec);
 
+    if !wire_common(&ctx, ec, destroy, background_color, make_app) {
+        return false;
+    }
+
+    create_screenshooter(ec);
+
+    // Identifying marker (greppable in --log): smoke-test.sh asserts it
+    // so a build where the C shell silently shipped in place of the
+    // Rust plugin cannot pass as a Rust-shell run.
+    crate::log::log_line("westonite-shell: Rust shell initialized");
+
+    true
+}
+
+/// Native (R2+) attach, for the Rust frontend binary: identical wiring
+/// to the hybrid path minus the weston.ini read and the libexec dlsym
+/// extras — the caller supplies the background color from its resolved
+/// Settings, and the compositor already has a live `Ctx` (created by
+/// `CompositorBuilder`).  The screenshooter is not wired (ported at
+/// R2e).
+pub fn attach_shell_native(
+    ctx: &crate::ctx::Ctx,
+    background_color: u32,
+    make_app: impl FnOnce(u32) -> Box<dyn ShellApp>,
+) -> bool {
+    let ec = ctx.compositor_ptr();
+    if ec.is_null() {
+        return false;
+    }
+    let destroy = Listener::new(
+        "shell.compositor_destroy",
+        true,
+        Box::new(move |ctx, _data| {
+            ctx.dispatch_sync(Event::Shutdown);
+            crate::curtain::destroy_all_backgrounds(ctx);
+            crate::desktop::destroy_desktop(ctx);
+            crate::layer::destroy_shell_layers(ctx);
+            SEAT_RECS.with(|m| {
+                for (_, rec) in m.borrow_mut().drain() {
+                    rec.destroy.detach();
+                    rec.caps.detach();
+                    rec.pointer_focus.detach();
+                    rec.pointer_guard.detach();
+                    drop(rec);
+                }
+            });
+            ctx.teardown();
+        }),
+    );
+    // SAFETY: compositor live; in the native binary a second shell
+    // attach cannot happen (single call site), the once-API is belt and
+    // braces.
+    let added = unsafe {
+        weston_sys::weston_compositor_add_destroy_listener_once(
+            ec,
+            destroy.raw_ptr(),
+            (*destroy.raw_ptr()).notify,
+        )
+    };
+    if !added {
+        // The hybrid path treats this as "another shell got there
+        // first" and yields.  Here it means a double attach on the one
+        // call site, i.e. a bug: yielding would leave the compositor
+        // running with no shell wired at all, so fail the build instead.
+        crate::log::log_line("westonite-shell: shell already attached to this compositor");
+        return false;
+    }
+    destroy.mark_attached();
+
+    if !wire_common(ctx, ec, destroy, background_color, make_app) {
+        return false;
+    }
+    crate::log::log_line("westonite-shell: Rust shell initialized");
+    true
+}
+
+/// The wiring shared by the hybrid and native attach paths: transform
+/// listener, layers, desktop, app install, output/seat registration and
+/// their created/moved/resized/session listeners, input bindings.
+fn wire_common(
+    ctx: &crate::ctx::Ctx,
+    ec: *mut weston_sys::weston_compositor,
+    destroy: Listener,
+    background_color: u32,
+    make_app: impl FnOnce(u32) -> Box<dyn ShellApp>,
+) -> bool {
+    let ctx = ctx.clone();
     ctx.own_listener(ec as usize, destroy);
 
     // Transform listener: wrapper-internal xwayland position sender.
@@ -472,7 +559,7 @@ fn shell_init_body(
     }
 
     // App in place before any events can fire.
-    ctx.set_app(make_app(bg));
+    ctx.set_app(make_app(background_color));
 
     // Existing outputs (C setup_output_destroy_handler), then the
     // created/moved/resized listeners.
@@ -589,13 +676,7 @@ fn shell_init_body(
     seat_created.mark_attached();
     ctx.own_listener((ec as usize) ^ 6, seat_created);
 
-    create_screenshooter(ec);
     crate::input_bindings::add_shell_bindings(&ctx);
-
-    // Identifying marker (greppable in --log): smoke-test.sh asserts it
-    // so a build where the C shell silently shipped in place of the
-    // Rust plugin cannot pass as a Rust-shell run.
-    crate::log::log_line("westonite-shell: Rust shell initialized");
 
     true
 }

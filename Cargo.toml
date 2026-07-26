@@ -6,8 +6,9 @@
 #   weston                 UNSAFE INSIDE, SAFE API — the fence crate
 #   westonite-shell        SAFE    shell.c policy port (R1)
 #   westonite-shell-plugin UNSAFE  R1-only cdylib shim, deleted at R3
-# (westonite-spawn, westonite-config, westonite arrive in later phases;
-# do not add them here early.)
+#   westonite-config       SAFE    §5 config interface (R2a)
+#   westonite-spawn        UNSAFE  process spawning, pre_exec audit (R2a)
+#   westonite              SAFE    the frontend binary (R2, growing by slice)
 
 [workspace]
 resolver = "2"
@@ -16,6 +17,9 @@ members = [
     "crates/weston",
     "crates/westonite-shell",
     "crates/westonite-shell-plugin",
+    "crates/westonite-config",
+    "crates/westonite-spawn",
+    "crates/westonite",
 ]
 
 [workspace.package]
@@ -28,8 +32,16 @@ repository = "https://github.com/nhwalker/example-weston-standalone"
 weston-sys = { path = "crates/weston-sys" }
 weston = { path = "crates/weston" }
 westonite-shell = { path = "crates/westonite-shell" }
+westonite-config = { path = "crates/westonite-config" }
+westonite-spawn = { path = "crates/westonite-spawn" }
 bitflags = "2"
 libc = "0.2"
+# D9/D10 approved additions (plan §6 D8): serde/toml/clap for the
+# re-specified config interface; rustix for the spawn crate.
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+clap = { version = "4", features = ["derive", "wrap_help"] }
+rustix = { version = "0.38", features = ["process", "net", "std"] }
 
 [profile.release]
 # D16: panics unwind in ALL profiles so the trampoline catch_unwind +

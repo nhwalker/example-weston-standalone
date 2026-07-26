@@ -19,8 +19,8 @@ if [ -f /src/Cargo.toml ]; then cd /src; else cd "$(dirname "$0")/.."; fi
 # Crate classification, per plan §2.  Grows at R2 (westonite-config,
 # westonite); update here AND in the plan when it does.  Fence 1 fails
 # on any workspace member missing from both lists.
-SAFE_CRATES=(westonite-shell)
-UNSAFE_CRATES=(weston-sys weston westonite-shell-plugin)
+SAFE_CRATES=(westonite-shell westonite-config westonite)
+UNSAFE_CRATES=(weston-sys weston westonite-shell-plugin westonite-spawn)
 
 echo "== fence 1: dependency graph (safe crates never see weston-sys)"
 META=$(mktemp)
@@ -85,8 +85,11 @@ EOF
 echo "== fence 2: forbid(unsafe_code) in safe crates"
 for c in "${SAFE_CRATES[@]:-}"; do
 	[ -z "$c" ] && continue
+	# lib.rs for library crates, main.rs for the westonite binary.
+	root="crates/$c/src/lib.rs"
+	[ -f "$root" ] || root="crates/$c/src/main.rs"
 	# Anchored to line start so a doc-comment mention cannot satisfy it.
-	grep -q '^#!\[forbid(unsafe_code)\]' "crates/$c/src/lib.rs" \
+	grep -q '^#!\[forbid(unsafe_code)\]' "$root" \
 		|| { echo "FAIL: crates/$c missing forbid(unsafe_code)"; exit 1; }
 	grep -q '^unsafe_code *= *"forbid"' "crates/$c/Cargo.toml" \
 		|| { echo "FAIL: crates/$c Cargo.toml missing unsafe_code = \"forbid\" lint"; exit 1; }

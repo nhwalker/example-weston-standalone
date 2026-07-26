@@ -9,7 +9,8 @@ import pytest
 import signal
 import time
 
-from support.compositor import wait_until
+from support.compositor import (CONFIG_FORMAT, CONFIG_NAME,
+                                SHELL_READY_PATTERN, wait_until)
 
 
 def make_stub(tmp_path, name="stub", body="sleep 300"):
@@ -32,7 +33,7 @@ def wait_for_file(path, deadline=10.0):
 @pytest.mark.installed
 def test_no_helper_clients_by_default(westonite):
     w = westonite()
-    w.wait_for_log(r"Loading module '.*/desktop-shell\.so'")
+    w.wait_for_log(SHELL_READY_PATTERN)
     time.sleep(1.0)  # grace period: a spawn would happen right at startup
     assert "launching" not in w.log()
 
@@ -42,7 +43,7 @@ def test_shell_client_setting_is_ignored(westonite, tmp_path):
     # [shell] client= must spawn nothing and must not disturb startup
     stub, marker = make_stub(tmp_path)
     w = westonite(config=f"[shell]\nclient={stub}\n")
-    w.wait_for_log(r"Loading module '.*/desktop-shell\.so'")
+    w.wait_for_log(SHELL_READY_PATTERN)
     time.sleep(1.0)
     assert not marker.exists()
     assert "launching" not in w.log()
@@ -59,8 +60,12 @@ def test_autolaunch_config_spawns(westonite, tmp_path):
                marker.read_text().splitlines() if "=" in line)
     # the client speaks wayland to this compositor ...
     assert env.get("WAYLAND_DISPLAY") == w.wayland_display
-    # ... and sees the config file westonite used (WESTON_CONFIG_FILE export)
-    assert env.get("WESTON_CONFIG_FILE") == str(w.config_home / "westonite.ini")
+    if CONFIG_FORMAT == "ini":
+        # ... and sees the config file westonite used (WESTON_CONFIG_FILE)
+        assert env.get("WESTON_CONFIG_FILE") == str(w.config_home / CONFIG_NAME)
+    else:
+        # D12: the Rust frontend drops the WESTON_CONFIG_FILE export
+        assert "WESTON_CONFIG_FILE" not in env
 
 
 @pytest.mark.installed

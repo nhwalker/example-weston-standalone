@@ -17,6 +17,94 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2a (2026-07-26)** — Rust frontend core: config + spawn + headless
+  (plan §7 R2a), branch `claude/rust-migration-j84b2p`:
+  - New safe crates: `westonite-config` (§5 re-spec, D9–D12: serde
+    `Config` over the full ini surface, kebab-case,
+    `deny_unknown_fields`, clap CLI, `-o` dotted overrides, XDG
+    discovery of `westonite.toml` with the D11 legacy-ini hint,
+    resolution defaults → file → `-o` → flags into immutable
+    `Settings`; C-parity error strings) and the `westonite` binary
+    (`westonite-rs`: version/help, `--log` file sink, C
+    `verify_xdg_runtime_dir` port, headless bring-up via the fence
+    builder, statically linked Rust shell, autolaunch with X_OK
+    precheck and watch, `-o`-driven config).  New audited-unsafe crate
+    `westonite-spawn` (risk R-D: `pre_exec` limited to
+    async-signal-safe calls — sigmask reset, setsid, CLOEXEC clear).
+  - Fence additions: `attach_shell_native` (shared `wire_common` with
+    the hybrid path), `with_shell`/`with_socket_name` builder,
+    explicit-socket bind + `socket_name()`, `set_autolaunch` +
+    SIGCHLD event source (installed in `build()` — before any client
+    spawn, matching C's signals[]-before-`execute_autolaunch` order so
+    a fast-exiting watched client is never lost), `--log` file sink in
+    the log shim.  D12: no `WESTON_CONFIG_FILE` export.
+  - E2e: `test_cli.py` re-specified (mode-gated via
+    `WESTONITE_CONFIG_FORMAT`; new TOML-only tests: legacy-ini hint,
+    `-o` override plumb-through, unknown-key startup error, unported
+    backend fails loudly); harness gained a TOML config mode +
+    ini→TOML translation so `test_lifecycle.py`/`test_children.py`
+    behaviors run unmodified against both frontends (only the D12
+    export assert is mode-gated).  New `scripts/rust-e2e-test.sh` CI
+    leg: 27 passed / 1 deselected (VNC lifecycle — R2c) against
+    `westonite-rs`; the C leg keeps the full suite.
+  - Validation: workspace clippy-clean (`-D warnings`); 25 unit tests
+    in the new crates (`westonite-config` 21, `westonite-spawn` 4) on
+    top of the existing `weston`/`westonite-shell` suites; frontend
+    valgrind-clean including the autolaunch/SIGCHLD watch path (0
+    errors, 0 definite leaks); ASAN leg extended to the frontend
+    binary; fence checks classify the new crates
+    (safe: +westonite-config, +westonite; unsafe: +westonite-spawn).
+  - Docs: `westonite.toml.example` (validated by running the binary
+    against it), `docs/config-migration.md` (D11 ini→TOML mapping),
+    callback-inventory §6 (event-loop signal sources) + log-sink row.
+  - Review fixes folded into the same branch:
+    - Config discovery tried `$XDG_CONFIG_HOME` **or** `$HOME/.config`;
+      libweston's `open_config_file` falls through from the first to the
+      second, so a set `XDG_CONFIG_HOME` was masking a config in the
+      home fallback.  Both are searched now, in order.
+    - `-o` overrides are parsed as TOML before deserialization, so the
+      documented `-o shell.background-color=0xff002244` arrived as an
+      *integer* and died as "invalid type: integer, expected a string".
+      Numeric-string keys (`[shell] background-color`, `[libinput]
+      scroll-button`) now accept a number as well as a string, in the
+      file and through `-o`.
+    - List keys (`[core] backends`, `[core] modules`) accept one
+      comma-separated string as well as an array, so the ini spelling —
+      which `-o core.backends=drm,vnc` and the e2e harness's ini→TOML
+      translation both produce — resolves instead of erroring with
+      "expected a sequence".
+    - `verify_xdg_runtime_dir` masked the mode with `0o7777` (warning on
+      a sticky/setgid runtime dir C accepts) and dropped C's
+      `st_uid != getuid()` half of the check.  Both corrected; the
+      `getuid` call sits in `westonite-spawn` (which already owns the
+      process-credential syscalls, and needs the same value for
+      `wet_client_launch`'s `seteuid(getuid())` later) so the frontend
+      keeps `forbid(unsafe_code)`.
+    - Fail-loud gaps: `--scale`, `--refresh-rate` and `[[output]]`
+      `scale`/`transform`/`mode = "off"` for the headless head were
+      accepted and silently ignored (the R2a bring-up passes only
+      width/height to the fence); conflicting `--use-gl`/`--use-pixman`
+      /`--renderer` picked a winner where C errors; non-positive
+      `--width`/`--height`/`--scale` reached the backend as a geometry.
+      All are startup errors now.
+    - `[vnc] port` outranked `[rdp] port` regardless of the loaded
+      backend; the section is selected by the active backend now.  The
+      rdp/vnc TLS and listener flags were parsed by clap and dropped
+      before `Settings` — plumbed through for the R2c consumer.
+    - `attach_shell_native` returned success when the compositor already
+      had the destroy listener, leaving a compositor running with no
+      shell wired; it fails the build instead (the hybrid path's
+      yield-to-the-other-shell semantics do not apply to a single call
+      site).
+    - `overrides::apply` inserted an empty section into the tree before
+      rejecting a single-segment path; the shape is validated first.
+    - E2e harness: `[color_characteristics]` translated to
+      `[[color_characteristics]]`, which the kebab-case model rejects —
+      it maps to `[[color-characteristics]]` now, and the rename is
+      documented in `docs/config-migration.md`.
+    - `westonite-spawn::from_exec_string`'s two narrowings of C's
+      assignment rule (keys containing `/`, empty keys) were commented
+      as C parity; documented as the deliberate divergences they are.
 - **Review hardening (2026-07-26)** — post-merge review of the R0/R1 +
   planning PRs (#11, #13–#16), branch
   `claude/rust-migration-review-b9rjxw`:

@@ -14,6 +14,61 @@ import subprocess
 import time
 
 
+# Which config interface the binary under test speaks (R2a re-spec,
+# plan §5): "ini" for the C frontend (the oracle), "toml" for the Rust
+# frontend (westonite-rs).  Selected by the runner, not per test.
+CONFIG_FORMAT = os.environ.get("WESTONITE_CONFIG_FORMAT", "ini")
+CONFIG_NAME = "westonite.toml" if CONFIG_FORMAT == "toml" else "westonite.ini"
+
+# Log line proving the shell is up: the C frontend loads a plugin, the
+# Rust frontend's statically linked shell logs its marker.
+SHELL_READY_PATTERN = (
+    r"westonite-shell: Rust shell initialized"
+    if CONFIG_FORMAT == "toml"
+    else r"Loading module '.*/desktop-shell\.so'")
+
+
+def ini_to_config(text):
+    """Translate the simple `[section]`/`key=value` configs the tests
+    are written in into the format under test.  For TOML: repeated
+    sections become array-of-tables and values are typed (bool/int
+    bare, everything else quoted) -- the same near-diagonal mapping
+    documented for users (D11)."""
+    if CONFIG_FORMAT == "ini":
+        return text
+    # ini section name -> TOML array-of-tables name.  The TOML model is
+    # kebab-case throughout, so the one ini section spelled with an
+    # underscore ([color_characteristics]) is renamed here too.
+    array_sections = {"output": "output",
+                      "remote-output": "remote-output",
+                      "pipewire-output": "pipewire-output",
+                      "color_characteristics": "color-characteristics"}
+    lines = []
+    for line in text.splitlines():
+        s = line.strip()
+        if s.startswith("[") and s.endswith("]"):
+            name = s[1:-1]
+            lines.append(f"[[{array_sections[name]}]]"
+                         if name in array_sections else s)
+        elif "=" in s and not s.startswith("#"):
+            key, value = s.split("=", 1)
+            lines.append(f"{key.strip()} = {_toml_value(value.strip())}")
+        else:
+            lines.append(line)
+    return "\n".join(lines) + "\n"
+
+
+def _toml_value(value):
+    if value in ("true", "false"):
+        return value
+    try:
+        int(value)
+        return value
+    except ValueError:
+        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+        return f'"{escaped}"'
+
+
 class Timeout(AssertionError):
     pass
 
@@ -40,7 +95,7 @@ class Westonite:
 
     def __init__(self, tmp_path, extra_args=(), config=None, backend="headless",
                  width=640, height=480, env=None, socket_name=None,
-                 runtime_dir=None, no_config_flag=True):
+                 runtime_dir=None, no_config_flag=True, config_home_files=None):
         self.workdir = tmp_path
         self.workdir.mkdir(parents=True, exist_ok=True)
         self.log_path = tmp_path / "westonite.log"
@@ -70,8 +125,12 @@ class Westonite:
             if no_config_flag:
                 argv += ["--no-config"]
         else:
-            config_file = self.config_home / "westonite.ini"
-            config_file.write_text(config)
+            config_file = self.config_home / CONFIG_NAME
+            config_file.write_text(ini_to_config(config))
+        # Extra files that must exist in XDG_CONFIG_HOME at startup
+        # (e.g. a legacy ini for the D11 hint test): {name: content}.
+        for name, content in (config_home_files or {}).items():
+            (self.config_home / name).write_text(content)
         argv += list(extra_args)
 
         self.env = dict(os.environ)

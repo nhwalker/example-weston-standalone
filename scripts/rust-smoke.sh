@@ -25,11 +25,15 @@ wait_for_marker() { # <file> <marker> <deadline-halfseconds>
 }
 
 echo "== rust 1: workspace builds"
-cargo build --locked --workspace --examples
+# --examples alone selects ONLY example targets; --bins must be listed
+# too or the westonite-rs binary the frontend legs run never builds.
+cargo build --locked --workspace --examples --bins
 
-echo "== rust 2: unit tests (fence fake-C harness D18, shell policy D20)"
+echo "== rust 2: unit tests (fence fake-C harness D18, shell policy D20, config/spawn R2a)"
 cargo test --locked -p weston --features testsupport
 cargo test --locked -p westonite-shell
+cargo test --locked -p westonite-config
+cargo test --locked -p westonite-spawn
 
 echo "== rust 3: r0-smoke runs headless and exits 0 on SIGTERM"
 target/debug/examples/r0-smoke > /tmp/r0.log 2>&1 &
@@ -57,5 +61,29 @@ kill -TERM "$VPID"
 wait "$VPID" || { cat /tmp/r0-vg.log >&2; fail "valgrind reported errors or leaks"; }
 grep -q "westonite-r0: clean exit (0)" /tmp/r0-vg.log \
 	|| { cat /tmp/r0-vg.log >&2; fail "valgrind leg: no clean-exit marker"; }
+
+echo "== rust 5: westonite-rs frontend headless (R2a) exits 0 on SIGTERM"
+# Fresh log every run: weston opens --log in append mode, so a stale
+# file from an earlier container run would satisfy the marker greps.
+rm -f /tmp/rs.log /tmp/rs-vg.log
+target/debug/westonite-rs --backend=headless --no-config --log=/tmp/rs.log &
+PID=$!
+wait_for_marker /tmp/rs.log "westonite: wayland socket" 20 \
+	|| { cat /tmp/rs.log >&2; fail "frontend: no wayland socket"; }
+grep -q "westonite-shell: Rust shell initialized" /tmp/rs.log \
+	|| { cat /tmp/rs.log >&2; fail "frontend: shell marker missing"; }
+kill -TERM "$PID"
+wait "$PID" || { cat /tmp/rs.log >&2; fail "frontend exited non-zero on SIGTERM"; }
+
+echo "== rust 6: frontend + autolaunch watch under valgrind (SIGCHLD path)"
+printf '#!/bin/sh\nsleep 2\n' > /tmp/rs-stub && chmod +x /tmp/rs-stub
+valgrind --error-exitcode=42 --leak-check=full \
+	--errors-for-leak-kinds=definite \
+	target/debug/westonite-rs --backend=headless --no-config \
+	--log=/tmp/rs-vg.log -o autolaunch.path=/tmp/rs-stub \
+	-o autolaunch.watch=true \
+	|| { cat /tmp/rs-vg.log >&2; fail "frontend valgrind reported errors or leaks"; }
+grep -q "autolaunched client exited, terminating" /tmp/rs-vg.log \
+	|| { cat /tmp/rs-vg.log >&2; fail "frontend valgrind leg: watch exit not exercised"; }
 
 echo "ALL RUST SMOKE TESTS PASSED"

@@ -87,6 +87,9 @@ pub(crate) struct CtxInner {
     /// live here while C dispatches on them; ending moves them to
     /// `pending_drop`).
     pub(crate) active_grabs: RefCell<Vec<crate::grab::ActiveGrab>>,
+    /// Autolaunch watch (R2a): (pid, watch) — the SIGCHLD handler
+    /// terminates the display when the watched client exits.
+    pub(crate) autolaunch: Cell<Option<(i32, bool)>>,
 }
 
 thread_local! {
@@ -150,6 +153,7 @@ impl Ctx {
             curtains: RefCell::new(HashMap::new()),
             desktop: Cell::new(std::ptr::null_mut()),
             active_grabs: RefCell::new(Vec::new()),
+            autolaunch: Cell::new(None),
         });
         CURRENT.with(|c| {
             let mut slot = c.borrow_mut();
