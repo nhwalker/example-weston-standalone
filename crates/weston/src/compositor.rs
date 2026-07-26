@@ -358,7 +358,7 @@ impl CompositorBuilder {
             // core buffer reference early ("the backend has seen it")
             // only when a single backend is in play — with two, that
             // optimization releases buffers the second backend still
-            // needs (compositor.c:3471).
+            // needs (compositor.c:3405).
             (*compositor).multi_backend = self.backends.len() > 1;
         }
 

@@ -69,7 +69,7 @@ Rebase procedure on an EPEL weston bump: plan §8.
       comma in the backends string before load_backends
       (main.c:4653), and libweston keys the early buffer-release
       optimization off it (`output_accumulate_damage`,
-      compositor.c:3471) — with two backends loaded and the flag
+      compositor.c:3405) — with two backends loaded and the flag
       false, the core reference is dropped while the second backend
       still needs the buffer.  Now set from the builder's backend
       count.
