@@ -3,9 +3,14 @@
 //! R2a slice: CLI/config (§5 re-spec — TOML + clap + `-o`), logging,
 //! XDG_RUNTIME_DIR verification, the headless backend, the statically
 //! linked Rust shell, autolaunch (via `westonite-spawn`), SIGCHLD
-//! watch, clean signal-driven shutdown.  Everything not yet ported
-//! fails loudly (never silently degrades) — the C frontend remains the
-//! oracle for those paths until their slice lands (plan §7).
+//! watch, clean signal-driven shutdown.
+//! R2b slice: real output management — `[[output]]` mode/scale/
+//! transform/off resolved into an [`weston::OutputPolicy`], CLI
+//! `--scale`/`--transform`/`--no-outputs`/`--refresh-rate`, hotplug
+//! enable/disable via the policy-driven heads-changed handler.
+//! Everything not yet ported fails loudly (never silently degrades) —
+//! the C frontend remains the oracle for those paths until their slice
+//! lands (plan §7).
 
 #![forbid(unsafe_code)]
 
@@ -73,7 +78,10 @@ fn main() -> ExitCode {
         return code;
     }
 
-    let (width, height) = headless_geometry(&settings);
+    let policy = match build_output_policy(&settings) {
+        Ok(p) => p,
+        Err(msg) => return fatal(&msg),
+    };
     let renderer = match settings.renderer {
         // C load_headless_backend: the headless default is the no-op
         // renderer unless one was asked for explicitly.
@@ -84,7 +92,13 @@ fn main() -> ExitCode {
 
     let mut builder = weston::CompositorBuilder::headless()
         .renderer(renderer)
-        .output_size(width, height);
+        .with_output_policy(policy);
+    if settings.no_outputs {
+        builder = builder.with_no_outputs();
+    }
+    if let Some(mhz) = settings.refresh_rate {
+        builder = builder.with_refresh_mhz(mhz);
+    }
     builder = match &settings.socket {
         Some(name) => builder.with_socket_name(name),
         None => builder.with_socket(),
@@ -190,40 +204,34 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             "--debug is not yet ported to the Rust frontend; use the C westonite",
         ));
     }
-    if settings.no_outputs {
-        return Some(fatal(
-            "--no-outputs is not yet ported to the Rust frontend (lands at R2b)",
-        ));
-    }
-    // Output attributes the R2a bring-up cannot honour: it hands the
-    // fence a single width/height and nothing else, so accepting these
-    // silently would degrade rather than fail (plan §7).
-    if settings.scale.is_some() {
-        return Some(fatal(
-            "--scale is not yet ported to the Rust frontend (lands at R2b)",
-        ));
-    }
-    if settings.refresh_rate.is_some() {
-        return Some(fatal(
-            "--refresh-rate is not yet ported to the Rust frontend (lands at R2b)",
-        ));
-    }
-    // Only the section that applies to this run's head, as C does
-    // (weston_config_get_section("output", "name", output->name)):
-    // sections for other heads are inert here, exactly as in C.
-    if let Some(out) = headless_output_section(settings) {
-        if out.off == Some(true) || out.mode.as_deref() == Some("off") {
-            return Some(fatal(
-                "[[output]] 'headless': disabling an output is not yet ported to the Rust \
-                 frontend (lands at R2b with --no-outputs)",
-            ));
+    // R2b: outputs (mode/scale/transform/off, --no-outputs,
+    // --refresh-rate) are ported; the attributes still DRM-bound stay
+    // fail-loud so a request for them never silently degrades.
+    for out in &settings.config.output {
+        let name = out.name.as_deref().unwrap_or("<unnamed>");
+        if out.clone_of.is_some() || out.mirror_of.is_some() {
+            return Some(fatal(&format!(
+                "[[output]] '{name}': clone-of/mirror-of are not yet ported to the Rust \
+                 frontend (DRM/remote sharing lands with the DRM slice)"
+            )));
         }
-        if out.scale.is_some() || out.transform.is_some() {
-            return Some(fatal(
-                "[[output]] 'headless': scale/transform are not yet ported to the Rust \
-                 frontend (lands at R2b)",
-            ));
+        if out.icc_profile.is_some()
+            || out.eotf_mode.is_some()
+            || out.colorimetry_mode.is_some()
+            || out.color_characteristics.is_some()
+            || out.max_bpc.is_some()
+            || out.vrr_mode.is_some()
+        {
+            return Some(fatal(&format!(
+                "[[output]] '{name}': color-management/DRM attributes are not yet ported \
+                 to the Rust frontend"
+            )));
         }
+    }
+    if settings.color_management {
+        return Some(fatal(
+            "color-management is not yet ported to the Rust frontend",
+        ));
     }
     if let Some(shell) = &cli.shell {
         // Parity flag: the Rust frontend's shell is built in; only the
@@ -248,40 +256,63 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     None
 }
 
-/// The `[[output]]` block that configures this run's headless head, if
-/// the config has one.
-fn headless_output_section(settings: &Settings) -> Option<&westonite_config::Output> {
-    settings
-        .config
-        .output
-        .iter()
-        .find(|o| o.name.as_deref() == Some("headless"))
-}
+/// Resolve the settings into the fence's [`weston::OutputPolicy`]
+/// (R2b): every `[[output]]` section becomes a typed rule (inert unless
+/// a head with that name appears — C's name-matched section lookup),
+/// CLI --width/--height/--scale/--transform become the overriding
+/// layer.  Bad transform names are startup errors (C
+/// wet_output_set_transform fails the enable; we fail earlier with the
+/// same wording); a bad mode logs C's "Invalid mode … Using defaults."
+fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, String> {
+    let mut policy = weston::OutputPolicy::defaults(1024, 640);
 
-/// Headless output geometry, C precedence (main.c wet_configure_windowed
-/// _output_from_config): defaults 1024x640 → `[[output]]` mode= for the
-/// "headless" head → CLI --width/--height.
-fn headless_geometry(settings: &Settings) -> (i32, i32) {
-    let (mut width, mut height) = (1024, 640);
-    if let Some(out) = headless_output_section(settings)
-        && let Some(mode) = &out.mode
-    {
-        if let Some((w, h)) = parse_mode(mode) {
-            width = w;
-            height = h;
-        } else {
-            weston::log::message(&format!(
-                "Invalid mode for output headless. Using defaults. (mode '{mode}')"
-            ));
+    for out in &settings.config.output {
+        let Some(name) = out.name.clone() else {
+            return Err("[[output]] section without a name= key".to_string());
+        };
+        let mut rule = weston::OutputRule {
+            name: name.clone(),
+            off: out.off == Some(true),
+            size: None,
+            scale: None,
+            transform: None,
+        };
+        if let Some(mode) = &out.mode {
+            if mode == "off" {
+                rule.off = true;
+            } else if let Some(size) = parse_mode(mode) {
+                rule.size = Some(size);
+            } else {
+                weston::log::message(&format!("Invalid mode for output {name}. Using defaults."));
+            }
         }
+        if let Some(s) = out.scale {
+            if s <= 0 {
+                return Err(format!(
+                    "[[output]] '{name}': scale must be positive (got {s})"
+                ));
+            }
+            rule.scale = Some(s);
+        }
+        if let Some(t) = &out.transform {
+            rule.transform = Some(
+                weston::OutputTransform::parse(t)
+                    .ok_or_else(|| format!("Invalid transform \"{t}\" for output {name}"))?,
+            );
+        }
+        policy.rules.push(rule);
     }
-    if let Some(w) = settings.width {
-        width = w;
+
+    policy.cli.width = settings.width;
+    policy.cli.height = settings.height;
+    policy.cli.scale = settings.scale;
+    if let Some(t) = &settings.transform {
+        policy.cli.transform = Some(
+            weston::OutputTransform::parse(t)
+                .ok_or_else(|| format!("Invalid transform \"{t}\""))?,
+        );
     }
-    if let Some(h) = settings.height {
-        height = h;
-    }
-    (width, height)
+    Ok(policy)
 }
 
 /// "WxH" or "WxH@rate" (weston's simple-mode grammar; rate ignored by

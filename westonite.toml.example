@@ -14,8 +14,9 @@
 
 [core]
 # Backend: drm (default), headless, x11, wayland, rdp, vnc, pipewire.
-# The R2a Rust frontend supports headless; others fail loudly until
-# their migration slice lands (the C frontend remains the oracle).
+# The Rust frontend supports headless (R2a/R2b); other backends fail
+# loudly until their migration slice lands (the C frontend remains the
+# oracle).
 #backend = "headless"
 # Or several: backends = ["drm", "vnc"] — the ini spelling
 # backends = "drm,vnc" is accepted too.

@@ -17,6 +17,40 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2b headless slice (2026-07-26)** — output management, the
+  e2e-verifiable half (plan §7 R2b), branch
+  `claude/rust-migration-j84b2p`:
+  - New fence module `output_policy`: typed `OutputTransform` (the C
+    `transforms[]` grammar exactly), `OutputRule`/`OutputPolicy` —
+    plain data resolved once by the frontend, so the heads-changed
+    trampoline's A3 proof stays "wrapper state only".  Precedence per
+    head mirrors C: backend defaults → name-matched `[[output]]`
+    section → CLI overrides (unit-pinned).
+  - heads-changed handler now implements all three C
+    `simple_heads_changed` branches (enable / disable on unplug /
+    device-changed log + flag reset) plus the policy lookup;
+    `weston_output_lazy_align` ported (tail-of-output-list placement);
+    enable path applies scale/transform/size per decision.  `off =
+    true` / `mode = "off"` leaves a head unenabled (re-spec extension;
+    logged).  Builder: `with_output_policy`, `with_no_outputs` (C
+    --no-outputs skips head creation), `with_refresh_mhz`
+    (C --refresh-rate passthrough).
+  - Frontend: `--transform` CLI flag added (real C headless option the
+    R-G sweep missed), `--scale`/`--no-outputs`/`--refresh-rate` and
+    `[[output]]` scale/transform/off unblocked; invalid transform is a
+    startup error with the C wording; invalid mode logs C's "Invalid
+    mode … Using defaults.".  Still fail-loud (DRM-bound):
+    clone-of/mirror-of, icc/eotf/colorimetry/color-characteristics/
+    max-bpc/vrr, [core] color-management.
+  - E2e: rust leg now runs `test_outputs.py`'s headless subset —
+    geometry from CLI and scale+transform from config pass against
+    `westonite-rs` (30 passed / 4 deselected: VNC tests wait for R2c).
+  - Validation: workspace clippy-clean; 3 new policy unit tests;
+    live probes (--no-outputs, off-rule, bad transform fatal,
+    --refresh-rate) green; valgrind clean on the rotate-90/scale-2
+    config incl. shutdown (0 errors, 0 definite leaks); smoke + fence
+    checks green.
+
 - **R2a (2026-07-26)** — Rust frontend core: config + spawn + headless
   (plan §7 R2a), branch `claude/rust-migration-j84b2p`:
   - New safe crates: `westonite-config` (§5 re-spec, D9–D12: serde

@@ -115,6 +115,9 @@ pub struct Settings {
     pub width: Option<i32>,
     pub height: Option<i32>,
     pub scale: Option<i32>,
+    /// `--transform` (weston transform-name grammar, validated by the
+    /// frontend against the typed enum).
+    pub transform: Option<String>,
     pub fullscreen: bool,
     pub output_count: Option<u32>,
     pub no_input: bool,
@@ -403,6 +406,7 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         sprawl: cli.sprawl,
         parent_display: cli.display.clone(),
         no_outputs: cli.no_outputs,
+        transform: cli.transform.clone(),
         refresh_rate: cli.refresh_rate,
         drm_seat: cli.seat.clone(),
         drm_device: cli.drm_device.clone(),
