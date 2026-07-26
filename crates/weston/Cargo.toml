@@ -15,9 +15,10 @@ libc = { workspace = true }
 # compositor (D18).
 testsupport = ["weston-sys/testsupport"]
 # R1 hybrid phase: the shell bootstrap that reads westonite.ini through
-# the C frontend and dlsym-resolves the two libexec contract symbols.
-# Deleted at R3 (plan §2).
-hybrid-r1 = ["weston-sys/hybrid-r1"]
+# the C frontend and dlsym-resolves the two libexec contract symbols
+# (hand-declared externs in shell_init.rs — weston-sys carries no
+# hybrid-only surface).  Deleted at R3 (plan §2).
+hybrid-r1 = []
 # Test-only opaque-id forgery for mock-ShellHost unit tests (D20).
 test-ids = []
 

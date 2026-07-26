@@ -64,4 +64,12 @@ RUN pkg-config --exists 'libweston-14 >= 14.0.1' \
 RUN cargo --version && rustc --version \
     && ls /usr/lib64/libclang.so* >/dev/null
 
+# Pinned bindgen CLI (must match BINDGEN_VERSION in
+# scripts/regen-bindings.sh): baked into the image so the fence-check
+# bindings-drift gate (rust-fence-check.sh fence 3) actually runs in CI
+# instead of skipping, and so regeneration is deterministic.
+RUN cargo install bindgen-cli --version 0.72.1 --locked --root /usr/local \
+    && rm -rf /root/.cargo/registry \
+    && bindgen --version
+
 WORKDIR /src

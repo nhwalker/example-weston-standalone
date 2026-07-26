@@ -313,6 +313,15 @@ impl Compositor {
             )
         };
         if s1.is_null() || s2.is_null() {
+            // Remove whichever source did install, or it would stay
+            // registered (and leak) past this failed run() attempt.
+            for s in [s1, s2] {
+                if !s.is_null() {
+                    // SAFETY: source just created on this loop, not yet
+                    // tracked anywhere else.
+                    unsafe { weston_sys::wl_event_source_remove(s) };
+                }
+            }
             log::log_line("westonite-r0: failed to install signal sources");
             return 1;
         }

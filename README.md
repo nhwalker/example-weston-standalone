@@ -88,6 +88,11 @@ docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
 docker run --rm -v "$PWD":/src westonite-build /src/scripts/e2e-test.sh
 ```
 
+Both scripts install the **Rust** desktop-shell plugin over the
+meson-built C one before testing (R1+, see
+`docs/rust-migration-plan.md` §7); pass `-e WESTONITE_C_ORACLE=1` to
+keep the C shell as the behavioral oracle instead.
+
 How it works: each pytest test boots its own westonite instance and
 drives it through the **VNC backend** — one authenticated RFB
 connection provides scripted keyboard/pointer injection *and*

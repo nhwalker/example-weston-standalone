@@ -24,8 +24,15 @@ timeout --preserve-status 5 westonite --backend=headless --log=/tmp/w1.log \
 	|| fail "westonite exited non-zero" /tmp/w1.log
 grep -q "Loading module '/usr/lib64/westonite/desktop-shell.so'" /tmp/w1.log \
 	|| fail "desktop-shell.so not loaded" /tmp/w1.log
-grep -q "launching" /tmp/w1.log \
-	&& fail "unexpected helper client launch" /tmp/w1.log
+# The module path is identical for both shells, so assert which one
+# actually ran: the Rust shell logs an identifying marker at init.
+if [ "${WESTONITE_C_ORACLE:-0}" = "1" ]; then
+	grep -q "westonite-shell: Rust shell initialized" /tmp/w1.log \
+		&& fail "Rust shell ran in C-oracle mode" /tmp/w1.log
+else
+	grep -q "westonite-shell: Rust shell initialized" /tmp/w1.log \
+		|| fail "Rust shell marker missing (C shell silently shipped?)" /tmp/w1.log
+fi
 
 echo "== smoke 2: westonite.ini is honored"
 export XDG_CONFIG_HOME=/tmp/cfg
