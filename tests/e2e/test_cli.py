@@ -69,6 +69,19 @@ def test_unhandled_option_is_fatal(tmp_path):
         assert "--bogus-option" in r.stderr
 
 
+def test_option_for_an_unloaded_backend_is_fatal(tmp_path):
+    # C hands the CLI to each loaded backend's parse_options in turn and
+    # then treats whatever is left in argv as `fatal: unhandled option`.
+    # --seat is a DRM option, so a headless run must refuse it instead
+    # of accepting it as a no-op.
+    log = tmp_path / "log"
+    r = run([WESTONITE, "--backend=headless", "--seat=seat1",
+             f"--log={log}", "--no-config"],
+            env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert r.returncode != 0
+    assert "unhandled option: --seat" in log.read_text()
+
+
 def test_missing_xdg_runtime_dir_refused():
     r = run([WESTONITE, "--backend=headless", "--no-config"],
             drop={"XDG_RUNTIME_DIR"})

@@ -19,7 +19,9 @@
 # frontend remains the oracle).
 #backend = "headless"
 # Or several: backends = ["drm", "vnc"] — the ini spelling
-# backends = "drm,vnc" is accepted too.
+# backends = "drm,vnc" is accepted too, and so is a comma list in the
+# singular key.  When both keys are present `backends` wins (C reads it
+# first and falls back to `backend`).
 # Renderer: auto (default), gl, pixman, noop.
 #renderer = "auto"
 # Require an input device before starting (default true).

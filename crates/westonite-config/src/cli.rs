@@ -109,7 +109,8 @@ pub struct Cli {
     /// Create no outputs (headless).
     #[arg(long)]
     pub no_outputs: bool,
-    /// Output repaint rate in mHz (headless) / Hz (rdp/vnc).
+    /// Output repaint rate in mHz (headless only — C gives rdp/vnc no
+    /// such flag; their Hz rate comes from `[rdp]`/`[vnc] refresh-rate`).
     #[arg(long)]
     pub refresh_rate: Option<i32>,
 

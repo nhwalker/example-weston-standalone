@@ -243,6 +243,12 @@ impl CompositorBuilder {
 
     pub fn build(self) -> Result<Compositor, CompositorError> {
         log::install_stderr_handlers();
+        // Checked before anything is created: a builder with no backend
+        // can never produce a running compositor, and failing here
+        // keeps the error off the teardown paths below.
+        if self.backends.is_empty() {
+            return Err(CompositorError::BackendLoad);
+        }
         let ctx = Ctx::new();
 
         // SAFETY: plain constructor calls; null-checked before use.
@@ -301,6 +307,37 @@ impl CompositorBuilder {
             names.variant = c_strdup_opt(self.keyboard.variant.as_deref());
             names.options = c_strdup_opt(self.keyboard.options.as_deref());
             let r = weston_sys::weston_compositor_set_xkb_rule_names(compositor, &mut names);
+            if r < 0 {
+                // libweston bails before `ec->xkb_names = *names`
+                // (input.c: only xkb_context_new can fail there), so the
+                // strdup'd copies never changed owner — free them or the
+                // C-owned allocations leak on this path.
+                for p in [
+                    names.rules,
+                    names.model,
+                    names.layout,
+                    names.variant,
+                    names.options,
+                ] {
+                    libc::free(p.cast_mut().cast());
+                }
+            }
+            r >= 0
+        };
+        if !xkb_ok {
+            // C weston_compositor_init_config returns immediately here,
+            // so none of the settings below are applied or logged.
+            // SAFETY: reverse creation order, same as the paths above.
+            unsafe {
+                weston_sys::weston_compositor_destroy(compositor);
+                weston_sys::weston_log_ctx_destroy(log_ctx);
+                weston_sys::wl_display_destroy(display.as_ptr());
+            }
+            ctx.teardown();
+            return Err(CompositorError::CompositorCreate);
+        }
+        // SAFETY: compositor live; plain POD field writes on it.
+        unsafe {
             (*compositor).kb_repeat_rate = self.keyboard.repeat_rate.unwrap_or(40);
             (*compositor).kb_repeat_delay = self.keyboard.repeat_delay.unwrap_or(400);
             (*compositor).vt_switching = self.keyboard.vt_switching.unwrap_or(true);
@@ -315,17 +352,14 @@ impl CompositorBuilder {
                 "Output repaint window is {} ms maximum.",
                 (*compositor).repaint_msec
             ));
-            r >= 0
-        };
-        if !xkb_ok {
-            // SAFETY: reverse creation order, same as the paths above.
-            unsafe {
-                weston_sys::weston_compositor_destroy(compositor);
-                weston_sys::weston_log_ctx_destroy(log_ctx);
-                weston_sys::wl_display_destroy(display.as_ptr());
-            }
-            ctx.teardown();
-            return Err(CompositorError::CompositorCreate);
+            // main.c:4653 `wet.compositor->multi_backend = backends &&
+            // strchr(backends, ',')`, set before load_backends.  Load
+            // bearing in libweston: output_accumulate_damage drops the
+            // core buffer reference early ("the backend has seen it")
+            // only when a single backend is in play — with two, that
+            // optimization releases buffers the second backend still
+            // needs (compositor.c:3471).
+            (*compositor).multi_backend = self.backends.len() > 1;
         }
 
         let mut comp = Compositor {
@@ -370,9 +404,6 @@ impl CompositorBuilder {
         listener.mark_attached();
         comp.heads_changed = Some(listener);
 
-        if self.backends.is_empty() {
-            return Err(CompositorError::BackendLoad);
-        }
         for spec in &self.backends {
             match spec {
                 BackendSpec::Headless(opts) => comp.load_headless(self.renderer, opts)?,

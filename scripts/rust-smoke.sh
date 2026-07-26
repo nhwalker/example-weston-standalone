@@ -100,6 +100,12 @@ valgrind --error-exitcode=42 --leak-check=full \
 VNCPID=$!
 wait_for_marker /tmp/rs-vnc.log "westonite: wayland socket" 120 \
 	|| { cat /tmp/rs-vnc.log /tmp/rs-vnc-vg.log >&2; fail "vnc frontend: no wayland socket"; }
+# The socket is bound BEFORE the heads flush, so it proves only that the
+# backend loaded.  Wait for the output too, or the VNC configure path
+# (vnc_output_set_size / resizeable / forced-normal transform) is not
+# actually under valgrind here.
+wait_for_marker /tmp/rs-vnc.log "Output 'vnc' enabled" 120 \
+	|| { cat /tmp/rs-vnc.log /tmp/rs-vnc-vg.log >&2; fail "vnc frontend: output not enabled"; }
 grep -q "westonite-shell: Rust shell initialized" /tmp/rs-vnc.log \
 	|| { cat /tmp/rs-vnc.log >&2; fail "vnc frontend: shell marker missing"; }
 kill -TERM "$VNCPID"

@@ -56,11 +56,52 @@ Rebase procedure on an EPEL weston bump: plan §8.
     freed in vnc_destroy, + one weston_output_set_single_mode entry),
     verified byte-identical under the C frontend on the same
     invocation; RPM-side, out of scope per the our-code-only decision.
-    `scripts/valgrind-upstream-vnc.supp` pins exactly those so the new
+    `scripts/valgrind-upstream-vnc.supp` suppresses definite leaks
+    allocated under a `vnc-backend.so` frame — broader than those five
+    blocks, and deliberately so (see the header comment in the file):
+    the frontend never allocates through that call tree, so the new
     rust-smoke VNC leg still gates our code at zero.  Live probes:
     VNC framebuffer capture shows the shell background (0xff002244 →
     BGR 44/22/00) at the configured geometry — empirical end-to-end
     proof of the R2b OutputCreated ordering fix.
+  - Review round on the above, same branch:
+    - `compositor->multi_backend` was never set.  C sets it from the
+      comma in the backends string before load_backends
+      (main.c:4653), and libweston keys the early buffer-release
+      optimization off it (`output_accumulate_damage`,
+      compositor.c:3471) — with two backends loaded and the flag
+      false, the core reference is dropped while the second backend
+      still needs the buffer.  Now set from the builder's backend
+      count.
+    - Renderer AUTO was pre-resolved to noop whenever headless was in
+      the list.  C hands AUTO to every loader and lets the first
+      backend to reach `if (!compositor->renderer)` decide, so
+      `--backends=vnc,headless` handed the VNC backend
+      WESTON_RENDERER_NOOP — which it rejects outright — where C
+      comes up on pixman.  AUTO is now passed through unresolved.
+    - `[core] backends` / `[core] backend` are one variable too
+      (main.c:4602-4606): `backends` is read first and `backend` is
+      its fallback, and either is comma-split.  We had the precedence
+      inverted and never split the singular key.
+    - The unhandled-option applicability table only covered flags one
+      *ported* backend consumes, so `--seat`, `--fullscreen`,
+      `--no-input`, the rdp flags and friends — consumed by no
+      loadable backend at all — were silently ignored where C is
+      fatal.  Third table added; `--use-gl`/`--use-pixman` joined the
+      headless-only one.
+    - Documented (not replicated) a C bug the multi-backend path
+      exposes: each loader's `wet_init_parsed_options` replaces
+      `compositor->parsed_options` with a zeroed table, so after two
+      loads the configure callbacks read an empty one and
+      `--width`/`--height`/`--scale`/`--transform` reach no output at
+      all.  We apply the CLI layer to every backend; see the
+      divergence list on `build_output_policy`.
+    - The xkb strdup copies leaked if `set_xkb_rule_names` failed
+      (it returns before taking ownership); freed on that path now.
+    - rust-smoke leg 7 waited only for the wayland socket, which is
+      bound *before* the heads flush — it now waits for
+      `Output 'vnc' enabled`, so the VNC configure path is actually
+      inside the valgrind window.
 
 - **R2b headless slice (2026-07-26)** — output management, the
   e2e-verifiable half (plan §7 R2b), branch
