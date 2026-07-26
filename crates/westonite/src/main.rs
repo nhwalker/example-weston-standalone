@@ -171,9 +171,16 @@ fn verify_xdg_runtime_dir() -> Option<ExitCode> {
     None
 }
 
-/// R2a fail-loud gate: options whose behavior is not yet ported are
+/// Fail-loud gate: options whose behavior is not yet ported are
 /// startup errors, never silent no-ops (the C frontend stays the
 /// oracle for them — plan §7).
+///
+/// `[[output]]` sections are checked whether or not a head of that name
+/// will show up.  C would leave an unmatched section inert, but "inert"
+/// and "honoured" are indistinguishable to someone who wrote
+/// `clone-of` and got no output and no message — so an unported key is
+/// fatal wherever it appears.  `build_output_policy` validates the
+/// ported keys on the same all-sections basis.
 fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     if settings.backends != [Backend::Headless] {
         let names: Vec<&str> = settings
@@ -257,12 +264,27 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
 }
 
 /// Resolve the settings into the fence's [`weston::OutputPolicy`]
-/// (R2b): every `[[output]]` section becomes a typed rule (inert unless
-/// a head with that name appears — C's name-matched section lookup),
-/// CLI --width/--height/--scale/--transform become the overriding
-/// layer.  Bad transform names are startup errors (C
-/// wet_output_set_transform fails the enable; we fail earlier with the
-/// same wording); a bad mode logs C's "Invalid mode … Using defaults."
+/// (R2b): every `[[output]]` section becomes a typed rule applied to
+/// the head of that name, and CLI --width/--height/--scale/--transform
+/// become the overriding layer.  Precedence per head is C's
+/// (wet_configure_windowed_output_from_config): backend defaults →
+/// name-matched section → CLI.
+///
+/// Two deliberate divergences from C, both in the fail-loud direction
+/// (see `reject_unported`, which validates *all* sections for the same
+/// reason):
+///
+///  * C resolves a section only when a head of that name shows up, so a
+///    section that matches nothing is silently inert — including one
+///    with a typo'd name or an unparseable `transform`.  We validate
+///    every section at startup instead: a bad transform name is fatal
+///    with C's `Invalid transform "…"` wording, and a section with no
+///    `name` key (which could never match anything) is fatal too.
+///  * C logs `Invalid mode for output %s. Using defaults.` when a
+///    section exists but has *no* `mode` key at all
+///    (`if (!mode || sscanf(…) < 2)`, main.c parse_simple_mode).  We
+///    log it only for a `mode` that is present and unparseable —
+///    warning about a section that merely sets `scale` is noise.
 fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, String> {
     let mut policy = weston::OutputPolicy::defaults(1024, 640);
 
@@ -274,7 +296,9 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             name: name.clone(),
             off: out.off == Some(true),
             size: None,
-            scale: None,
+            // Positivity is validated in westonite-config, next to the
+            // --width/--height/--scale checks it shares a rule with.
+            scale: out.scale,
             transform: None,
         };
         if let Some(mode) = &out.mode {
@@ -285,14 +309,6 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             } else {
                 weston::log::message(&format!("Invalid mode for output {name}. Using defaults."));
             }
-        }
-        if let Some(s) = out.scale {
-            if s <= 0 {
-                return Err(format!(
-                    "[[output]] '{name}': scale must be positive (got {s})"
-                ));
-            }
-            rule.scale = Some(s);
         }
         if let Some(t) = &out.transform {
             rule.transform = Some(
@@ -316,12 +332,19 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
 }
 
 /// "WxH" or "WxH@rate" (weston's simple-mode grammar; rate ignored by
-/// the headless output).
+/// the headless output).  Anything else — `preferred`, `current`, a
+/// full modeline — is None, and the caller falls back to the defaults
+/// with C's log line, exactly as C's `sscanf("%dx%d@%d") < 2` does.
+///
+/// Stricter than that sscanf on two shapes it would wave through:
+/// embedded spaces (`1024 x 640`) and trailing junk (`1024x640junk`,
+/// where sscanf stops happily after two conversions).  Both are typos,
+/// and C silently running at 1024x640 is what makes them expensive.
 fn parse_mode(mode: &str) -> Option<(i32, i32)> {
     let core = mode.split('@').next().unwrap_or(mode);
     let (w, h) = core.split_once('x')?;
-    let w: i32 = w.trim().parse().ok()?;
-    let h: i32 = h.trim().parse().ok()?;
+    let w: i32 = w.parse().ok()?;
+    let h: i32 = h.parse().ok()?;
     if w > 0 && h > 0 { Some((w, h)) } else { None }
 }
 
@@ -379,5 +402,37 @@ fn is_executable(path: &std::path::Path) -> bool {
         // a wrong positive still fails at spawn with a logged error).
         Ok(m) => m.is_file() && m.mode() & 0o111 != 0,
         Err(_) => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_mode;
+
+    #[test]
+    fn simple_mode_grammar() {
+        assert_eq!(parse_mode("1024x640"), Some((1024, 640)));
+        assert_eq!(parse_mode("1920x1080@60"), Some((1920, 1080)));
+        // Rate present but empty: C's sscanf takes the two conversions
+        // it got and moves on, and so do we.
+        assert_eq!(parse_mode("800x500@"), Some((800, 500)));
+
+        // Fall back to the defaults (with C's log line) for everything
+        // the windowed grammar does not cover.
+        for bad in [
+            "preferred",
+            "current",
+            "off",
+            "1024",
+            "1024x",
+            "x640",
+            "0x640",
+            "1024x-1",
+            // Stricter than C's sscanf on purpose — see parse_mode.
+            "1024 x 640",
+            "1024x640junk",
+        ] {
+            assert_eq!(parse_mode(bad), None, "{bad}");
+        }
     }
 }

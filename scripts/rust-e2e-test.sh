@@ -6,6 +6,10 @@
 # (test_outputs.py — R2b).  VNC-dependent tests are deselected until
 # the VNC backend ports at R2c; the C frontend leg (e2e-test.sh)
 # remains the oracle for everything else.
+# test_vnc_client_resize_repaints_background needs no deselect: it
+# carries its own unconditional skip (EPEL VNC-stack bug), and listing
+# it here as well would keep it off this leg silently once that skip
+# is lifted.
 # Runs inside the containers/Containerfile.build image.
 # Usage: rust-e2e-test.sh [results-dir]
 set -euo pipefail
@@ -25,7 +29,6 @@ exec env \
 		tests/e2e/test_children.py tests/e2e/test_outputs.py \
 		--deselect test_lifecycle.py::test_clean_shutdown_vnc_backend \
 		--deselect test_outputs.py::test_vnc_output_mode_from_config \
-		--deselect test_outputs.py::test_vnc_client_resize_repaints_background \
 		--deselect test_outputs.py::test_multi_backend_headless_plus_vnc \
 		-v -p no:cacheprovider \
 		--junit-xml="$RESULTS/e2e-rust-frontend.xml"

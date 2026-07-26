@@ -54,6 +54,7 @@ pub enum CompositorError {
     SocketAdd,
     SignalSource,
     ShellInit,
+    OutputInit,
 }
 
 impl std::fmt::Display for CompositorError {
@@ -68,6 +69,7 @@ impl std::fmt::Display for CompositorError {
             CompositorError::SocketAdd => "binding the wayland socket failed",
             CompositorError::SignalSource => "installing signal sources failed",
             CompositorError::ShellInit => "shell initialization failed",
+            CompositorError::OutputInit => "configuring the outputs failed",
         };
         f.write_str(s)
     }
@@ -297,6 +299,14 @@ impl CompositorBuilder {
             unsafe { weston_sys::weston_compositor_flush_heads_changed(compositor) };
         });
 
+        // C wet_main: `if (wet.init_failed) goto out` immediately after
+        // the flush — an output that could not be created, configured
+        // or enabled is a startup failure, never a compositor that
+        // comes up quietly short of outputs.
+        if ctx.inner.init_failed.get() {
+            return Err(CompositorError::OutputInit);
+        }
+
         // SAFETY: compositor is live.
         unsafe { weston_sys::weston_compositor_wake(compositor) };
 
@@ -365,6 +375,10 @@ impl Compositor {
         if backend.is_null() {
             return Err(CompositorError::BackendLoad);
         }
+        // C stores this on the per-backend `wet_backend` that owns the
+        // heads-changed listener; the wrapper installs one listener, so
+        // the discriminator lives on the Ctx (see heads_changed).
+        self.ctx.inner.backend.set(backend);
 
         // C load_headless_backend: --no-outputs skips head creation
         // entirely (the compositor runs with zero outputs).
@@ -563,17 +577,29 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
         }
     }
 
+    // C iterates only the heads of the backend whose wet_backend owns
+    // this listener (wet_backend_iterate_heads).  One listener here, so
+    // the same filter is applied explicitly: without it every head of
+    // every backend would be configured with this backend's policy and
+    // enabled through this backend's windowed-output API.
+    let backend = ctx.inner.backend.get();
+
     for head in heads {
         // SAFETY: head snapshot entries stay valid inside the flush; the
-        // is_* getters are pure queries.
-        let (connected, enabled, changed, non_desktop) = unsafe {
+        // is_* getters are pure queries and `backend` is a bound POD
+        // field set by the backend that created the head.
+        let (head_backend, connected, enabled, changed, non_desktop) = unsafe {
             (
+                (*head.as_ptr()).backend,
                 weston_sys::weston_head_is_connected(head.as_ptr()),
                 weston_sys::weston_head_is_enabled(head.as_ptr()),
                 weston_sys::weston_head_is_device_changed(head.as_ptr()),
                 weston_sys::weston_head_is_non_desktop(head.as_ptr()),
             )
         };
+        if !backend.is_null() && head_backend != backend {
+            continue;
+        }
         if connected && !enabled && !non_desktop {
             let name = head_name(head);
             match policy.decide(&name) {
@@ -581,12 +607,17 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
                 None => {
                     // [[output]] off: leave the head unenabled (our
                     // re-spec extension; C windowed backends have no
-                    // per-output off switch).
-                    log::log_line(&format!("westonite: output {name} disabled by config"));
+                    // per-output off switch).  The head stays
+                    // connected-and-unenabled forever, so every later
+                    // flush would re-log: register_head returning true
+                    // (first sight) is the once-per-head gate.
+                    if register_head(ctx, head, &name) {
+                        log::log_line(&format!("westonite: output {name} disabled by config"));
+                    }
                 }
             }
         } else if !connected && enabled {
-            disable_head(ctx, head);
+            disable_head(head);
         } else if enabled && changed {
             log::log_line(&format!(
                 "Detected a monitor change on head '{}', not bothering to do anything about it.",
@@ -602,13 +633,12 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
 /// C simple_head_disable: destroy the head's output.  Registry
 /// invalidation and the policy event ride the output-destroy listener
 /// installed at registration.
-fn disable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>) {
+fn disable_head(head: NonNull<weston_sys::weston_head>) {
     // SAFETY: head live (snapshot inside the flush); getter is pure.
     let output = unsafe { weston_sys::weston_head_get_output(head.as_ptr()) };
     if output.is_null() {
         return;
     }
-    let _ = ctx;
     // SAFETY: enabled head implies a live output owned by the
     // compositor; destroy emits our destroy listener (§3b invalidation).
     unsafe { weston_sys::weston_output_destroy(output) };
@@ -616,6 +646,14 @@ fn disable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>) {
 
 /// C weston_output_lazy_align (frontend-local): place the new output to
 /// the right of the most recently enabled one.
+///
+/// Only *enabled* outputs are on `output_list`
+/// (weston_compositor_create_output leaves the new one on
+/// `pending_output_list` until weston_output_enable moves it), so the
+/// output being placed is never its own peer — same as in C.  With a
+/// single head the list is empty here and the peer branch does not run,
+/// which is why no headless test can reach it; the multi-output
+/// coverage arrives with the second backend at R2c.
 fn lazy_align(
     compositor: *mut weston_sys::weston_compositor,
     output: NonNull<weston_sys::weston_output>,
@@ -628,11 +666,7 @@ fn lazy_align(
         let prev = (*list).prev;
         let mut next_x = 0.0_f64;
         if !prev.is_null() && prev != list {
-            let off = std::mem::offset_of!(weston_sys::weston_output, link);
-            let peer = prev
-                .cast::<u8>()
-                .sub(off)
-                .cast::<weston_sys::weston_output>();
+            let peer = crate::container_of!(prev, weston_sys::weston_output, link);
             next_x = (*peer).pos.c.x + f64::from((*peer).width);
         }
         (*output.as_ptr()).pos.c = weston_sys::weston_coord { x: next_x, y: 0.0 };
@@ -661,14 +695,11 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: OutputS
         weston_sys::weston_compositor_create_output(compositor, head.as_ptr(), cname.as_ptr())
     };
     let Some(output) = NonNull::new(output) else {
-        crate::log::log_line(&format!("westonite: cannot create output for head {name}"));
+        // C simple_head_enable wording.
+        crate::log::log_line(&format!("Could not create an output for head \"{name}\"."));
+        ctx.inner.init_failed.set(true);
         return;
     };
-
-    // Register head + output with their destroy listeners — insertion
-    // and invalidator attachment paired (§3b).
-    register_head(ctx, head, &name);
-    register_output(ctx, output, &name);
 
     // C simple_head_enable ordering: placement (lazy_align), then the
     // backend configurator (scale/transform/size), then enable.
@@ -677,7 +708,7 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: OutputS
     // SAFETY: output live and not yet enabled; mirrors
     // wet_configure_windowed_output_from_config with the resolved
     // policy decision (defaults → [[output]] section → CLI).
-    let enabled = unsafe {
+    let configured = unsafe {
         weston_sys::weston_output_set_scale(output.as_ptr(), setup.scale);
         weston_sys::weston_output_set_transform(output.as_ptr(), setup.transform.to_c());
         let api = weston_sys::weston_plugin_api_get(
@@ -692,19 +723,48 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: OutputS
                 setup.width,
                 setup.height,
             ) >= 0
-            && weston_sys::weston_output_enable(output.as_ptr()) == 0
     };
-    if !enabled {
-        crate::log::log_line(&format!("westonite: enabling output {name} failed"));
-        // SAFETY: output was created above and never enabled; destroy
-        // emits our destroy listener, which unregisters it.
+    if !configured {
+        // C wet_configure_windowed_output_from_config failure path.
+        crate::log::log_line(&format!("Cannot configure output \"{name}\"."));
+        ctx.inner.init_failed.set(true);
+        // SAFETY: output was created above and never enabled; it is not
+        // registered yet, so no listener fires.
         unsafe { weston_sys::weston_output_destroy(output.as_ptr()) };
+        return;
     }
+
+    // SAFETY: output live, configured, not yet enabled.
+    let enable_ret = unsafe { weston_sys::weston_output_enable(output.as_ptr()) };
+    if enable_ret != 0 {
+        // No log line here: libweston's weston_output_enable already
+        // emits `Enabling output "%s" failed.`, which is verbatim what
+        // C's frontend would add on top of it.
+        ctx.inner.init_failed.set(true);
+        // SAFETY: output was created above and never enabled; it is not
+        // registered yet, so no listener fires.
+        unsafe { weston_sys::weston_output_destroy(output.as_ptr()) };
+        return;
+    }
+
+    // Register head + output with their destroy listeners — insertion
+    // and invalidator attachment paired (§3b).  AFTER the enable, as C
+    // does with wet_head_tracker_create, and load-bearing for the
+    // output side: weston_output_enable emits output_created_signal,
+    // and the shell's listener registers the output itself and fires
+    // Event::OutputCreated (its background curtain hangs off that).
+    // Claiming the registry slot first would make that listener's
+    // already-registered early-return swallow the event, and would
+    // leave two destroy listeners keyed on one output address.
+    register_head(ctx, head, &name);
+    register_output(ctx, output, &name);
 }
 
-fn register_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, name: &str) {
+/// Returns true when this call registered the head, false when it was
+/// already known (callers use it as a once-per-head gate).
+fn register_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, name: &str) -> bool {
     if ctx.inner.heads.borrow().id_of(head).is_some() {
-        return;
+        return false;
     }
     let id = crate::ids::HeadId(ctx.inner.heads.borrow_mut().insert(head));
     let name = name.to_owned();
@@ -743,6 +803,7 @@ fn register_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, name: &str) 
     }
     l.mark_attached();
     ctx.inner.listeners.borrow_mut().push((key, l));
+    true
 }
 
 fn register_output(ctx: &Ctx, output: NonNull<weston_sys::weston_output>, name: &str) {

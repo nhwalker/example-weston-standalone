@@ -45,6 +45,17 @@ pub(crate) struct CtxInner {
     // Raw C singletons (borrowed for the compositor's lifetime).
     pub(crate) compositor: Cell<*mut weston_sys::weston_compositor>,
     pub(crate) display: Cell<*mut weston_sys::wl_display>,
+    /// The backend this builder loaded.  C keys its heads-changed
+    /// listener off `struct wet_backend` and filters heads by
+    /// `head->backend == wb->backend` (main.c simple_heads_changed via
+    /// wet_backend_iterate_heads); the wrapper installs one listener,
+    /// so it carries the same discriminator here.
+    pub(crate) backend: Cell<*mut weston_sys::weston_backend>,
+    /// C `wet_compositor.init_failed`: an output that could not be
+    /// created, configured or enabled aborts startup rather than
+    /// leaving a running compositor with missing outputs (main.c
+    /// simple_head_enable → `wet_main`'s post-flush check).
+    pub(crate) init_failed: Cell<bool>,
 
     // §3e: dispatch depth across trampolines AND outbound FFI calls;
     // whoever returns it to zero drains.
@@ -136,6 +147,8 @@ impl Ctx {
         let inner = Rc::new(CtxInner {
             compositor: Cell::new(std::ptr::null_mut()),
             display: Cell::new(std::ptr::null_mut()),
+            backend: Cell::new(std::ptr::null_mut()),
+            init_failed: Cell::new(false),
             depth: Cell::new(0),
             draining: Cell::new(false),
             shutting_down: Cell::new(false),

@@ -56,16 +56,31 @@
 [xwayland]
 #path = "/usr/bin/Xwayland"
 
-# Repeated ini [output] sections become TOML array-of-tables.
+# Repeated ini [output] sections become TOML array-of-tables.  Each
+# section configures the head whose name it matches; a section naming a
+# head that never turns up configures nothing — but it is still
+# checked at startup, so a typo in `transform` is fatal rather than
+# quietly ignored.  mode/scale/transform/off are honoured by the Rust
+# frontend (R2b) on the headless backend; a section carrying
+# clone-of/mirror-of or a colour-management attribute is still a
+# startup error there until the DRM slice lands.
 #[[output]]
 #name = "headless"
+# "WxH" or "WxH@rate"; an unparseable mode logs and keeps the backend
+# default (1024x640 headless).  CLI --width/--height override it.
 #mode = "1024x640"
+# Positive integer; CLI --scale overrides it.
 #scale = 1
+# normal, rotate-90/180/270, flipped, flipped-rotate-90/180/270.
+# An unknown name is a startup error.  CLI --transform overrides it.
 #transform = "normal"
 
+# Leave a head unenabled.  `mode = "off"` is the same switch under the
+# ini spelling.  This is a westonite extension: C has no per-output off
+# switch for the windowed backends.
 #[[output]]
 #name = "DP-1"
-#mode = "1920x1080@60"
+#off = true
 
 [vnc]
 #port = 5900
