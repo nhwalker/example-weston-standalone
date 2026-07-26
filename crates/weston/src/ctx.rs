@@ -280,8 +280,15 @@ impl Ctx {
             }
         }
         inner.draining.set(false);
-        // No C frame and no handler frame is live past this point: the
-        // safe moment for freeing trampoline-owning boxes (§3f).
+        // Safe moment for freeing trampoline-owning boxes (§3f).  Note
+        // the outermost trampoline's own C frame may still be on the
+        // stack (this drain runs from its with_depth exit): the
+        // invariant is narrower than "no C frame live" — every frame
+        // still on the stack has already made its last access to any
+        // box retired into this list (trampolines never touch their
+        // inner after the handler returns, and deeper frames have
+        // returned).  Teardown-time boxes go to the GRAVEYARD instead,
+        // where even this invariant cannot be shown.
         let dead: Vec<Box<dyn Any>> = std::mem::take(&mut *inner.pending_drop.borrow_mut());
         drop(dead);
     }

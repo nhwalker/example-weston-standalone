@@ -17,6 +17,38 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **Review hardening (2026-07-26)** — post-merge review of the R0/R1 +
+  planning PRs (#11, #13–#16), branch
+  `claude/rust-migration-review-b9rjxw`:
+  - **RPM now ships the Rust shell**: `rpm/westonite.spec` builds
+    `westonite-shell-plugin` in `%build` (offline, against crates
+    vendored by `scripts/rpm-build.sh` as Source1) and installs it over
+    the meson-built `desktop-shell.so` — previously the release RPM
+    silently shipped the C shell while CI tested the Rust one.
+  - Fence-check hardening: transitive dependency-graph walk (was
+    direct-deps only), unclassified-workspace-crate failure, anchored
+    `forbid(unsafe_code)` + Cargo.toml lint check, bindings regenerated
+    to a scratch file (tree untouched), `FENCE_CHECK_BINDINGS=1` forced
+    in CI with a pinned `bindgen-cli` baked into the build image (the
+    drift gate previously always skipped in CI).
+  - `cargo --locked` on every build/test/metadata invocation;
+    `regen-bindings.sh` pins and asserts the bindgen version.
+  - Smoke hardening: valgrind leg now asserts the same startup/exit
+    markers as the plain leg; the Rust shell logs an identifying init
+    marker that `smoke-test.sh` requires (and requires absent under
+    `WESTONITE_C_ORACLE=1`); CI gains a C-oracle smoke leg (plan R-B);
+    stress-test watchdog replaced with an in-process teardown deadline.
+  - Fence soundness: per-seat pointer-destroy guard listener — detaches
+    the pointer-focus listener inside `weston_pointer_destroy`'s
+    destroy_signal emission, because `weston_seat_release` frees the
+    pointer *before* emitting the seat destroy_signal (the C shell has
+    the same latent hazard, masked by backend release order).
+  - Dead `weston-sys/hybrid-r1` feature removed;
+    `undocumented_unsafe_blocks` extended to the plugin crate; doc
+    corrections (callback-inventory vestigial rows L19/L20/L26, field
+    count 29, stale anchors; plan: public-api gap and sanitizer claims
+    stated honestly, dlsym compat path, count fixes; VENDOR.md deleted-
+    file references).
 - **R1 (2026-07-25)** — shell in Rust, frontend still C (plan §7 R1),
   branch `claude/rust-migration-j84b2p`:
   - `westonite-shell` (safe, `forbid(unsafe_code)`, no-unwrap lints):

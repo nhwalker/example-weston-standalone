@@ -10,10 +10,10 @@ RPM `weston-14.0.1-3.el10_0` this port links against
 
 | Here | Upstream |
 |---|---|
-| `frontend/{main,executable,text-backend,config-helpers,weston-screenshooter,xwayland}.c`, `frontend/{weston,weston-private}.h` | `frontend/` (same names) |
-| `desktop-shell/{shell.c,shell.h,input-panel.c}` | `desktop-shell/` (same names) |
+| `frontend/{main,executable,config-helpers,weston-screenshooter,xwayland}.c`, `frontend/{weston,weston-private}.h` | `frontend/` (same names) — `text-backend.c` was imported, later deleted (T2) |
+| `desktop-shell/{shell.c,shell.h}` | `desktop-shell/` (same names) — `input-panel.c` was imported, later deleted (T2) |
 | `shared/{os-compatibility,process-util}.{c,h}`, `shared/option-parser.c`, `shared/{helpers,string-helpers,xalloc,timespec-util,fd-util}.h` | `shared/` (same names) |
-| `protocol/weston-desktop-shell.xml` | `protocol/weston-desktop-shell.xml` |
+| *(deleted, T3)* `protocol/weston-desktop-shell.xml` | `protocol/weston-desktop-shell.xml` |
 | `git-version.h.meson` | `libweston/git-version.h.meson` |
 | `COPYING` | `COPYING` |
 
@@ -105,7 +105,10 @@ All `meson.build` files and `meson_options.txt` are written for this repo
 
 ## Rebasing to a newer 14.0.x
 
-1. `git -C <weston> diff 14.0.1..<new-tag> -- frontend/ desktop-shell/ shared/ protocol/weston-desktop-shell.xml`
+1. `git -C <weston> diff 14.0.1..<new-tag> -- frontend/ desktop-shell/ shared/`
+   (the helper-client protocol and its users are deleted here — T2/T3 —
+   so hunks touching `protocol/`, `input-panel.c`, or `text-backend.c`
+   have nothing to apply to and are skipped)
 2. Apply the hunks touching imported files (drop P0 if superseded).
 3. Update the tag/commit above, the version in `meson.build`, and
    `rpm/westonite.spec`; rebuild and rerun the smoke tests.

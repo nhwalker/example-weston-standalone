@@ -88,12 +88,20 @@ fi
 echo "clients mapped during storms: $MAPPED"
 
 kill -TERM "$WPID"
-# Teardown watchdog: a hung teardown must fail in minutes, not at the CI
-# job timeout.  120s is generous even under valgrind.
-( sleep 120; kill -9 "$WPID" 2>/dev/null ) &
-WDOG=$!
-wait "$WPID" || { echo "FAIL: compositor exited non-zero (valgrind errors, crash, or teardown hang >120s)"; tail -40 "$VG"; tail -20 "$LOG"; exit 1; }
-kill "$WDOG" 2>/dev/null || true
+# Teardown deadline: a hung teardown must fail in minutes, not at the CI
+# job timeout.  120s is generous even under valgrind.  Poll-then-reap
+# instead of a background watchdog subshell: nothing lingers past the
+# script and no stale-PID kill can fire after exit.
+for _ in $(seq 1 240); do
+	kill -0 "$WPID" 2>/dev/null || break
+	sleep 0.5
+done
+if kill -0 "$WPID" 2>/dev/null; then
+	kill -9 "$WPID" 2>/dev/null || true
+	wait "$WPID" 2>/dev/null || true
+	echo "FAIL: compositor teardown hung >120s"; tail -40 "$VG"; tail -20 "$LOG"; exit 1
+fi
+wait "$WPID" || { echo "FAIL: compositor exited non-zero (valgrind errors or crash)"; tail -40 "$VG"; tail -20 "$LOG"; exit 1; }
 grep -q "ERROR SUMMARY: 0 errors" "$VG" || { echo "FAIL: valgrind errors"; tail -40 "$VG"; exit 1; }
 
 echo "DESTROY-STORM STRESS PASSED (valgrind clean, $MAPPED clients mapped)"

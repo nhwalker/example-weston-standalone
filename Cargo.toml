@@ -2,10 +2,12 @@
 # Hybrid phase: this workspace lives alongside the meson tree until R3.
 #
 # Crate roles and the unsafe/safe fence are normative in the plan §2:
-#   weston-sys       UNSAFE  bindgen over the installed libweston 14 headers
-#   weston           UNSAFE INSIDE, SAFE API — the fence crate
-# (westonite-spawn, westonite-config, westonite-shell, westonite arrive in
-# later phases; do not add them here early.)
+#   weston-sys             UNSAFE  bindgen over the installed libweston 14 headers
+#   weston                 UNSAFE INSIDE, SAFE API — the fence crate
+#   westonite-shell        SAFE    shell.c policy port (R1)
+#   westonite-shell-plugin UNSAFE  R1-only cdylib shim, deleted at R3
+# (westonite-spawn, westonite-config, westonite arrive in later phases;
+# do not add them here early.)
 
 [workspace]
 resolver = "2"

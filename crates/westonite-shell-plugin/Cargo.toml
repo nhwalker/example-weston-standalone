@@ -14,3 +14,7 @@ westonite-shell = { workspace = true }
 
 [lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+# Plan §6: unsafe hygiene lints apply to every unsafe crate.
+undocumented_unsafe_blocks = "deny"

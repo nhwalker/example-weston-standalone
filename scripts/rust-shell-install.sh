@@ -13,7 +13,7 @@ if [ "${WESTONITE_C_ORACLE:-0}" = "1" ]; then
 fi
 
 cd /src
-cargo build -p westonite-shell-plugin --release
+cargo build --locked -p westonite-shell-plugin --release
 MODDIR=/usr/lib64/westonite
 install -m 755 target/release/libwestonite_shell_plugin.so \
 	"$MODDIR/desktop-shell.so"

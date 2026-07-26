@@ -17,14 +17,16 @@ if ! command -v rustup >/dev/null 2>&1 && [ ! -x "$CARGO_HOME/bin/rustup" ]; the
 		--default-toolchain nightly --profile minimal --component rust-src
 fi
 export PATH="$CARGO_HOME/bin:$PATH"
-rustup toolchain list | grep -q nightly || \
+# (grep without -q: -q's early exit can SIGPIPE rustup under pipefail
+# and spuriously trigger the reinstall.)
+rustup toolchain list | grep nightly >/dev/null || \
 	rustup toolchain install nightly --profile minimal --component rust-src
 
 export XDG_RUNTIME_DIR=/tmp/xdg
 mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
 
 echo "== asan: build r0-smoke with -Zsanitizer=address"
-RUSTFLAGS="-Zsanitizer=address" cargo +nightly build -Zbuild-std \
+RUSTFLAGS="-Zsanitizer=address" cargo +nightly build --locked -Zbuild-std \
 	--target x86_64-unknown-linux-gnu \
 	--example r0-smoke --target-dir target/asan
 

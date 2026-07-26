@@ -16,6 +16,3 @@ pkg-config = "0.3"
 # Compiles the fake-C-object test harness (shim/testsupport.c) so the
 # `weston` crate's primitives are unit-testable without a compositor (D18).
 testsupport = []
-# R1-only: config-parser.h + frontend/weston.h compat surface for the hybrid
-# phase; removed at R3 (plan §2). Not yet populated at R0.
-hybrid-r1 = []

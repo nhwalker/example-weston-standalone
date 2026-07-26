@@ -98,6 +98,16 @@ struct SeatRec {
     destroy: Listener,
     caps: Listener,
     pointer_focus: std::rc::Rc<Listener>,
+    /// Oneshot on `pointer->destroy_signal`: detaches `pointer_focus`
+    /// while the pointer struct is still live.  Needed because
+    /// `weston_seat_release` frees the pointer (input.c:4373) *before*
+    /// emitting the seat destroy_signal (input.c:4388) — a seat-destroy-
+    /// time detach of `pointer_focus` would do list surgery through the
+    /// freed `focus_signal` head.  The C shell has the same latent
+    /// hazard and survives only because backends release pointer
+    /// devices (→ caps-changed → detach) before releasing the seat;
+    /// the fence must not depend on that call order.
+    pointer_guard: std::rc::Rc<Listener>,
 }
 
 thread_local! {
@@ -127,9 +137,27 @@ fn register_seat(ctx: &Ctx, seat: NonNull<weston_sys::weston_seat>, announce: bo
         }),
     ));
 
+    // Pointer-destroy guard (see the SeatRec field doc): oneshot on
+    // pointer->destroy_signal, which weston_pointer_destroy emits while
+    // the struct is still live — the last moment pointer_focus can be
+    // detached safely.  By seat-destroy time the pointer is already
+    // freed, so this guard is what guarantees pointer_focus is off the
+    // dead list by then, independent of backend release order.
+    let pf_guard = std::rc::Rc::clone(&pointer_focus);
+    let pointer_guard = std::rc::Rc::new(Listener::new(
+        "shell.pointer_destroy_guard",
+        true,
+        Box::new(move |_ctx, _data| {
+            if pf_guard.is_attached() {
+                pf_guard.detach();
+            }
+        }),
+    ));
+
     // caps_changed: attach/detach the pointer-focus listener as the
     // pointer capability comes and goes (C shell_seat_caps_changed).
     let pf = std::rc::Rc::clone(&pointer_focus);
+    let guard = std::rc::Rc::clone(&pointer_guard);
     let seat_ptr = seat;
     let caps = Listener::new(
         "shell.seat_caps",
@@ -139,20 +167,12 @@ fn register_seat(ctx: &Ctx, seat: NonNull<weston_sys::weston_seat>, announce: bo
             // a scoped access (§3a).
             let pointer = unsafe { weston_sys::weston_seat_get_pointer(seat_ptr.as_ptr()) };
             if let Some(pointer) = NonNull::new(pointer) {
-                if !pf.is_attached() {
-                    // SAFETY: pointer->focus_signal outlives the
-                    // attachment: the caps handler detaches when the
-                    // pointer capability drops, and seat destroy
-                    // detaches the rec.
-                    unsafe {
-                        weston_sys::wsys_wl_signal_add(
-                            &raw mut (*pointer.as_ptr()).focus_signal,
-                            pf.raw_ptr(),
-                        );
-                    }
-                    pf.mark_attached();
-                }
+                attach_pointer_listeners(pointer, &pf, &guard);
             } else if pf.is_attached() {
+                // Caps loss: the pointer struct persists (input.c keeps
+                // pointer_state for re-attach), so only pointer_focus
+                // comes off; the guard stays armed for the eventual
+                // weston_pointer_destroy.
                 pf.detach();
             }
         }),
@@ -180,7 +200,14 @@ fn register_seat(ctx: &Ctx, seat: NonNull<weston_sys::weston_seat>, announce: bo
             let key = p.as_ptr() as usize;
             if let Some(rec) = SEAT_RECS.with(|m| m.borrow_mut().remove(&key)) {
                 rec.caps.detach();
+                // pointer_focus/pointer_guard: if the pointer existed it
+                // is already freed here (weston_seat_release frees it
+                // before this emission) — but the guard fired inside
+                // weston_pointer_destroy and detached both, so these are
+                // guaranteed no-ops on the freed-pointer path and real
+                // detaches only when no pointer was ever created.
                 rec.pointer_focus.detach();
+                rec.pointer_guard.detach();
                 ctx.defer_drop(Box::new(rec));
             }
             ctx.enqueue(Event::SeatGone { seat: id });
@@ -199,37 +226,54 @@ fn register_seat(ctx: &Ctx, seat: NonNull<weston_sys::weston_seat>, announce: bo
             SeatRec {
                 destroy,
                 caps,
-                pointer_focus,
+                pointer_focus: std::rc::Rc::clone(&pointer_focus),
+                pointer_guard: std::rc::Rc::clone(&pointer_guard),
             },
         )
     });
 
-    // C create_shell_seat runs caps_changed once by hand.
-    let rec_caps_fired = SEAT_RECS.with(|m| m.borrow().get(&key).map(|_| ()));
-    if rec_caps_fired.is_some() {
-        // Re-run the caps logic once (attach if a pointer exists now).
-        // SAFETY: same contract as the caps handler body.
-        let pointer = unsafe { weston_sys::weston_seat_get_pointer(seat.as_ptr()) };
-        if let Some(pointer) = NonNull::new(pointer) {
-            SEAT_RECS.with(|m| {
-                if let Some(rec) = m.borrow().get(&key)
-                    && !rec.pointer_focus.is_attached()
-                {
-                    // SAFETY: as in the caps handler.
-                    unsafe {
-                        weston_sys::wsys_wl_signal_add(
-                            &raw mut (*pointer.as_ptr()).focus_signal,
-                            rec.pointer_focus.raw_ptr(),
-                        );
-                    }
-                    rec.pointer_focus.mark_attached();
-                }
-            });
-        }
+    // C create_shell_seat runs caps_changed once by hand: attach now if
+    // a pointer already exists.
+    // SAFETY: seat live; same contract as the caps handler body.
+    let pointer = unsafe { weston_sys::weston_seat_get_pointer(seat.as_ptr()) };
+    if let Some(pointer) = NonNull::new(pointer) {
+        attach_pointer_listeners(pointer, &pointer_focus, &pointer_guard);
     }
 
     if announce {
         ctx.dispatch_sync(Event::SeatCreated { seat: id });
+    }
+}
+
+/// Attach the per-seat pointer listeners to a live pointer: the focus
+/// listener onto `focus_signal`, and (once, staying armed across caps
+/// loss) the destroy guard onto `destroy_signal`.
+fn attach_pointer_listeners(
+    pointer: NonNull<weston_sys::weston_pointer>,
+    pf: &Listener,
+    guard: &Listener,
+) {
+    if !pf.is_attached() {
+        // SAFETY: pointer live inside this frame; the attachment is
+        // bounded by the caps handler (detach on caps loss) and by the
+        // destroy guard below (detach inside weston_pointer_destroy's
+        // emission, before the struct is freed).
+        unsafe {
+            weston_sys::wsys_wl_signal_add(&raw mut (*pointer.as_ptr()).focus_signal, pf.raw_ptr());
+        }
+        pf.mark_attached();
+    }
+    if !guard.is_attached() {
+        // SAFETY: pointer live; destroy_signal is emitted at the top of
+        // weston_pointer_destroy while the allocation is still valid,
+        // and the oneshot trampoline self-detaches during that emission.
+        unsafe {
+            weston_sys::wsys_wl_signal_add(
+                &raw mut (*pointer.as_ptr()).destroy_signal,
+                guard.raw_ptr(),
+            );
+        }
+        guard.mark_attached();
     }
 }
 
@@ -364,11 +408,13 @@ fn shell_init_body(
             SEAT_RECS.with(|m| {
                 for (_, rec) in m.borrow_mut().drain() {
                     // Detach while the seat signals are still valid
-                    // (compositor destroy runs before seats are freed);
-                    // no seat trampoline frame can be on the stack here.
+                    // (compositor destroy runs before seats — and their
+                    // pointers — are freed); no seat trampoline frame
+                    // can be on the stack here.
                     rec.destroy.detach();
                     rec.caps.detach();
                     rec.pointer_focus.detach();
+                    rec.pointer_guard.detach();
                     drop(rec);
                 }
             });
@@ -545,6 +591,11 @@ fn shell_init_body(
 
     create_screenshooter(ec);
     crate::input_bindings::add_shell_bindings(&ctx);
+
+    // Identifying marker (greppable in --log): smoke-test.sh asserts it
+    // so a build where the C shell silently shipped in place of the
+    // Rust plugin cannot pass as a Rust-shell run.
+    crate::log::log_line("westonite-shell: Rust shell initialized");
 
     true
 }

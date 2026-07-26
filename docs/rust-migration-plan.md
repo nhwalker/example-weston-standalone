@@ -101,14 +101,15 @@ Current C surface to port (lines at trim T9):
 |---|---|---|---|
 | frontend | `main.c`, `config-helpers.c`, `weston-screenshooter.c`, `xwayland.c`, `executable.c` | ~5.4k | wide but shallow: config → libweston-API plumbing |
 | desktop-shell | `shell.c`, `shell.h` | ~2.3k | deep: callback-driven state machine (focus, layers, xdg lifecycle) |
-| shared | `option-parser.c`, `os-compatibility.c`, `process-util.c` + 7 headers | ~2.1k | support code, mostly replaceable by std/rustix |
+| shared | `option-parser.c`, `os-compatibility.c`, `process-util.c` + 7 headers | ~1.9k | support code, mostly replaceable by std/rustix |
 
 FFI-idiom counts in the current tree (the audit surface for §3; each
 figure was re-counted at finalization): **34** `container_of` sites
-(`shell.c` 21, `main.c` 9, `weston-screenshooter.c` 4), **28**
-`wl_listener` struct fields, **23** signal/destroy-listener attach
-sites, **6** binding registrations with our own callbacks (plus
-`weston_install_debug_key_binding`, whose handler is libweston's),
+(`shell.c` 21, `main.c` 9, `weston-screenshooter.c` 4), **29**
+`wl_listener` fields (one a `main()` stack local), **23**
+signal/destroy-listener attach sites, **5** binding registrations
+with our own callbacks (plus `weston_install_debug_key_binding`,
+whose handler is libweston's — 6 registrations total),
 **14** `weston_desktop_api` entries.
 
 ## 2. Crate architecture
@@ -126,8 +127,9 @@ crates/
 │                             #   libweston.h, desktop.h, shell-utils.h, weston-log.h,
 │                             #   windowed-output-api.h, backend-*.h, xwayland-api.h
 │                             #   (+ the wayland-server types they embed)
-│                             #   config-parser.h + frontend/weston.h compat bound only
-│                             #   through R1 behind a `hybrid-r1` feature (removed at R3)
+│                             #   (the R1 config-parser/frontend compat is NOT bound here:
+│                             #   it lives as hand-declared externs + dlsym in
+│                             #   weston::shell_init, deleted at R3)
 │                             # links: libweston-14, wayland-server
 │                             # + a small `cc`-compiled shim: the static-inline helpers
 │                             #   the port actually uses AND the va_list interfaces (§3k)
@@ -168,7 +170,7 @@ process/env/fd-string helpers — which belong with the spawn audit in
 rustix call inlined at its two call sites. Fewer crates, and the
 spawn crate's API surface is exactly its audit surface.)*
 
-### Fence rules (D17 — all mechanically enforced in CI)
+### Fence rules (D17 — mechanically enforced in CI except where noted)
 
 - **Dependency-graph rule**: the three safe crates must not depend on
   `weston-sys` at all — they reach C only through `weston` and
@@ -177,11 +179,12 @@ spawn crate's API surface is exactly its audit surface.)*
   pointers.
 - **Public-API rule**: `weston`'s and `westonite-spawn`'s public APIs
   contain no raw pointers, no `NonNull`, and no `weston_sys::*`
-  types. Enforced with a `cargo public-api` snapshot test, which also
-  gives a reviewable diff every time the fence moves. (Single R1
-  exception, visible in the snapshot: the `hybrid-r1` bootstrap entry
-  consumed by `westonite-shell-plugin` takes the raw compositor
-  pointer; it and the feature disappear at R3.)
+  types. **Currently review-enforced only**: the planned `cargo
+  public-api` snapshot test (which would also give a reviewable diff
+  every time the fence moves) is not yet wired into CI — a known gap,
+  to be closed by R2. (Single R1 exception: the `hybrid-r1` bootstrap
+  entry consumed by `westonite-shell-plugin` takes the raw compositor
+  pointer as `*mut c_void`; it and the feature disappear at R3.)
 - **Opaque ids**: handle types (§3b) have private fields, no public
   constructor, and no `From`/`Into` conversions to or from pointers
   or integers. Even with `weston` in scope, safe code cannot
@@ -361,7 +364,7 @@ skipped event.
 
 ### (c) `Listener`: the `wl_listener`/`container_of` primitive
 
-One primitive owns the pervasive idiom (34 `container_of` sites, 28
+One primitive owns the pervasive idiom (34 `container_of` sites, 29
 listener fields): `Listener` owns `Pin<Box<Inner>>` where `Inner`
 embeds the `wl_listener` plus what the trampoline needs; a single
 `extern "C"` trampoline per signal shape does the one `container_of`
@@ -499,7 +502,7 @@ logic (output layout/clone-mirror resolution); its plumbing modules
 do not need a mock boundary.
 
 **Callback inventory table (R0 deliverable — lives at
-`docs/callback-inventory.md`).** Every `wl_listener` field (28),
+`docs/callback-inventory.md`).** Every `wl_listener` field (29),
 every attach site (23), the 6 bindings, and every
 `weston_desktop_api` field of the bound 14.0.1 struct (the "14
 entries" of §1 count struct fields; the C vtable at
@@ -614,7 +617,7 @@ in rather than profiled out:
 ### (j) Globals and threads
 
 `main.c` keeps process-global mutable state (`weston_logfile`,
-`log_scope`, `protocol_scope`, `cached_tm_mday` — `main.c:159-162`).
+`log_scope`, `protocol_scope`, `cached_tm_mday` — `main.c:160-163`).
 Rules: no `static mut` anywhere; this state lives in `weston` behind
 its own cell, handles outward. Wrapper types are `!Send + !Sync`
 (libweston is single-threaded), and the composition argument that
@@ -791,9 +794,11 @@ interface is re-specified rather than ported:
   pristine install (incl. installed-RPM e2e subset) pipeline
   unchanged in shape; adds `cargo fmt --check`,
   `clippy -D warnings`, `cargo test`, and the fence checks from §2:
-  dependency-graph check, `cargo public-api` snapshot,
+  dependency-graph check, bindings-drift check,
   `unwrap_used`/`expect_used`/`undocumented_unsafe_blocks` lints,
-  and the ASAN/UBSAN job (D18, §7).
+  and the sanitizer legs (D18, §7): nightly-ASAN for the pure-Rust
+  smoke plus valgrind for the hybrid destroy-storm.  (The `cargo
+  public-api` snapshot is a known gap — see §2; UBSAN is not run.)
 
 ## 7. Phasing (strangler fig — a working compositor at every step)
 
@@ -809,10 +814,12 @@ halves can be mixed and smoke-tested at every phase boundary.
   and the **fake-C-object unit harness** (a few `wl_signal`s and
   structs in the shim so `Listener`, `Grab`, the registry, and the
   trampolines are testable without a compositor — D18). The
-  ASAN+UBSAN job lands here, not at R4. Exit criterion: a throwaway
+  sanitizer legs land here, not at R4. Exit criterion: a throwaway
   Rust binary brings up compositor + headless backend + noop
   renderer, runs the event loop, exits 0 on SIGTERM (mirrors the
-  Phase-1 smoke test), under ASAN.
+  Phase-1 smoke test) — run plain, under valgrind, and under
+  nightly-ASAN (address only; UBSAN has no stable Rust story and is
+  not run).
 - **Phase R1 — shell in Rust, frontend still C** ✅ *(done — see PROVENANCE.md log)*: port `shell.c` →
   `westonite-shell`, shipped as `desktop-shell.so` via the
   `westonite-shell-plugin` cdylib (§2 — entry point there, bootstrap
@@ -820,7 +827,9 @@ halves can be mixed and smoke-tested at every phase boundary.
   linking `libexec_westonite.so`
   for **both** contract symbols (§1): `wet_get_config` — the C
   frontend still parses `westonite.ini`, so the shell reads its one
-  key through the temporary config-parser binding — and
+  key through a temporary compat path (hand-declared externs +
+  `dlsym(RTLD_DEFAULT)` in `weston::shell_init`, so neither the
+  bindings nor the cdylib carry a link-time dependency) — and
   `screenshooter_create`, called from init exactly as the C shell
   does (its Rust replacement waits for R2e). Deliberately first: the
   smaller but *deeper* half — it exercises every §3 primitive and
@@ -842,7 +851,9 @@ halves can be mixed and smoke-tested at every phase boundary.
   `ShellHost`** (D20) covering focus churn and teardown ordering;
   the **destroy-storm stress test** (output hotplug loops, client
   kill loops, grab start/cancel/destroy races — exercising exactly
-  the invalidation paths §3b/§3f introduce) green under ASAN (D18).
+  the invalidation paths §3b/§3f introduce) green under valgrind
+  (D18: ASAN cannot instrument the hybrid's C half; the pure-Rust
+  legs run under nightly-ASAN instead — see PROVENANCE.md).
 - **Phase R2 — spawn + frontend in Rust** (slices, each ending
   green — "green" means smoke **and** the full e2e suite): R2a core
   startup, logging (incl. the va_list shim), headless, **and the §5
@@ -1044,12 +1055,16 @@ finalization amendments, each verified against the sources):
   *Rejected*: `panic = "abort"` + `set_hook` (loses per-callback
   context in release, where it matters).
 - **D17 — Fence enforcement: all four structural checks + the
-  no-panic lints** (§2). *Rejected*: any subset; the original
-  "CI grep".
-- **D18 — Validation at R0/R1, not R4: ASAN/UBSAN smoke+e2e,
-  destroy-storm stress, fake-C-object unit tests, registry
+  no-panic lints** (§2; the `cargo public-api` snapshot remains a
+  known gap, review-enforced until it lands). *Rejected*: any
+  subset; the original "CI grep".
+- **D18 — Validation at R0/R1, not R4: sanitizer smoke
+  (nightly-ASAN for pure-Rust legs, valgrind for the hybrid — see
+  §7), destroy-storm stress, fake-C-object unit tests, registry
   `debug_assert`s on in CI** (§7). *Rejected*: sanitizers as
-  optional R4 hardening.
+  optional R4 hardening.  (UBSAN was in the original wording but is
+  not run: Rust has no stable UBSAN story and the C half is covered
+  by valgrind.)
 - **D19 — Boundary cost rules** (§3i): cached strings, no per-event
   allocations, scope-guarded lazy log formatting — where per-event
   cost actually is (100–1000× a handle check).

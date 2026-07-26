@@ -19,6 +19,12 @@ jobs:
       - name: Build westonite and run smoke tests
         run: docker run --rm -v "$PWD":/src westonite-build /src/scripts/smoke-test.sh
 
+      - name: Smoke tests against the C oracle shell (plan R-B)
+        # Keeps the C shell exercised until R3 deletes it; also proves
+        # the WESTONITE_C_ORACLE switch still selects the C build.
+        run: docker run --rm -v "$PWD":/src -e WESTONITE_C_ORACLE=1
+          westonite-build /src/scripts/smoke-test.sh
+
       - name: Run the e2e suite
         run: |
           mkdir -p test-results
@@ -80,10 +86,13 @@ jobs:
 
       - name: clippy (deny warnings, unsafe-hygiene lints)
         run: docker run --rm -v "$PWD":/src -w /src westonite-build
-          cargo clippy --workspace --all-targets --features weston/testsupport -- -D warnings
+          cargo clippy --locked --workspace --all-targets --features weston/testsupport -- -D warnings
 
       - name: Fence checks (plan §2/D17)
-        run: docker run --rm -v "$PWD":/src -w /src westonite-build /src/scripts/rust-fence-check.sh
+        # FENCE_CHECK_BINDINGS=1: the bindings-drift gate (fence 3) must
+        # run here, never skip — the image ships the pinned bindgen CLI.
+        run: docker run --rm -v "$PWD":/src -w /src -e FENCE_CHECK_BINDINGS=1
+          westonite-build /src/scripts/rust-fence-check.sh
 
       - name: Build, unit tests, headless smoke, valgrind
         run: docker run --rm -v "$PWD":/src -w /src westonite-build /src/scripts/rust-smoke.sh
