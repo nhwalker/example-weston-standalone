@@ -337,6 +337,18 @@ impl CompositorBuilder {
             exit_code: 0,
         };
 
+        // Signal sources BEFORE backend load, as C installs signals[]
+        // right after display creation: wl_event_loop_add_signal blocks
+        // the signal via sigprocmask on THIS thread, and threads spawned
+        // later inherit that mask.  The VNC backend spawns neatvnc/aml
+        // worker threads during load — install after it, and a
+        // process-directed SIGTERM can be delivered to a worker (which
+        // never blocked it) and kill the process with the default action
+        // instead of reaching the signalfd (seen live: CI SIGTERM death
+        // in the vnc valgrind leg while the same run passed locally —
+        // it is a per-delivery race).
+        comp.install_signal_sources()?;
+
         // Sync-tier heads-changed listener (§3e names this tier: outputs
         // must be configured inside the flush).  It touches only wrapper
         // state + the output policy — a pure data lookup, no app
@@ -434,13 +446,6 @@ impl CompositorBuilder {
 
         // SAFETY: compositor is live.
         unsafe { weston_sys::weston_compositor_wake(compositor) };
-
-        // Signal sources installed here, not in run(): the C frontend
-        // installs its signals[] (incl. SIGCHLD) before
-        // execute_autolaunch, so a client that exits between spawn and
-        // the run loop is still reaped/watched.  The frontend spawns
-        // between build() and run() — same ordering guarantee.
-        comp.install_signal_sources()?;
 
         Ok(comp)
     }
@@ -609,8 +614,11 @@ impl Compositor {
     }
 
     /// Install the SIGTERM/SIGINT/SIGCHLD event-loop sources (main.c
-    /// signals[]).  Called from build() so the sources exist before the
-    /// frontend spawns any client.
+    /// signals[]).  Called from build() BEFORE backend load — the
+    /// sigprocmask that backs the signalfd must be in place before any
+    /// backend spawns threads (they inherit the mask; see the call
+    /// site) — which also puts it before any client spawn (SIGCHLD
+    /// reaping/watch never misses an early exit).
     fn install_signal_sources(&mut self) -> Result<(), CompositorError> {
         let display = self.ctx.inner.display.get();
         // SAFETY: display live; loop borrowed for source installation.
