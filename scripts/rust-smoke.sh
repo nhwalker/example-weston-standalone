@@ -16,8 +16,9 @@ fail() { echo "FAIL: $1" >&2; exit 1; }
 echo "== rust 1: workspace builds"
 cargo build --workspace --examples
 
-echo "== rust 2: unit tests (fake-C-object harness, D18)"
+echo "== rust 2: unit tests (fence fake-C harness D18, shell policy D20)"
 cargo test -p weston --features testsupport
+cargo test -p westonite-shell
 
 echo "== rust 3: r0-smoke runs headless and exits 0 on SIGTERM"
 target/debug/examples/r0-smoke > /tmp/r0.log 2>&1 &

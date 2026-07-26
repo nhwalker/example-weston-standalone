@@ -58,3 +58,18 @@ dependencies = [
  "cc",
  "pkg-config",
 ]
+
+[[package]]
+name = "westonite-shell"
+version = "14.0.1"
+dependencies = [
+ "weston",
+]
+
+[[package]]
+name = "westonite-shell-plugin"
+version = "14.0.1"
+dependencies = [
+ "weston",
+ "westonite-shell",
+]

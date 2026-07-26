@@ -9,6 +9,10 @@ meson setup build --prefix=/usr
 ninja -C build
 ninja -C build install
 
+# R1+: the shipping shell is the Rust plugin (docs/rust-migration-plan.md
+# §7); WESTONITE_C_ORACLE=1 keeps the C shell as the behavioral oracle.
+/src/scripts/rust-shell-install.sh
+
 export XDG_RUNTIME_DIR=/tmp/xdg
 mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
 mkdir -p -m 1777 /tmp/.X11-unix

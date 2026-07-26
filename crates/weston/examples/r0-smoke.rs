@@ -5,12 +5,12 @@
 //! Throwaway by design: the real frontend (`westonite` crate) replaces
 //! it at R2.  It deliberately uses only the safe public API.
 
-use weston::{CompositorBuilder, Event, EventSink, ShellHost};
+use weston::{CompositorBuilder, Event, ShellApp, ShellHost};
 
 struct Smoke;
 
-impl EventSink for Smoke {
-    fn on_event(&mut self, _ctx: &weston::Ctx, event: Event) {
+impl ShellApp for Smoke {
+    fn handle(&mut self, _ctx: &weston::Ctx, event: Event) {
         eprintln!("westonite-r0: event {event:?}");
     }
 }
@@ -29,7 +29,7 @@ fn main() -> std::process::ExitCode {
         }
     };
 
-    compositor.ctx().set_sink(Box::new(Smoke));
+    compositor.ctx().set_app(Box::new(Smoke));
 
     // Prove the safe query surface works: enumerate outputs.
     let ctx = compositor.ctx().clone();

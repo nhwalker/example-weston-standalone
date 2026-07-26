@@ -1,30 +1,138 @@
-//! Deferred-tier events (plan §3e).
+//! Shell/frontend events (plan §3e).
 //!
-//! Events carry **eagerly-captured payload, not just ids**: by the time a
-//! deferred event is handled its subject may legitimately be dead, and
-//! the id will then resolve to `None` by design.  This enum grows with
-//! the R1 shell port; R0 defines the frontend-side events the smoke
-//! binary and the primitives' tests need.
+//! One enum for both dispatch tiers.  Sync-tier events (the closed §3e
+//! list: desktop-api lifecycle, bindings, session) are delivered to the
+//! app synchronously from the trampoline — each such delivery carries a
+//! non-reentrancy proof in docs/callback-inventory.md (A3).  Deferred
+//! events are queued and drained at depth zero.  Events carry
+//! **eagerly-captured payload**: by handling time a deferred subject may
+//! be dead, and its id then resolves to `None` by design.
 
-use crate::ids::{HeadId, OutputId, SeatId};
+use crate::host::ResizeEdges;
+use crate::ids::{DesktopSurfaceId, OutputId, SeatId, SurfaceId};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// How an [`Event::Activate`] was triggered; decides the input-frame
+/// view target and the C activation flags.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActivateVia {
+    /// BTN_LEFT/BTN_RIGHT binding: CLICKED|CONFIGURE on the pointer
+    /// focus view.
+    PointerBinding,
+    /// Touch binding: CONFIGURE on the touch focus view.
+    TouchBinding,
+    /// Left click on a busy (unresponsive) window's grab: CONFIGURE on
+    /// the surface's own view.
+    BusyClick,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 #[non_exhaustive]
 pub enum Event {
-    /// The backend's head list changed (hotplug, initial enumeration).
-    /// Sync half: registry registration/invalidation already ran in the
-    /// trampoline; this is the deferred policy notification.
+    // ---- desktop-api tier (sync; proofs in the callback inventory) ----
+    /// A new desktop surface exists; the wrapper has already created its
+    /// view and registered everything.
+    SurfaceAdded {
+        surface: DesktopSurfaceId,
+    },
+    /// The C object is going away (the "half-dead window", §3a): the id
+    /// no longer resolves; payload is what the policy needs.
+    SurfaceRemoved {
+        surface: DesktopSurfaceId,
+    },
+    /// Commit processed.  `resize_edges` is the wrapper-held grab state
+    /// at commit time (C: `shsurf->resize_edges`); width/height/mapped
+    /// are the surface's state inside this commit frame.
+    Committed {
+        surface: DesktopSurfaceId,
+        buf_dx: f64,
+        buf_dy: f64,
+        resize_edges: ResizeEdges,
+        width: i32,
+        height: i32,
+        mapped: bool,
+    },
+    /// Parent changed (xdg transient stacking).
+    ParentSet {
+        surface: DesktopSurfaceId,
+        parent: Option<DesktopSurfaceId>,
+    },
+    /// Xwayland told us where the window goes.
+    XwaylandPosition {
+        surface: DesktopSurfaceId,
+        x: f64,
+        y: f64,
+    },
+    /// A client stopped answering pings; payload: all its surfaces.
+    PingTimeout {
+        surfaces: Vec<DesktopSurfaceId>,
+    },
+    /// The client answered again.
+    Pong {
+        surfaces: Vec<DesktopSurfaceId>,
+    },
+
+    // ---- input tier ----
+    /// Activation request from a binding or the busy-cursor grab (sync:
+    /// the pointer/touch focus view is read inside the input frame).
+    Activate {
+        seat: SeatId,
+        /// The main desktop surface being activated.
+        surface: DesktopSurfaceId,
+        via: ActivateVia,
+    },
+
+    // ---- object lifecycle (deferred policy halves) ----
+    /// A weston_surface we tracked (keyboard focus) died; the id is
+    /// already stale.  The shell runs the C focus-replacement hunt
+    /// (focus_state_surface_destroy).  `main` is the eager-captured
+    /// desktop surface of the *main* surface when the dead one was a
+    /// sub-surface (C's "activate its main surface" branch).
+    TrackedSurfaceGone {
+        surface: SurfaceId,
+        main: Option<DesktopSurfaceId>,
+    },
+    OutputCreated {
+        output: OutputId,
+    },
+    /// Output died (id already stale).
+    OutputGone {
+        output: OutputId,
+        name: String,
+    },
+    /// Output geometry changed (frontend resize path).
+    OutputResized {
+        output: OutputId,
+    },
+    /// Output moved by (dx, dy); views on it follow.
+    OutputMoved {
+        output: OutputId,
+        dx: f64,
+        dy: f64,
+    },
+    SeatCreated {
+        seat: SeatId,
+    },
+    /// Seat died (id already stale).
+    SeatGone {
+        seat: SeatId,
+    },
+    /// A move/resize/busy grab the wrapper ran has ended; `surface` may
+    /// already be stale.
+    GrabEnded {
+        surface: DesktopSurfaceId,
+    },
+
+    // ---- session / lifecycle ----
+    /// VT switch back in (sync; re-issue input activation).
+    SessionActivated,
+    /// Compositor teardown began (sync, from the destroy listener); the
+    /// app must release its per-object state now.
+    Shutdown,
+    // R0 leftovers used by the frontend smoke:
     HeadsChanged,
-    /// An output was destroyed; the id is already stale (§3b list, shape 6).
-    OutputGone { output: OutputId, name: String },
-    /// A head was destroyed; the id is already stale.
-    HeadGone { head: HeadId, name: String },
-    /// A seat appeared.
-    SeatCreated { seat: SeatId },
-    /// A seat died; the id is already stale.
-    SeatGone { seat: SeatId },
-    /// Compositor teardown began.  Queued events after this are drained
-    /// normally; events left after the app observes it are discarded at
-    /// teardown (§3e).
+    HeadGone {
+        head: crate::ids::HeadId,
+        name: String,
+    },
     CompositorShutdown,
 }
