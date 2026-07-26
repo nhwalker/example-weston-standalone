@@ -68,6 +68,8 @@ pub struct OutputRule {
     pub size: Option<(i32, i32)>,
     pub scale: Option<i32>,
     pub transform: Option<OutputTransform>,
+    /// `[output] resizeable=` (vnc/rdp only; C default true).
+    pub resizeable: Option<bool>,
 }
 
 /// CLI-level overrides (win over any section, C parsed_options).
@@ -155,6 +157,59 @@ impl OutputPolicy {
             transform,
         })
     }
+
+    /// Decide the setup for a VNC head — C `vnc_backend_output_configure`
+    /// applies a narrower slice of the surface than the windowed path:
+    /// defaults are 640x480; `mode=` and CLI `--width/--height` set the
+    /// size (parse_simple_mode with the shared parsed_options); `scale=`
+    /// comes from the section ONLY (C passes `parsed_scale = 0`, so
+    /// `--scale` never reaches a VNC output); the transform is forced
+    /// normal (no section read at all); `resizeable=` defaults true.
+    pub fn decide_vnc(&self, head_name: &str) -> Option<VncOutputSetup> {
+        let rule = self.rules.iter().find(|r| r.name == head_name);
+        if let Some(r) = rule
+            && r.off
+        {
+            return None;
+        }
+        let (mut width, mut height) = (640, 480);
+        let mut scale = 1;
+        let mut resizeable = true;
+        if let Some(r) = rule {
+            if let Some((w, h)) = r.size {
+                width = w;
+                height = h;
+            }
+            if let Some(s) = r.scale {
+                scale = s;
+            }
+            if let Some(v) = r.resizeable {
+                resizeable = v;
+            }
+        }
+        if let Some(w) = self.cli.width {
+            width = w;
+        }
+        if let Some(h) = self.cli.height {
+            height = h;
+        }
+        Some(VncOutputSetup {
+            width,
+            height,
+            scale,
+            resizeable,
+        })
+    }
+}
+
+/// The resolved per-head decision for a VNC output (C
+/// vnc_backend_output_configure: no transform — always normal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct VncOutputSetup {
+    pub width: i32,
+    pub height: i32,
+    pub scale: i32,
+    pub resizeable: bool,
 }
 
 #[cfg(test)]
@@ -180,6 +235,7 @@ mod tests {
             size: Some((640, 480)),
             scale: Some(2),
             transform: Some(OutputTransform::Rotate90),
+            resizeable: None,
         });
         assert_eq!(
             p.decide("headless").unwrap(),
@@ -210,6 +266,47 @@ mod tests {
         });
         assert!(p.decide("X1").is_none());
         assert!(p.decide("headless").is_some());
+    }
+
+    #[test]
+    fn vnc_decision_matches_c_configure() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        // C vnc defaults, regardless of the windowed defaults above.
+        let s = p.decide_vnc("vnc").unwrap();
+        assert_eq!(
+            s,
+            VncOutputSetup {
+                width: 640,
+                height: 480,
+                scale: 1,
+                resizeable: true
+            }
+        );
+        p.rules.push(OutputRule {
+            name: "vnc".into(),
+            size: Some((800, 500)),
+            scale: Some(2),
+            transform: Some(OutputTransform::Rotate90), // ignored for vnc
+            resizeable: Some(false),
+            ..OutputRule::default()
+        });
+        // CLI --scale must NOT reach a VNC output (C parsed_scale = 0);
+        // CLI --width/--height must.
+        p.cli.scale = Some(3);
+        p.cli.width = Some(1000);
+        let s = p.decide_vnc("vnc").unwrap();
+        assert_eq!(
+            s,
+            VncOutputSetup {
+                width: 1000,
+                height: 500,
+                scale: 2,
+                resizeable: false
+            }
+        );
+        // off applies to vnc heads too.
+        p.rules[0].off = true;
+        assert!(p.decide_vnc("vnc").is_none());
     }
 
     #[test]

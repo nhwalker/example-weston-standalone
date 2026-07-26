@@ -55,6 +55,11 @@ spelling: `-o core.backends=drm,vnc` or
 `-o 'core.backends=["drm","vnc"]'`.  Unknown flags are rejected by clap
 before startup (stderr), not logged as `unhandled option:`.
 
+`--backend` and `--backends` are one flag with two spellings, as in
+C (both option-table entries write the same variable): either accepts
+a comma-separated list and the last occurrence on the command line
+wins.
+
 `--use-gl` and `--use-pixman` remain mutually exclusive, and neither
 may be combined with `--renderer` (C: `Conflicting renderer
 specifications`).  `--width`, `--height` and `--scale` must be

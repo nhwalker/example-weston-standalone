@@ -16,6 +16,7 @@ use std::collections::{HashMap, VecDeque};
 use std::ptr::NonNull;
 use std::rc::Rc;
 
+use crate::compositor::BackendKind;
 use crate::events::Event;
 use crate::ids::DesktopSurfaceId;
 use crate::listener::Listener;
@@ -45,12 +46,14 @@ pub(crate) struct CtxInner {
     // Raw C singletons (borrowed for the compositor's lifetime).
     pub(crate) compositor: Cell<*mut weston_sys::weston_compositor>,
     pub(crate) display: Cell<*mut weston_sys::wl_display>,
-    /// The backend this builder loaded.  C keys its heads-changed
-    /// listener off `struct wet_backend` and filters heads by
-    /// `head->backend == wb->backend` (main.c simple_heads_changed via
-    /// wet_backend_iterate_heads); the wrapper installs one listener,
-    /// so it carries the same discriminator here.
-    pub(crate) backend: Cell<*mut weston_sys::weston_backend>,
+    /// The backends this builder loaded, in load order.  C keys one
+    /// heads-changed listener off each `struct wet_backend` and filters
+    /// heads by `head->backend == wb->backend` (main.c
+    /// simple_heads_changed via wet_backend_iterate_heads); the wrapper
+    /// installs one listener, so it carries the discriminators here and
+    /// dispatches per head to that backend's configure flavor (the
+    /// `wb->simple_output_configure` role).
+    pub(crate) backends: RefCell<Vec<(*mut weston_sys::weston_backend, BackendKind)>>,
     /// C `wet_compositor.init_failed`: an output that could not be
     /// created, configured or enabled aborts startup rather than
     /// leaving a running compositor with missing outputs (main.c
@@ -147,7 +150,7 @@ impl Ctx {
         let inner = Rc::new(CtxInner {
             compositor: Cell::new(std::ptr::null_mut()),
             display: Cell::new(std::ptr::null_mut()),
-            backend: Cell::new(std::ptr::null_mut()),
+            backends: RefCell::new(Vec::new()),
             init_failed: Cell::new(false),
             depth: Cell::new(0),
             draining: Cell::new(false),

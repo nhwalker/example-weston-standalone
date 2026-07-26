@@ -17,6 +17,51 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-vnc (2026-07-26)** — the VNC backend + multi-backend loading
+  (plan §7 R2c, first slice), branch `claude/rust-migration-j84b2p`:
+  - Fence: `load_vnc` (versioned config assembly; the backend strdup's
+    the strings, so temporaries are the contract), builder restructured
+    to an ordered backend list (`add_headless`/`add_vnc` — C
+    load_backends order), heads-changed now keeps a per-backend
+    discriminator list and dispatches each head to its backend's
+    configure flavor (the `wb->simple_output_configure` role):
+    windowed (headless) vs VNC (three-arg `output_set_size` with
+    `resizeable`; section-only scale; transform forced normal).
+    `OutputPolicy::decide_vnc` + `[output] resizeable=` in the model.
+  - **Found live: the VNC backend segfaults without xkb names.**
+    vnc-backend strdup's `compositor->xkb_names` unconditionally
+    (vnc.c:1260); the C frontend populates them via
+    `weston_compositor_init_config` → `weston_compositor_set_xkb_rule_
+    names` before any backend loads.  Ported that init slice:
+    `[keyboard]` xkb names (C-owned strdup copies; libweston frees),
+    repeat rate/delay, vt-switching, `[core] repaint-window`
+    (validated -10..=1000 with C's messages; new model key — an R-G
+    gap, the ini surface had it).
+  - CLI: `--backend`/`--backends` are one C variable (main.c:4458-9,
+    last occurrence wins, either takes a comma list) — was modeled as
+    two fields with `--backend` priority, which broke
+    `--backend=vnc --backends=headless,vnc` (the e2e multi-backend
+    spelling); now one clap field with a visible alias and
+    self-override.  New `--address` flag + `[vnc] address` (R-G gap).
+  - E2e: `scripts/rust-e2e-test.sh` now runs the **whole suite** minus
+    `test_xwayland.py` (R2d) against `westonite-rs` — meson-built
+    wtest clients + the VNC PAM stack, TOML mode: **51 passed,
+    1 skipped** (the EPEL resize-bug skip), including every
+    VNC-framebuffer shell test.  The background test's config-filename
+    assert became mode-aware (`CONFIG_NAME`); behaviors unchanged.
+    C-oracle legs re-verified on the touched files.
+  - Validation: valgrind clean on VNC startup/shutdown **for our
+    code** — the run surfaces 71 bytes/5 blocks of *upstream*
+    vnc-backend leaks (xkb_rule_name strdups + formats array never
+    freed in vnc_destroy, + one weston_output_set_single_mode entry),
+    verified byte-identical under the C frontend on the same
+    invocation; RPM-side, out of scope per the our-code-only decision.
+    `scripts/valgrind-upstream-vnc.supp` pins exactly those so the new
+    rust-smoke VNC leg still gates our code at zero.  Live probes:
+    VNC framebuffer capture shows the shell background (0xff002244 →
+    BGR 44/22/00) at the configured geometry — empirical end-to-end
+    proof of the R2b OutputCreated ordering fix.
+
 - **R2b headless slice (2026-07-26)** — output management, the
   e2e-verifiable half (plan §7 R2b), branch
   `claude/rust-migration-j84b2p`:

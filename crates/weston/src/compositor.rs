@@ -22,6 +22,58 @@ use crate::output_policy::{OutputPolicy, OutputSetup};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BackendKind {
     Headless,
+    Vnc,
+}
+
+/// Headless backend options (C load_headless_backend's CLI slice).
+#[derive(Debug, Clone, Default)]
+pub struct HeadlessOptions {
+    /// C --no-outputs: create no head at all.
+    pub no_outputs: bool,
+    /// C --refresh-rate, mHz; backend default -1.
+    pub refresh_mhz: Option<i32>,
+}
+
+/// VNC backend options (C load_vnc_backend: CLI + `[vnc]` section,
+/// already merged by the frontend's resolution).
+#[derive(Debug, Clone, Default)]
+pub struct VncOptions {
+    /// C --address; backend default: all interfaces.
+    pub bind_address: Option<String>,
+    /// C --port / `[vnc] port`; backend default 5900.
+    pub port: Option<i32>,
+    /// C `[vnc] refresh-rate`, Hz; VNC_DEFAULT_FREQ (60) otherwise.
+    pub refresh_rate_hz: Option<i32>,
+    pub tls_cert: Option<String>,
+    pub tls_key: Option<String>,
+    pub disable_tls: bool,
+}
+
+#[derive(Debug, Clone)]
+enum BackendSpec {
+    Headless(HeadlessOptions),
+    Vnc(VncOptions),
+}
+
+/// `[keyboard]` slice of C weston_compositor_init_config, applied
+/// between compositor creation and backend load.  Mandatory before any
+/// backend that creates a keyboard: the VNC backend strdup's
+/// `compositor->xkb_names` unconditionally (vnc.c:1260), so an
+/// uninitialized set segfaults it.  `None` fields let libweston fill
+/// its own defaults (evdev/pc105/us).
+#[derive(Debug, Clone, Default)]
+pub struct KeyboardConfig {
+    pub rules: Option<String>,
+    pub model: Option<String>,
+    pub layout: Option<String>,
+    pub variant: Option<String>,
+    pub options: Option<String>,
+    /// C default 40.
+    pub repeat_rate: Option<i32>,
+    /// C default 400.
+    pub repeat_delay: Option<i32>,
+    /// C default true.
+    pub vt_switching: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,31 +132,70 @@ impl std::error::Error for CompositorError {}
 type ShellFactory = Box<dyn FnOnce(u32) -> Box<dyn crate::ctx::ShellApp>>;
 
 pub struct CompositorBuilder {
-    backend: BackendKind,
+    backends: Vec<BackendSpec>,
     renderer: RendererKind,
     policy: OutputPolicy,
-    no_outputs: bool,
-    refresh_mhz: Option<i32>,
+    keyboard: KeyboardConfig,
+    repaint_window_msec: Option<i32>,
     socket: bool,
     socket_name: Option<String>,
     shell: Option<(u32, ShellFactory)>,
 }
 
+impl Default for CompositorBuilder {
+    fn default() -> Self {
+        CompositorBuilder::new()
+    }
+}
+
 impl CompositorBuilder {
-    pub fn headless() -> CompositorBuilder {
+    /// No backends yet — add them in load order (C load_backends walks
+    /// the comma list in order, primary first).  build() fails on an
+    /// empty list.
+    pub fn new() -> CompositorBuilder {
         CompositorBuilder {
-            backend: BackendKind::Headless,
+            backends: Vec::new(),
             renderer: RendererKind::Noop,
             // C headless_backend_output_configure defaults.
             policy: OutputPolicy::defaults(1024, 640),
-            no_outputs: false,
-            refresh_mhz: None,
+            keyboard: KeyboardConfig::default(),
+            repaint_window_msec: None,
             socket: false,
             socket_name: None,
             shell: None,
         }
     }
 
+    /// `[keyboard]` configuration (C weston_compositor_init_config).
+    pub fn with_keyboard(mut self, kb: KeyboardConfig) -> Self {
+        self.keyboard = kb;
+        self
+    }
+
+    /// `[core] repaint-window` (ms; C validates the -10..=1000 range
+    /// with a warning and keeps libweston's default otherwise).
+    pub fn with_repaint_window_msec(mut self, msec: i32) -> Self {
+        self.repaint_window_msec = Some(msec);
+        self
+    }
+
+    /// One default headless backend (the R0 smoke path).
+    pub fn headless() -> CompositorBuilder {
+        CompositorBuilder::new().add_headless(HeadlessOptions::default())
+    }
+
+    pub fn add_headless(mut self, opts: HeadlessOptions) -> Self {
+        self.backends.push(BackendSpec::Headless(opts));
+        self
+    }
+
+    pub fn add_vnc(mut self, opts: VncOptions) -> Self {
+        self.backends.push(BackendSpec::Vnc(opts));
+        self
+    }
+
+    /// Renderer selection, applied to every backend loaded (C passes
+    /// the one CLI/global choice into each loader's config.renderer).
     pub fn renderer(mut self, r: RendererKind) -> Self {
         self.renderer = r;
         self
@@ -121,19 +212,6 @@ impl CompositorBuilder {
     /// rules + CLI overrides, consulted by the heads-changed handler.
     pub fn with_output_policy(mut self, policy: OutputPolicy) -> Self {
         self.policy = policy;
-        self
-    }
-
-    /// Create no heads at all (C headless --no-outputs).
-    pub fn with_no_outputs(mut self) -> Self {
-        self.no_outputs = true;
-        self
-    }
-
-    /// Headless output repaint rate in mHz (C --refresh-rate; the
-    /// backend default is -1 = "whatever the backend picks").
-    pub fn with_refresh_mhz(mut self, mhz: i32) -> Self {
-        self.refresh_mhz = Some(mhz);
         self
     }
 
@@ -207,6 +285,49 @@ impl CompositorBuilder {
         }
         ctx.inner.compositor.set(compositor);
 
+        // C weston_compositor_init_config, between compositor create
+        // and backend load: [keyboard] xkb names (mandatory for
+        // keyboard-creating backends — VNC strdup's them, vnc.c:1260),
+        // repeat rates, vt-switching, [core] repaint-window.
+        // SAFETY: compositor live; xkb_rule_names is read by the call.
+        // libweston STORES the passed pointers and frees them at
+        // compositor destroy, so it gets C-owned strdup copies; nulls
+        // let it fill its own defaults (evdev/pc105/us, input.c:3954).
+        let xkb_ok = unsafe {
+            let mut names: weston_sys::xkb_rule_names = std::mem::zeroed();
+            names.rules = c_strdup_opt(self.keyboard.rules.as_deref());
+            names.model = c_strdup_opt(self.keyboard.model.as_deref());
+            names.layout = c_strdup_opt(self.keyboard.layout.as_deref());
+            names.variant = c_strdup_opt(self.keyboard.variant.as_deref());
+            names.options = c_strdup_opt(self.keyboard.options.as_deref());
+            let r = weston_sys::weston_compositor_set_xkb_rule_names(compositor, &mut names);
+            (*compositor).kb_repeat_rate = self.keyboard.repeat_rate.unwrap_or(40);
+            (*compositor).kb_repeat_delay = self.keyboard.repeat_delay.unwrap_or(400);
+            (*compositor).vt_switching = self.keyboard.vt_switching.unwrap_or(true);
+            if let Some(msec) = self.repaint_window_msec {
+                if !(-10..=1000).contains(&msec) {
+                    log::log_line(&format!("Invalid repaint_window value in config: {msec}"));
+                } else {
+                    (*compositor).repaint_msec = msec;
+                }
+            }
+            log::log_line(&format!(
+                "Output repaint window is {} ms maximum.",
+                (*compositor).repaint_msec
+            ));
+            r >= 0
+        };
+        if !xkb_ok {
+            // SAFETY: reverse creation order, same as the paths above.
+            unsafe {
+                weston_sys::weston_compositor_destroy(compositor);
+                weston_sys::weston_log_ctx_destroy(log_ctx);
+                weston_sys::wl_display_destroy(display.as_ptr());
+            }
+            ctx.teardown();
+            return Err(CompositorError::CompositorCreate);
+        }
+
         let mut comp = Compositor {
             ctx: ctx.clone(),
             log_ctx,
@@ -237,9 +358,13 @@ impl CompositorBuilder {
         listener.mark_attached();
         comp.heads_changed = Some(listener);
 
-        match self.backend {
-            BackendKind::Headless => {
-                comp.load_headless(self.renderer, self.refresh_mhz, self.no_outputs)?
+        if self.backends.is_empty() {
+            return Err(CompositorError::BackendLoad);
+        }
+        for spec in &self.backends {
+            match spec {
+                BackendSpec::Headless(opts) => comp.load_headless(self.renderer, opts)?,
+                BackendSpec::Vnc(opts) => comp.load_vnc(self.renderer, opts)?,
             }
         }
 
@@ -349,8 +474,7 @@ impl Compositor {
     fn load_headless(
         &mut self,
         renderer: RendererKind,
-        refresh_mhz: Option<i32>,
-        no_outputs: bool,
+        opts: &HeadlessOptions,
     ) -> Result<(), CompositorError> {
         let compositor = self.ctx.inner.compositor.get();
 
@@ -361,7 +485,7 @@ impl Compositor {
         config.base.struct_size = std::mem::size_of::<weston_sys::weston_headless_backend_config>();
         config.renderer = renderer.to_c();
         // C load_headless_backend: -1 unless --refresh-rate was given.
-        config.refresh = refresh_mhz.unwrap_or(-1);
+        config.refresh = opts.refresh_mhz.unwrap_or(-1);
 
         // SAFETY: compositor live; config outlives the call (the backend
         // copies what it needs — same contract the C frontend relies on).
@@ -377,12 +501,16 @@ impl Compositor {
         }
         // C stores this on the per-backend `wet_backend` that owns the
         // heads-changed listener; the wrapper installs one listener, so
-        // the discriminator lives on the Ctx (see heads_changed).
-        self.ctx.inner.backend.set(backend);
+        // the discriminators live on the Ctx (see heads_changed).
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::Headless));
 
         // C load_headless_backend: --no-outputs skips head creation
         // entirely (the compositor runs with zero outputs).
-        if no_outputs {
+        if opts.no_outputs {
             return Ok(());
         }
 
@@ -411,6 +539,72 @@ impl Compositor {
         if ret < 0 {
             return Err(CompositorError::HeadCreate);
         }
+        Ok(())
+    }
+
+    /// C load_vnc_backend: assemble the versioned config (the backend
+    /// strdup's the strings during load — C frees its copies right
+    /// after, so temporaries are the contract) and load.  The VNC
+    /// backend creates its own head; there is no create_head step.
+    fn load_vnc(
+        &mut self,
+        renderer: RendererKind,
+        opts: &VncOptions,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+
+        let addr = match &opts.bind_address {
+            Some(a) => Some(CString::new(a.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+        let cert = match &opts.tls_cert {
+            Some(p) => Some(CString::new(p.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+        let key = match &opts.tls_key {
+            Some(p) => Some(CString::new(p.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+
+        let mut config: weston_sys::weston_vnc_backend_config =
+            // SAFETY: POD config struct; zeroed then fully initialized
+            // (weston_vnc_backend_config_init + the option/section reads).
+            unsafe { std::mem::zeroed() };
+        config.base.struct_version = weston_sys::WESTON_VNC_BACKEND_CONFIG_VERSION;
+        config.base.struct_size = std::mem::size_of::<weston_sys::weston_vnc_backend_config>();
+        config.renderer = renderer.to_c();
+        config.bind_address = addr
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.port = opts.port.unwrap_or(5900);
+        // VNC_DEFAULT_FREQ (Hz).
+        config.refresh_rate = opts.refresh_rate_hz.unwrap_or(60);
+        config.server_cert = cert
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.server_key = key
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.disable_tls = opts.disable_tls;
+
+        // SAFETY: compositor live; config + its strings outlive the
+        // call, and the backend copies what it keeps (C frees the very
+        // same pointers immediately after this call).
+        let backend = self.ctx.with_depth(|| unsafe {
+            weston_sys::weston_compositor_load_backend(
+                compositor,
+                weston_sys::weston_compositor_backend::WESTON_BACKEND_VNC,
+                &mut config.base,
+            )
+        });
+        if backend.is_null() {
+            return Err(CompositorError::BackendLoad);
+        }
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::Vnc));
         Ok(())
     }
 
@@ -578,11 +772,11 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
     }
 
     // C iterates only the heads of the backend whose wet_backend owns
-    // this listener (wet_backend_iterate_heads).  One listener here, so
-    // the same filter is applied explicitly: without it every head of
-    // every backend would be configured with this backend's policy and
-    // enabled through this backend's windowed-output API.
-    let backend = ctx.inner.backend.get();
+    // this listener (wet_backend_iterate_heads), and each wet_backend
+    // carries its own simple_output_configure.  One listener here, so
+    // both jobs are done by lookup: a head whose backend we did not
+    // load is skipped, and the kind picks the configure flavor.
+    let backends = ctx.inner.backends.borrow().clone();
 
     for head in heads {
         // SAFETY: head snapshot entries stay valid inside the flush; the
@@ -597,12 +791,20 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
                 weston_sys::weston_head_is_non_desktop(head.as_ptr()),
             )
         };
-        if !backend.is_null() && head_backend != backend {
+        let Some(kind) = backends
+            .iter()
+            .find(|(b, _)| *b == head_backend)
+            .map(|(_, k)| *k)
+        else {
             continue;
-        }
+        };
         if connected && !enabled && !non_desktop {
             let name = head_name(head);
-            match policy.decide(&name) {
+            let setup = match kind {
+                BackendKind::Headless => policy.decide(&name).map(HeadSetup::Windowed),
+                BackendKind::Vnc => policy.decide_vnc(&name).map(HeadSetup::Vnc),
+            };
+            match setup {
                 Some(setup) => enable_head(ctx, head, setup),
                 None => {
                     // [[output]] off: leave the head unenabled (our
@@ -685,7 +887,27 @@ fn head_name(head: NonNull<weston_sys::weston_head>) -> String {
     }
 }
 
-fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: OutputSetup) {
+/// C-owned strdup of an optional string (for APIs where libweston
+/// stores the pointer and frees it with free()); null when None.
+///
+/// SAFETY contract: the CString temporary lives across the strdup call
+/// only; the returned pointer is malloc'd by C and owned by the callee.
+fn c_strdup_opt(s: Option<&str>) -> *const libc::c_char {
+    match s.and_then(|v| CString::new(v).ok()) {
+        // SAFETY: valid NUL-terminated input; strdup allocates with the
+        // C allocator, matching the free() in libweston's teardown.
+        Some(c) => unsafe { libc::strdup(c.as_ptr()) },
+        None => std::ptr::null(),
+    }
+}
+
+/// The per-backend configure decision (C `wb->simple_output_configure`).
+enum HeadSetup {
+    Windowed(OutputSetup),
+    Vnc(crate::output_policy::VncOutputSetup),
+}
+
+fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSetup) {
     let compositor = ctx.inner.compositor.get();
     let name = head_name(head);
     let cname = CString::new(name.clone()).unwrap_or_else(|_| c"head".into());
@@ -705,24 +927,51 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: OutputS
     // backend configurator (scale/transform/size), then enable.
     lazy_align(compositor, output);
 
-    // SAFETY: output live and not yet enabled; mirrors
-    // wet_configure_windowed_output_from_config with the resolved
-    // policy decision (defaults → [[output]] section → CLI).
+    // SAFETY: output live and not yet enabled; mirrors the C
+    // per-backend configurator with the resolved policy decision
+    // (defaults → [[output]] section → CLI).
     let configured = unsafe {
-        weston_sys::weston_output_set_scale(output.as_ptr(), setup.scale);
-        weston_sys::weston_output_set_transform(output.as_ptr(), setup.transform.to_c());
-        let api = weston_sys::weston_plugin_api_get(
-            compositor,
-            c"weston_windowed_output_api_headless_v2".as_ptr(),
-            std::mem::size_of::<weston_sys::weston_windowed_output_api>(),
-        )
-        .cast::<weston_sys::weston_windowed_output_api>();
-        !api.is_null()
-            && ((*api).output_set_size.expect("output_set_size"))(
-                output.as_ptr(),
-                setup.width,
-                setup.height,
-            ) >= 0
+        match &setup {
+            // wet_configure_windowed_output_from_config.
+            HeadSetup::Windowed(s) => {
+                weston_sys::weston_output_set_scale(output.as_ptr(), s.scale);
+                weston_sys::weston_output_set_transform(output.as_ptr(), s.transform.to_c());
+                let api = weston_sys::weston_plugin_api_get(
+                    compositor,
+                    c"weston_windowed_output_api_headless_v2".as_ptr(),
+                    std::mem::size_of::<weston_sys::weston_windowed_output_api>(),
+                )
+                .cast::<weston_sys::weston_windowed_output_api>();
+                !api.is_null()
+                    && ((*api).output_set_size.expect("output_set_size"))(
+                        output.as_ptr(),
+                        s.width,
+                        s.height,
+                    ) >= 0
+            }
+            // vnc_backend_output_configure: section scale, transform
+            // forced normal, three-arg set_size with resizeable.
+            HeadSetup::Vnc(s) => {
+                weston_sys::weston_output_set_scale(output.as_ptr(), s.scale);
+                weston_sys::weston_output_set_transform(
+                    output.as_ptr(),
+                    weston_sys::wl_output_transform::WL_OUTPUT_TRANSFORM_NORMAL,
+                );
+                let api = weston_sys::weston_plugin_api_get(
+                    compositor,
+                    weston_sys::WESTON_VNC_OUTPUT_API_NAME.as_ptr().cast(),
+                    std::mem::size_of::<weston_sys::weston_vnc_output_api>(),
+                )
+                .cast::<weston_sys::weston_vnc_output_api>();
+                !api.is_null()
+                    && ((*api).output_set_size.expect("vnc output_set_size"))(
+                        output.as_ptr(),
+                        s.width,
+                        s.height,
+                        s.resizeable,
+                    ) >= 0
+            }
+        }
     };
     if !configured {
         // C wet_configure_windowed_output_from_config failure path.

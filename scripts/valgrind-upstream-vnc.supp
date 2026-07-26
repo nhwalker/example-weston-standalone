@@ -1,0 +1,16 @@
+# Known upstream leaks in the EPEL libweston 14.0.1 VNC backend,
+# verified identical under the C frontend (PROVENANCE R2c entry):
+# vnc_destroy() frees neither backend->xkb_rule_name.{rules,model,
+# layout} (three strdups, vnc.c:1260-1262) nor backend->formats
+# (pixel_format_get_array), and the output teardown leaks the
+# weston_output_set_single_mode entry.  RPM-side, out of scope per the
+# our-code-only decision (docs/e2e-test-plan.md §6 precedent).  This
+# file lets the valgrind smoke legs keep gating OUR code at zero
+# definite leaks.
+{
+   upstream-vnc-backend-startup-leaks
+   Memcheck:Leak
+   match-leak-kinds: definite
+   ...
+   obj:*vnc-backend.so*
+}

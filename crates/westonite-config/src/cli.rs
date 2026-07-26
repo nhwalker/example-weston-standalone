@@ -25,12 +25,19 @@ pub struct Cli {
     #[arg(long)]
     pub version: bool,
 
-    /// Backend to load (headless, drm, x11, wayland, rdp, vnc, pipewire).
-    #[arg(long, short = 'B')]
+    /// Backend(s) to load, comma-separated (headless, drm, x11,
+    /// wayland, rdp, vnc, pipewire).  `--backends` is the same flag
+    /// under its C spelling — in C both options write one variable, so
+    /// the last occurrence wins and either accepts a list.
+    /// (Self-override: C's option table lets the flag repeat with the
+    /// last occurrence winning; clap needs that stated explicitly.)
+    #[arg(
+        long,
+        short = 'B',
+        visible_alias = "backends",
+        overrides_with = "backend"
+    )]
     pub backend: Option<String>,
-    /// Load several backends (comma-separated).
-    #[arg(long)]
-    pub backends: Option<String>,
     /// Renderer: auto, gl, pixman, noop.
     #[arg(long)]
     pub renderer: Option<String>,
@@ -127,6 +134,9 @@ pub struct Cli {
     /// Listen port (rdp/vnc).
     #[arg(long)]
     pub port: Option<u16>,
+    /// Bind address for the listener (vnc; default: all interfaces).
+    #[arg(long)]
+    pub address: Option<String>,
     /// TLS certificate (rdp/vnc).
     #[arg(long)]
     pub rdp_tls_cert: Option<String>,

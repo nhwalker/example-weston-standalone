@@ -82,22 +82,56 @@ fn main() -> ExitCode {
         Ok(p) => p,
         Err(msg) => return fatal(&msg),
     };
+    let has_headless = settings.backends.contains(&Backend::Headless);
     let renderer = match settings.renderer {
-        // C load_headless_backend: the headless default is the no-op
-        // renderer unless one was asked for explicitly.
-        Renderer::Auto | Renderer::Noop => weston::RendererKind::Noop,
+        // C: the headless default is the no-op renderer, the VNC
+        // default is auto (→ pixman), unless one was asked for
+        // explicitly.  With headless in the mix keep its noop default —
+        // a headless-only auto run must not drag in a real renderer.
+        Renderer::Auto if has_headless => weston::RendererKind::Noop,
+        Renderer::Auto => weston::RendererKind::Auto,
+        Renderer::Noop => weston::RendererKind::Noop,
         Renderer::Gl => weston::RendererKind::Gl,
         Renderer::Pixman => weston::RendererKind::Pixman,
     };
 
-    let mut builder = weston::CompositorBuilder::headless()
+    let kb = &settings.config.keyboard;
+    let mut builder = weston::CompositorBuilder::new()
         .renderer(renderer)
-        .with_output_policy(policy);
-    if settings.no_outputs {
-        builder = builder.with_no_outputs();
+        .with_output_policy(policy)
+        .with_keyboard(weston::KeyboardConfig {
+            rules: kb.keymap_rules.clone(),
+            model: kb.keymap_model.clone(),
+            layout: kb.keymap_layout.clone(),
+            variant: kb.keymap_variant.clone(),
+            options: kb.keymap_options.clone(),
+            repeat_rate: kb.repeat_rate.and_then(|v| i32::try_from(v).ok()),
+            repeat_delay: kb.repeat_delay.and_then(|v| i32::try_from(v).ok()),
+            vt_switching: kb.vt_switching,
+        });
+    if let Some(msec) = settings.config.core.repaint_window {
+        builder = builder.with_repaint_window_msec(msec);
     }
-    if let Some(mhz) = settings.refresh_rate {
-        builder = builder.with_refresh_mhz(mhz);
+    // C load_backends: comma-list order, primary first.
+    for b in &settings.backends {
+        builder = match b {
+            Backend::Headless => builder.add_headless(weston::HeadlessOptions {
+                no_outputs: settings.no_outputs,
+                refresh_mhz: settings.refresh_rate,
+            }),
+            Backend::Vnc => builder.add_vnc(weston::VncOptions {
+                bind_address: settings.vnc_bind_address.clone(),
+                port: settings.rdp_vnc_port.map(i32::from),
+                refresh_rate_hz: settings
+                    .vnc_refresh_rate
+                    .and_then(|v| i32::try_from(v).ok()),
+                tls_cert: settings.vnc_tls_cert.clone(),
+                tls_key: settings.vnc_tls_key.clone(),
+                disable_tls: settings.vnc_disable_tls,
+            }),
+            // reject_unported() has already refused everything else.
+            _ => builder,
+        };
     }
     builder = match &settings.socket {
         Some(name) => builder.with_socket_name(name),
@@ -182,18 +216,55 @@ fn verify_xdg_runtime_dir() -> Option<ExitCode> {
 /// fatal wherever it appears.  `build_output_policy` validates the
 /// ported keys on the same all-sections basis.
 fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
-    if settings.backends != [Backend::Headless] {
-        let names: Vec<&str> = settings
-            .backends
-            .iter()
-            .filter(|b| **b != Backend::Headless)
-            .map(|b| b.name())
-            .collect();
+    let unported: Vec<&str> = settings
+        .backends
+        .iter()
+        .filter(|b| !matches!(b, Backend::Headless | Backend::Vnc))
+        .map(|b| b.name())
+        .collect();
+    if !unported.is_empty() {
         return Some(fatal(&format!(
-            "backend \"{}\" is not yet ported to the Rust frontend (R2a supports \
-             headless only); use the C westonite",
-            names.join("\", \"")
+            "backend \"{}\" is not yet ported to the Rust frontend (R2c supports \
+             headless and vnc); use the C westonite",
+            unported.join("\", \"")
         )));
+    }
+
+    // C consumes CLI options per backend loader; anything left over is
+    // `fatal: unhandled option`.  Same contract here, as a table: a
+    // flag whose consuming backend is not loaded is a startup error,
+    // not a silent no-op.
+    let has_headless = settings.backends.contains(&Backend::Headless);
+    let has_vnc = settings.backends.contains(&Backend::Vnc);
+    let headless_only_flags = [
+        (settings.scale.is_some(), "--scale"),
+        (settings.transform.is_some(), "--transform"),
+        (settings.no_outputs, "--no-outputs"),
+        (settings.refresh_rate.is_some(), "--refresh-rate"),
+    ];
+    let vnc_only_flags = [
+        (cli.port.is_some(), "--port"),
+        (cli.address.is_some(), "--address"),
+        (cli.vnc_tls_cert.is_some(), "--vnc-tls-cert"),
+        (cli.vnc_tls_key.is_some(), "--vnc-tls-key"),
+        (
+            cli.disable_transport_layer_security,
+            "--disable-transport-layer-security",
+        ),
+    ];
+    for (set, flag) in headless_only_flags {
+        if set && !has_headless {
+            return Some(fatal(&format!(
+                "unhandled option: {flag} (not consumed by any loaded backend)"
+            )));
+        }
+    }
+    for (set, flag) in vnc_only_flags {
+        if set && !has_vnc {
+            return Some(fatal(&format!(
+                "unhandled option: {flag} (not consumed by any loaded backend)"
+            )));
+        }
     }
     if settings.xwayland {
         return Some(fatal(
@@ -300,6 +371,7 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             // --width/--height/--scale checks it shares a rule with.
             scale: out.scale,
             transform: None,
+            resizeable: out.resizeable,
         };
         if let Some(mode) = &out.mode {
             if mode == "off" {

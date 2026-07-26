@@ -4,6 +4,7 @@ background-color, default 0xff002244."""
 
 import pytest
 
+from support.compositor import CONFIG_NAME
 from support.image import wait_for_solid_color
 
 
@@ -21,5 +22,7 @@ def test_background_from_config(westonite):
                   config="[shell]\nbackground-color=0xff336699\n")
     with w.vnc() as vnc:
         wait_for_solid_color(vnc, (0x33, 0x66, 0x99))
-    # the color came from the file the P2 patch made westonite look up
-    assert "westonite.ini" in w.log()
+    # the color came from the config file westonite looked up (P2
+    # discovery; westonite.ini for the C frontend, westonite.toml since
+    # the R2a re-spec)
+    assert CONFIG_NAME in w.log()

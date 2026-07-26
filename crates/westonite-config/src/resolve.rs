@@ -135,6 +135,10 @@ pub struct Settings {
     /// Listen port for whichever of rdp/vnc is in `backends` (`--port`
     /// wins over the matching section).
     pub rdp_vnc_port: Option<u16>,
+    /// `--address` / `[vnc] address` (vnc bind address).
+    pub vnc_bind_address: Option<String>,
+    /// `[vnc] refresh-rate`, Hz (no CLI flag in C either).
+    pub vnc_refresh_rate: Option<u32>,
     pub vnc_disable_tls: bool,
     pub rdp_tls_cert: Option<String>,
     pub rdp_tls_key: Option<String>,
@@ -268,11 +272,12 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         })?;
 
     // -- flags on top --
+    // --backend/--backends are one C variable (main.c:4458-4459): the
+    // last occurrence won and either spelling takes a comma list, so
+    // the merged clap field is always split.
     let mut backend_names: Vec<String> = Vec::new();
     if let Some(b) = &cli.backend {
-        backend_names.push(b.clone());
-    } else if let Some(bs) = &cli.backends {
-        backend_names.extend(split_list(bs));
+        backend_names.extend(split_list(b));
     } else if let Some(b) = &config.core.backend {
         backend_names.push(b.clone());
     } else if !config.core.backends.is_empty() {
@@ -430,6 +435,8 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         drm_current_mode: cli.current_mode,
         continue_without_input: cli.continue_without_input,
         rdp_vnc_port: cli.port.or(section_port),
+        vnc_bind_address: cli.address.clone().or_else(|| config.vnc.address.clone()),
+        vnc_refresh_rate: config.vnc.refresh_rate,
         vnc_disable_tls: cli.disable_transport_layer_security
             || config.vnc.disable_transport_layer_security.unwrap_or(false),
         rdp_tls_cert: cli

@@ -882,7 +882,14 @@ halves can be mixed and smoke-tested at every phase boundary.
   it by inspection. R2c remaining backends
   (x11/wayland/rdp/vnc/pipewire — VNC is load-bearing for the whole
   e2e control plane, so it lands first in this slice) plus the
-  remoting/pipewire virtual-output plugin loaders. R2d xwayland
+  remoting/pipewire virtual-output plugin loaders.  *R2c-vnc* ✅
+  *(done — see PROVENANCE.md log)*: the VNC backend + multi-backend
+  loading + the `[keyboard]`/repaint-window compositor init; the
+  full e2e suite minus `test_xwayland.py` now runs against
+  `westonite-rs` (51 passed).  Remaining in R2c:
+  x11/wayland/rdp/pipewire loaders, remoting/pipewire virtual
+  outputs, and the deferred clone/mirror-of + color-management
+  work. R2d xwayland
   (`test_xwayland.py` + Phase-3 smoke). R2e screenshooter/recorder,
   including moving `screenshooter_create` ownership to the frontend
   (§4). The C `main.c` stays in-tree, buildable via meson, until R2
