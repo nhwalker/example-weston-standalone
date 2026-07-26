@@ -42,4 +42,20 @@ wait "$PID" || { cat /tmp/r0-asan.log >&2; echo "FAIL: non-zero exit"; exit 1; }
 grep -q "westonite-r0: clean exit (0)" /tmp/r0-asan.log \
 	|| { cat /tmp/r0-asan.log >&2; echo "FAIL: no clean-exit marker"; exit 1; }
 
+echo "== asan: build westonite-rs (R2a frontend) with -Zsanitizer=address"
+RUSTFLAGS="-Zsanitizer=address" cargo +nightly build --locked -Zbuild-std \
+	--target x86_64-unknown-linux-gnu \
+	-p westonite --target-dir target/asan
+
+echo "== asan: frontend + autolaunch watch (SIGCHLD/teardown paths)"
+rm -f /tmp/rs-asan.log
+printf '#!/bin/sh\nsleep 2\n' > /tmp/rs-asan-stub && chmod +x /tmp/rs-asan-stub
+ASAN_OPTIONS=detect_leaks=0 \
+	target/asan/x86_64-unknown-linux-gnu/debug/westonite-rs \
+	--backend=headless --no-config --log=/tmp/rs-asan.log \
+	-o autolaunch.path=/tmp/rs-asan-stub -o autolaunch.watch=true \
+	|| { cat /tmp/rs-asan.log >&2; echo "FAIL: frontend non-zero exit"; exit 1; }
+grep -q "autolaunched client exited, terminating" /tmp/rs-asan.log \
+	|| { cat /tmp/rs-asan.log >&2; echo "FAIL: watch exit not exercised"; exit 1; }
+
 echo "ASAN SMOKE PASSED"
