@@ -334,7 +334,10 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
 /// "WxH" or "WxH@rate" (weston's simple-mode grammar; rate ignored by
 /// the headless output).  Anything else — `preferred`, `current`, a
 /// full modeline — is None, and the caller falls back to the defaults
-/// with C's log line, exactly as C's `sscanf("%dx%d@%d") < 2` does.
+/// with C's log line, exactly as C's `sscanf("%dx%d") != 2` does
+/// (the trimmed tree's parse_simple_mode dropped upstream's `@%d`
+/// framerate conversion; a trailing `@rate` still parses because
+/// sscanf stops after its two conversions).
 ///
 /// Stricter than that sscanf on two shapes it would wave through:
 /// embedded spaces (`1024 x 640`) and trailing junk (`1024x640junk`,
