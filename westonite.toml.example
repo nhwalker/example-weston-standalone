@@ -14,12 +14,14 @@
 
 [core]
 # Backend: drm (default), headless, x11, wayland, rdp, vnc, pipewire.
-# The Rust frontend supports headless (R2a/R2b); other backends fail
-# loudly until their migration slice lands (the C frontend remains the
-# oracle).
+# The Rust frontend supports headless (R2a/R2b) and vnc (R2c); other
+# backends fail loudly until their migration slice lands (the C
+# frontend remains the oracle).
 #backend = "headless"
 # Or several: backends = ["drm", "vnc"] — the ini spelling
-# backends = "drm,vnc" is accepted too.
+# backends = "drm,vnc" is accepted too, and so is a comma list in the
+# singular key.  When both keys are present `backends` wins (C reads it
+# first and falls back to `backend`).
 # Renderer: auto (default), gl, pixman, noop.
 #renderer = "auto"
 # Require an input device before starting (default true).
@@ -73,7 +75,10 @@
 #scale = 1
 # normal, rotate-90/180/270, flipped, flipped-rotate-90/180/270.
 # An unknown name is a startup error.  CLI --transform overrides it.
+# (VNC outputs are always normal, as in C.)
 #transform = "normal"
+# vnc/rdp: allow client-driven desktop resize (default true).
+#resizeable = true
 
 # Leave a head unenabled.  `mode = "off"` is the same switch under the
 # ini spelling.  This is a westonite extension: C has no per-output off
@@ -84,6 +89,8 @@
 
 [vnc]
 #port = 5900
+# Bind address (default: all interfaces).  CLI --address overrides.
+#address = "127.0.0.1"
 #refresh-rate = 60
 #tls-cert = "/path/tls.crt"
 #tls-key = "/path/tls.key"

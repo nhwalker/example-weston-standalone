@@ -83,21 +83,58 @@ fn main() -> ExitCode {
         Err(msg) => return fatal(&msg),
     };
     let renderer = match settings.renderer {
-        // C load_headless_backend: the headless default is the no-op
-        // renderer unless one was asked for explicitly.
-        Renderer::Auto | Renderer::Noop => weston::RendererKind::Noop,
+        // C load_backend passes the one global choice, AUTO included,
+        // into every loader's config.renderer and lets each backend
+        // resolve it (headless → noop, vnc → pixman); the first backend
+        // to reach `if (!compositor->renderer)` wins for the whole
+        // compositor.  Resolving AUTO here instead would make the
+        // result depend on our resolution rather than the load order —
+        // `--backends=vnc,headless` would hand the VNC backend
+        // WESTON_RENDERER_NOOP, which it rejects outright ("unsupported
+        // renderer", vnc.c) where C comes up on pixman.
+        Renderer::Auto => weston::RendererKind::Auto,
+        Renderer::Noop => weston::RendererKind::Noop,
         Renderer::Gl => weston::RendererKind::Gl,
         Renderer::Pixman => weston::RendererKind::Pixman,
     };
 
-    let mut builder = weston::CompositorBuilder::headless()
+    let kb = &settings.config.keyboard;
+    let mut builder = weston::CompositorBuilder::new()
         .renderer(renderer)
-        .with_output_policy(policy);
-    if settings.no_outputs {
-        builder = builder.with_no_outputs();
+        .with_output_policy(policy)
+        .with_keyboard(weston::KeyboardConfig {
+            rules: kb.keymap_rules.clone(),
+            model: kb.keymap_model.clone(),
+            layout: kb.keymap_layout.clone(),
+            variant: kb.keymap_variant.clone(),
+            options: kb.keymap_options.clone(),
+            repeat_rate: kb.repeat_rate.and_then(|v| i32::try_from(v).ok()),
+            repeat_delay: kb.repeat_delay.and_then(|v| i32::try_from(v).ok()),
+            vt_switching: kb.vt_switching,
+        });
+    if let Some(msec) = settings.config.core.repaint_window {
+        builder = builder.with_repaint_window_msec(msec);
     }
-    if let Some(mhz) = settings.refresh_rate {
-        builder = builder.with_refresh_mhz(mhz);
+    // C load_backends: comma-list order, primary first.
+    for b in &settings.backends {
+        builder = match b {
+            Backend::Headless => builder.add_headless(weston::HeadlessOptions {
+                no_outputs: settings.no_outputs,
+                refresh_mhz: settings.refresh_rate,
+            }),
+            Backend::Vnc => builder.add_vnc(weston::VncOptions {
+                bind_address: settings.vnc_bind_address.clone(),
+                port: settings.rdp_vnc_port.map(i32::from),
+                refresh_rate_hz: settings
+                    .vnc_refresh_rate
+                    .and_then(|v| i32::try_from(v).ok()),
+                tls_cert: settings.vnc_tls_cert.clone(),
+                tls_key: settings.vnc_tls_key.clone(),
+                disable_tls: settings.vnc_disable_tls,
+            }),
+            // reject_unported() has already refused everything else.
+            _ => builder,
+        };
     }
     builder = match &settings.socket {
         Some(name) => builder.with_socket_name(name),
@@ -182,18 +219,83 @@ fn verify_xdg_runtime_dir() -> Option<ExitCode> {
 /// fatal wherever it appears.  `build_output_policy` validates the
 /// ported keys on the same all-sections basis.
 fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
-    if settings.backends != [Backend::Headless] {
-        let names: Vec<&str> = settings
-            .backends
-            .iter()
-            .filter(|b| **b != Backend::Headless)
-            .map(|b| b.name())
-            .collect();
+    let unported: Vec<&str> = settings
+        .backends
+        .iter()
+        .filter(|b| !matches!(b, Backend::Headless | Backend::Vnc))
+        .map(|b| b.name())
+        .collect();
+    if !unported.is_empty() {
         return Some(fatal(&format!(
-            "backend \"{}\" is not yet ported to the Rust frontend (R2a supports \
-             headless only); use the C westonite",
-            names.join("\", \"")
+            "backend \"{}\" is not yet ported to the Rust frontend (R2c supports \
+             headless and vnc); use the C westonite",
+            unported.join("\", \"")
         )));
+    }
+
+    // C consumes CLI options per backend loader; anything left over is
+    // `fatal: unhandled option`.  Same contract here, as a table: a
+    // flag whose consuming backend is not loaded is a startup error,
+    // not a silent no-op.
+    let has_headless = settings.backends.contains(&Backend::Headless);
+    let has_vnc = settings.backends.contains(&Backend::Vnc);
+    // Of the two ported backends, only headless has these in its
+    // weston_option table (main.c load_headless_backend).
+    let headless_only_flags = [
+        (settings.scale.is_some(), "--scale"),
+        (settings.transform.is_some(), "--transform"),
+        (settings.no_outputs, "--no-outputs"),
+        (settings.refresh_rate.is_some(), "--refresh-rate"),
+        (cli.use_gl, "--use-gl"),
+        (cli.use_pixman, "--use-pixman"),
+    ];
+    // ... and only vnc has these (main.c load_vnc_backend).
+    let vnc_only_flags = [
+        (cli.port.is_some(), "--port"),
+        (cli.address.is_some(), "--address"),
+        (cli.vnc_tls_cert.is_some(), "--vnc-tls-cert"),
+        (cli.vnc_tls_key.is_some(), "--vnc-tls-key"),
+        (
+            cli.disable_transport_layer_security,
+            "--disable-transport-layer-security",
+        ),
+    ];
+    // Consumed by no ported backend at all: only drm/x11/wayland/rdp
+    // parse these, and reaching here means none of them is loaded — so
+    // the flag is left over unconditionally, C's `unhandled option`.
+    // (--width/--height are absent from all three tables on purpose:
+    // both ported backends parse them.)
+    let unconsumed_flags = [
+        (cli.fullscreen, "--fullscreen"),
+        (cli.output_count.is_some(), "--output-count"),
+        (cli.no_input, "--no-input"),
+        (cli.sprawl, "--sprawl"),
+        (cli.display.is_some(), "--display"),
+        (cli.seat.is_some(), "--seat"),
+        (cli.drm_device.is_some(), "--drm-device"),
+        (cli.additional_devices.is_some(), "--additional-devices"),
+        (cli.current_mode, "--current-mode"),
+        (cli.continue_without_input, "--continue-without-input"),
+        (cli.rdp_tls_cert.is_some(), "--rdp-tls-cert"),
+        (cli.rdp_tls_key.is_some(), "--rdp-tls-key"),
+        (cli.external_listener_fd.is_some(), "--external-listener-fd"),
+        (cli.no_clients_resize, "--no-clients-resize"),
+        (cli.force_no_compression, "--force-no-compression"),
+    ];
+    for (set, flag) in headless_only_flags {
+        if set && !has_headless {
+            return Some(unhandled_option(flag));
+        }
+    }
+    for (set, flag) in vnc_only_flags {
+        if set && !has_vnc {
+            return Some(unhandled_option(flag));
+        }
+    }
+    for (set, flag) in unconsumed_flags {
+        if set {
+            return Some(unhandled_option(flag));
+        }
     }
     if settings.xwayland {
         return Some(fatal(
@@ -263,6 +365,14 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     None
 }
 
+/// C main.c's leftover-argv contract (`fatal: unhandled option: %s`),
+/// reached through the applicability tables in `reject_unported`.
+fn unhandled_option(flag: &str) -> ExitCode {
+    fatal(&format!(
+        "unhandled option: {flag} (not consumed by any loaded backend)"
+    ))
+}
+
 /// Resolve the settings into the fence's [`weston::OutputPolicy`]
 /// (R2b): every `[[output]]` section becomes a typed rule applied to
 /// the head of that name, and CLI --width/--height/--scale/--transform
@@ -270,9 +380,8 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
 /// (wet_configure_windowed_output_from_config): backend defaults →
 /// name-matched section → CLI.
 ///
-/// Two deliberate divergences from C, both in the fail-loud direction
-/// (see `reject_unported`, which validates *all* sections for the same
-/// reason):
+/// Three deliberate divergences from C (see also `reject_unported`,
+/// which validates *all* sections for the same fail-loud reason):
 ///
 ///  * C resolves a section only when a head of that name shows up, so a
 ///    section that matches nothing is silently inert — including one
@@ -285,6 +394,17 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
 ///    (`if (!mode || sscanf(…) < 2)`, main.c parse_simple_mode).  We
 ///    log it only for a `mode` that is present and unparseable —
 ///    warning about a section that merely sets `scale` is noise.
+///  * With more than one backend, C loses the CLI geometry entirely:
+///    every loader calls `wet_init_parsed_options`, which *replaces*
+///    `compositor->parsed_options` with a freshly zeroed one (leaking
+///    the previous), while `parse_options` has already removed
+///    `--width`/`--height`/`--scale`/`--transform` from argv for the
+///    first loader that listed them.  The configure callbacks run at
+///    the heads flush, after every load, so they all read the *last*
+///    loader's empty table — `--backends=headless,vnc --width=800`
+///    sizes neither output in C.  We apply the CLI layer to every
+///    backend instead (the C option's evident intent), so a
+///    multi-backend run honours `--width` where C silently drops it.
 fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, String> {
     let mut policy = weston::OutputPolicy::defaults(1024, 640);
 
@@ -300,6 +420,7 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             // --width/--height/--scale checks it shares a rule with.
             scale: out.scale,
             transform: None,
+            resizeable: out.resizeable,
         };
         if let Some(mode) = &out.mode {
             if mode == "off" {

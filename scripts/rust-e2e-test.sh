@@ -1,16 +1,15 @@
 #!/bin/bash
-# Build the Rust frontend (westonite-rs) and run the Rust-frontend e2e
-# subset against it (plan §7 R2a/R2b): the re-specified CLI/config
-# tests (test_cli.py, TOML + clap + `-o`), the lifecycle/children
-# behaviors (unmodified), and the headless-reachable output tests
-# (test_outputs.py — R2b).  VNC-dependent tests are deselected until
-# the VNC backend ports at R2c; the C frontend leg (e2e-test.sh)
-# remains the oracle for everything else.
-# test_vnc_client_resize_repaints_background needs no deselect: it
-# carries its own unconditional skip (EPEL VNC-stack bug), and listing
-# it here as well would keep it off this leg silently once that skip
-# is lifted.
-# Runs inside the containers/Containerfile.build image.
+# Build the Rust frontend (westonite-rs) and run the e2e suite against
+# it (plan §7 R2a/R2b/R2c).  Since R2c the Rust frontend serves VNC, so
+# this leg runs the whole suite — the framebuffer-driven shell tests
+# included — except test_xwayland.py (R2d).  The C frontend leg
+# (e2e-test.sh) remains the oracle for xwayland and the not-yet-ported
+# backends.
+#
+# The suite needs the meson-built test clients (wtest-client) and the
+# VNC PAM stack, so this mirrors e2e-test.sh's setup with the Rust
+# binary under test (TOML config mode).
+# Runs inside the containers/Containerfile.build image, as root.
 # Usage: rust-e2e-test.sh [results-dir]
 set -euo pipefail
 
@@ -19,16 +18,35 @@ RESULTS="${1:-/tmp}"
 cd /src
 cargo build --locked --release -p westonite
 
-mkdir -p "$RESULTS/failures-rust-frontend"
+# Test clients only — the C compositor is not under test here, but the
+# suite's wtest clients come out of the meson tree.
+if [ -f build/build.ninja ]; then
+	meson configure build -De2e-test-client=true >/dev/null
+else
+	meson setup build --prefix=/usr -De2e-test-client=true >/dev/null
+fi
+ninja -C build >/dev/null
 
-exec env \
+mkdir -p -m 1777 /tmp/.X11-unix
+
+E2E_USER=e2e
+E2E_PASSWORD=westonite-e2e
+printf 'auth     required pam_unix.so\naccount  required pam_unix.so\n' \
+	> /etc/pam.d/weston-remote-access
+id -u "$E2E_USER" >/dev/null 2>&1 || useradd -m "$E2E_USER"
+echo "$E2E_USER:$E2E_PASSWORD" | chpasswd
+
+mkdir -p "$RESULTS/failures-rust-frontend"
+chown -R "$E2E_USER" "$RESULTS/failures-rust-frontend"
+touch "$RESULTS/e2e-rust-frontend.xml" && chown "$E2E_USER" "$RESULTS/e2e-rust-frontend.xml"
+
+exec runuser -u "$E2E_USER" -- env \
 	WESTONITE_BIN=/src/target/release/westonite-rs \
 	WESTONITE_CONFIG_FORMAT=toml \
+	WESTONITE_VNC_USER="$E2E_USER" \
+	WESTONITE_VNC_PASSWORD="$E2E_PASSWORD" \
+	WTEST_CLIENT=/src/build/tests/e2e/clients/wtest-client \
 	WESTONITE_E2E_ARTIFACTS="$RESULTS/failures-rust-frontend" \
-	python3 -m pytest tests/e2e/test_cli.py tests/e2e/test_lifecycle.py \
-		tests/e2e/test_children.py tests/e2e/test_outputs.py \
-		--deselect test_lifecycle.py::test_clean_shutdown_vnc_backend \
-		--deselect test_outputs.py::test_vnc_output_mode_from_config \
-		--deselect test_outputs.py::test_multi_backend_headless_plus_vnc \
-		-v -p no:cacheprovider \
+	python3 -m pytest /src/tests/e2e -v -p no:cacheprovider \
+		--ignore=/src/tests/e2e/test_xwayland.py \
 		--junit-xml="$RESULTS/e2e-rust-frontend.xml"

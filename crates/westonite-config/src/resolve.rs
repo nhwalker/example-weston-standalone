@@ -135,6 +135,10 @@ pub struct Settings {
     /// Listen port for whichever of rdp/vnc is in `backends` (`--port`
     /// wins over the matching section).
     pub rdp_vnc_port: Option<u16>,
+    /// `--address` / `[vnc] address` (vnc bind address).
+    pub vnc_bind_address: Option<String>,
+    /// `[vnc] refresh-rate`, Hz (no CLI flag in C either).
+    pub vnc_refresh_rate: Option<u32>,
     pub vnc_disable_tls: bool,
     pub rdp_tls_cert: Option<String>,
     pub rdp_tls_key: Option<String>,
@@ -268,15 +272,20 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         })?;
 
     // -- flags on top --
+    // --backend/--backends are one C variable (main.c:4458-4459): the
+    // last occurrence won and either spelling takes a comma list, so
+    // the merged clap field is always split.
+    // The two section keys are that same one variable (main.c:4602-6):
+    // `backends` is consulted first and `backend` only as its fallback,
+    // and whichever answers is comma-split by load_backends — so
+    // `backend = "headless,vnc"` is a list too.
     let mut backend_names: Vec<String> = Vec::new();
     if let Some(b) = &cli.backend {
-        backend_names.push(b.clone());
-    } else if let Some(bs) = &cli.backends {
-        backend_names.extend(split_list(bs));
-    } else if let Some(b) = &config.core.backend {
-        backend_names.push(b.clone());
+        backend_names.extend(split_list(b));
     } else if !config.core.backends.is_empty() {
         backend_names.extend(config.core.backends.iter().cloned());
+    } else if let Some(b) = &config.core.backend {
+        backend_names.extend(split_list(b));
     } else {
         // C default: the native backend.
         backend_names.push("drm".to_string());
@@ -430,6 +439,8 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         drm_current_mode: cli.current_mode,
         continue_without_input: cli.continue_without_input,
         rdp_vnc_port: cli.port.or(section_port),
+        vnc_bind_address: cli.address.clone().or_else(|| config.vnc.address.clone()),
+        vnc_refresh_rate: config.vnc.refresh_rate,
         vnc_disable_tls: cli.disable_transport_layer_security
             || config.vnc.disable_transport_layer_security.unwrap_or(false),
         rdp_tls_cert: cli
@@ -657,6 +668,41 @@ mod tests {
         )
         .unwrap();
         assert_eq!(s.modules, vec!["a.so".to_string(), "b.so".to_string()]);
+    }
+
+    #[test]
+    fn backend_and_backends_are_one_variable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("westonite.toml");
+        let conf = |args: &[&str]| {
+            let mut argv = vec![format!("--config={}", path.display())];
+            argv.extend(args.iter().map(|a| a.to_string()));
+            let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+            resolve_from(&cli(&argv), &no_env()).unwrap().backends
+        };
+
+        // C main.c:4602-4606 reads `backends` first and falls back to
+        // `backend`; with both present, `backends` wins.
+        std::fs::write(
+            &path,
+            "[core]\nbackend = \"headless\"\nbackends = \"vnc,headless\"\n",
+        )
+        .unwrap();
+        assert_eq!(conf(&[]), vec![Backend::Vnc, Backend::Headless]);
+
+        // The singular key feeds the same comma-split variable.
+        std::fs::write(&path, "[core]\nbackend = \"headless,vnc\"\n").unwrap();
+        assert_eq!(conf(&[]), vec![Backend::Headless, Backend::Vnc]);
+
+        // Either CLI spelling takes a list, and the last one wins.
+        assert_eq!(
+            conf(&["--backend=vnc", "--backends=headless,vnc"]),
+            vec![Backend::Headless, Backend::Vnc]
+        );
+        assert_eq!(
+            conf(&["--backends=headless,vnc", "--backend=vnc"]),
+            vec![Backend::Vnc]
+        );
     }
 
     #[test]

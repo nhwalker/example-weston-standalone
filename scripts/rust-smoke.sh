@@ -86,4 +86,29 @@ valgrind --error-exitcode=42 --leak-check=full \
 grep -q "autolaunched client exited, terminating" /tmp/rs-vg.log \
 	|| { cat /tmp/rs-vg.log >&2; fail "frontend valgrind leg: watch exit not exercised"; }
 
+echo "== rust 7: westonite-rs VNC backend (R2c) under valgrind"
+# No VNC client here (that needs the PAM stack — the e2e leg covers
+# it); this gates startup/shutdown of the VNC path.  Suppressions
+# cover the verified upstream vnc-backend leaks only (see the .supp).
+rm -f /tmp/rs-vnc.log
+valgrind --error-exitcode=42 --leak-check=full \
+	--errors-for-leak-kinds=definite \
+	--suppressions=/src/scripts/valgrind-upstream-vnc.supp \
+	target/debug/westonite-rs --backend=vnc --renderer=pixman \
+	--port=59920 --disable-transport-layer-security --no-config \
+	--log=/tmp/rs-vnc.log > /tmp/rs-vnc-vg.log 2>&1 &
+VNCPID=$!
+wait_for_marker /tmp/rs-vnc.log "westonite: wayland socket" 120 \
+	|| { cat /tmp/rs-vnc.log /tmp/rs-vnc-vg.log >&2; fail "vnc frontend: no wayland socket"; }
+# The socket is bound BEFORE the heads flush, so it proves only that the
+# backend loaded.  Wait for the output too, or the VNC configure path
+# (vnc_output_set_size / resizeable / forced-normal transform) is not
+# actually under valgrind here.
+wait_for_marker /tmp/rs-vnc.log "Output 'vnc' enabled" 120 \
+	|| { cat /tmp/rs-vnc.log /tmp/rs-vnc-vg.log >&2; fail "vnc frontend: output not enabled"; }
+grep -q "westonite-shell: Rust shell initialized" /tmp/rs-vnc.log \
+	|| { cat /tmp/rs-vnc.log >&2; fail "vnc frontend: shell marker missing"; }
+kill -TERM "$VNCPID"
+wait "$VNCPID" || { cat /tmp/rs-vnc-vg.log >&2; fail "vnc frontend valgrind reported errors or leaks"; }
+
 echo "ALL RUST SMOKE TESTS PASSED"

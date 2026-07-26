@@ -59,11 +59,14 @@ pub(crate) mod registry;
 #[cfg(feature = "hybrid-r1")]
 pub mod shell_init;
 
-pub use compositor::{BackendKind, Compositor, CompositorBuilder, CompositorError, RendererKind};
+pub use compositor::{
+    BackendKind, Compositor, CompositorBuilder, CompositorError, HeadlessOptions, KeyboardConfig,
+    RendererKind, VncOptions,
+};
 pub use ctx::{Ctx, ShellApp};
 pub use events::{ActivateVia, Event};
 pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
 pub use output_policy::{
-    OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform,
+    OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform, VncOutputSetup,
 };

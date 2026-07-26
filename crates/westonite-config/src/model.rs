@@ -135,6 +135,8 @@ pub struct Core {
     /// `[core] idle-time=` (inert since T3 — kept for surface
     /// completeness, D1).
     pub idle_time: Option<u32>,
+    /// `[core] repaint-window=` (ms; C validates -10..=1000).
+    pub repaint_window: Option<i32>,
     /// `[core] modules=` / `--modules`: extra wet_module_init plugins.
     /// Array, or one comma-separated string (the ini spelling).
     #[serde(default, deserialize_with = "de_string_or_seq")]
@@ -156,6 +158,7 @@ impl Default for Core {
             color_management: false,
             xwayland: false,
             idle_time: None,
+            repaint_window: None,
             modules: Vec::new(),
             shell: None,
         }
@@ -243,7 +246,11 @@ pub struct Rdp {
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Vnc {
     pub port: Option<u16>,
+    /// Hz (C VNC_DEFAULT_FREQ 60).
     pub refresh_rate: Option<u32>,
+    /// Bind address (C --address only; the section spelling is a
+    /// re-spec addition for CLI/file symmetry).
+    pub address: Option<String>,
     pub tls_cert: Option<String>,
     pub tls_key: Option<String>,
     pub disable_transport_layer_security: Option<bool>,
@@ -282,6 +289,9 @@ pub struct Output {
     pub color_characteristics: Option<String>,
     pub max_bpc: Option<u32>,
     pub vrr_mode: Option<String>,
+    /// `[output] resizeable=` (vnc/rdp: client-driven desktop resize;
+    /// C default true).
+    pub resizeable: Option<bool>,
     /// "true" disables the output (C `mode=off` alternative surface).
     pub off: Option<bool>,
 }
