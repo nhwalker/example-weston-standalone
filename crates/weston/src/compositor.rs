@@ -52,6 +52,7 @@ pub enum CompositorError {
     HeadCreate,
     SocketAdd,
     SignalSource,
+    ShellInit,
 }
 
 impl std::fmt::Display for CompositorError {
@@ -63,8 +64,9 @@ impl std::fmt::Display for CompositorError {
             CompositorError::BackendLoad => "loading the backend failed",
             CompositorError::WindowedOutputApi => "windowed output API unavailable",
             CompositorError::HeadCreate => "creating the head failed",
-            CompositorError::SocketAdd => "wl_display_add_socket_auto failed",
+            CompositorError::SocketAdd => "binding the wayland socket failed",
             CompositorError::SignalSource => "installing signal sources failed",
+            CompositorError::ShellInit => "shell initialization failed",
         };
         f.write_str(s)
     }
@@ -72,12 +74,16 @@ impl std::fmt::Display for CompositorError {
 
 impl std::error::Error for CompositorError {}
 
+type ShellFactory = Box<dyn FnOnce(u32) -> Box<dyn crate::ctx::ShellApp>>;
+
 pub struct CompositorBuilder {
     backend: BackendKind,
     renderer: RendererKind,
     output_width: i32,
     output_height: i32,
     socket: bool,
+    socket_name: Option<String>,
+    shell: Option<(u32, ShellFactory)>,
 }
 
 impl CompositorBuilder {
@@ -88,6 +94,8 @@ impl CompositorBuilder {
             output_width: 1024,
             output_height: 768,
             socket: false,
+            socket_name: None,
+            shell: None,
         }
     }
 
@@ -105,6 +113,26 @@ impl CompositorBuilder {
     /// Also bind a wayland socket (auto name) so clients can connect.
     pub fn with_socket(mut self) -> Self {
         self.socket = true;
+        self
+    }
+
+    /// Bind a wayland socket with an explicit name (C --socket).
+    pub fn with_socket_name(mut self, name: &str) -> Self {
+        self.socket = true;
+        self.socket_name = Some(name.to_string());
+        self
+    }
+
+    /// Attach the built-in Rust shell (R2+: statically linked policy
+    /// crate) after backend setup, before the heads flush — so the
+    /// shell's output listeners see every output creation.
+    #[cfg(feature = "hybrid-r1")]
+    pub fn with_shell(
+        mut self,
+        background_color: u32,
+        factory: impl FnOnce(u32) -> Box<dyn crate::ctx::ShellApp> + 'static,
+    ) -> Self {
+        self.shell = Some((background_color, Box::new(factory)));
         self
     }
 
@@ -157,6 +185,7 @@ impl CompositorBuilder {
             log_ctx,
             heads_changed: None,
             signal_sources: Vec::new(),
+            socket_bound: None,
             exit_code: 0,
         };
 
@@ -193,17 +222,44 @@ impl CompositorBuilder {
             return Err(CompositorError::BackendLoad);
         }
 
+        #[cfg(feature = "hybrid-r1")]
+        if let Some((bg, factory)) = self.shell
+            && !crate::shell_init::attach_shell_native(&ctx, bg, factory)
+        {
+            return Err(CompositorError::ShellInit);
+        }
+
         if self.socket {
-            // SAFETY: display is live; the returned name is a borrowed
-            // C string we only log (copied at the fence, §3h).
-            let name = unsafe { weston_sys::wl_display_add_socket_auto(display.as_ptr()) };
-            if name.is_null() {
-                return Err(CompositorError::SocketAdd);
-            }
-            // SAFETY: non-null return from add_socket_auto is a valid
-            // NUL-terminated string owned by the display.
-            let name = unsafe { std::ffi::CStr::from_ptr(name) }.to_string_lossy();
-            crate::log::log_line(&format!("westonite-r0: socket {name}"));
+            let bound = match &self.socket_name {
+                Some(name) => {
+                    let cname =
+                        CString::new(name.as_str()).map_err(|_| CompositorError::SocketAdd)?;
+                    // SAFETY: display live; name is a valid C string for
+                    // the call (libwayland copies it).
+                    let r = unsafe {
+                        weston_sys::wl_display_add_socket(display.as_ptr(), cname.as_ptr())
+                    };
+                    if r != 0 {
+                        return Err(CompositorError::SocketAdd);
+                    }
+                    name.clone()
+                }
+                None => {
+                    // SAFETY: display is live; the returned name is a
+                    // borrowed C string, copied at the fence (§3h).
+                    let name = unsafe { weston_sys::wl_display_add_socket_auto(display.as_ptr()) };
+                    if name.is_null() {
+                        return Err(CompositorError::SocketAdd);
+                    }
+                    // SAFETY: non-null return is a valid NUL-terminated
+                    // string owned by the display.
+                    unsafe { std::ffi::CStr::from_ptr(name) }
+                        .to_string_lossy()
+                        .into_owned()
+                }
+            };
+            crate::log::log_line(&format!("westonite: wayland socket {bound}"));
+            comp.socket_bound = Some(bound);
         }
 
         // The C frontend flushes heads once after backend setup
@@ -216,6 +272,13 @@ impl CompositorBuilder {
         // SAFETY: compositor is live.
         unsafe { weston_sys::weston_compositor_wake(compositor) };
 
+        // Signal sources installed here, not in run(): the C frontend
+        // installs its signals[] (incl. SIGCHLD) before
+        // execute_autolaunch, so a client that exits between spawn and
+        // the run loop is still reaped/watched.  The frontend spawns
+        // between build() and run() — same ordering guarantee.
+        comp.install_signal_sources()?;
+
         Ok(comp)
     }
 }
@@ -225,12 +288,24 @@ pub struct Compositor {
     log_ctx: *mut weston_sys::weston_log_context,
     heads_changed: Option<Listener>,
     signal_sources: Vec<*mut weston_sys::wl_event_source>,
+    socket_bound: Option<String>,
     exit_code: i32,
 }
 
 impl Compositor {
     pub fn ctx(&self) -> &Ctx {
         &self.ctx
+    }
+
+    /// The wayland socket name bound in build(), if any.
+    pub fn socket_name(&self) -> Option<&str> {
+        self.socket_bound.as_deref()
+    }
+
+    /// Watch an autolaunched client: when `watch` and the pid exits,
+    /// the compositor terminates (C execute_autolaunch + sigchld).
+    pub fn set_autolaunch(&self, pid: i32, watch: bool) {
+        self.ctx.inner.autolaunch.set(Some((pid, watch)));
     }
 
     fn load_headless(&mut self, renderer: RendererKind) -> Result<(), CompositorError> {
@@ -285,9 +360,10 @@ impl Compositor {
         Ok(())
     }
 
-    /// Run until terminated (SIGTERM/SIGINT).  Returns the process exit
-    /// code (0 on clean signal-driven shutdown — the Phase-1 contract).
-    pub fn run(&mut self) -> i32 {
+    /// Install the SIGTERM/SIGINT/SIGCHLD event-loop sources (main.c
+    /// signals[]).  Called from build() so the sources exist before the
+    /// frontend spawns any client.
+    fn install_signal_sources(&mut self) -> Result<(), CompositorError> {
         let display = self.ctx.inner.display.get();
         // SAFETY: display live; loop borrowed for source installation.
         let ev_loop = unsafe { weston_sys::wl_display_get_event_loop(display) };
@@ -312,23 +388,40 @@ impl Compositor {
                 display.cast(),
             )
         };
-        if s1.is_null() || s2.is_null() {
+        // SIGCHLD: reap clients; terminate on watched-autolaunch exit
+        // (C main.c sigchld_handler + autolaunch watch).
+        // SAFETY: as s1 — same display, same loop.
+        let s3 = unsafe {
+            weston_sys::wl_event_loop_add_signal(
+                ev_loop,
+                libc::SIGCHLD,
+                Some(on_sigchld),
+                display.cast(),
+            )
+        };
+        if s1.is_null() || s2.is_null() || s3.is_null() {
             // Remove whichever source did install, or it would stay
-            // registered (and leak) past this failed run() attempt.
-            for s in [s1, s2] {
+            // registered (and leak) past this failed attempt.
+            for s in [s1, s2, s3] {
                 if !s.is_null() {
                     // SAFETY: source just created on this loop, not yet
                     // tracked anywhere else.
                     unsafe { weston_sys::wl_event_source_remove(s) };
                 }
             }
-            log::log_line("westonite-r0: failed to install signal sources");
-            return 1;
+            return Err(CompositorError::SignalSource);
         }
         // Removed in Drop, as main.c removes its signals[] sources.
         self.signal_sources.push(s1);
         self.signal_sources.push(s2);
+        self.signal_sources.push(s3);
+        Ok(())
+    }
 
+    /// Run until terminated (SIGTERM/SIGINT).  Returns the process exit
+    /// code (0 on clean signal-driven shutdown — the Phase-1 contract).
+    pub fn run(&mut self) -> i32 {
+        let display = self.ctx.inner.display.get();
         self.ctx.with_depth(|| {
             // SAFETY: the run loop dispatches into our trampolines; every
             // one re-enters through Ctx::current + with_depth.
@@ -371,6 +464,33 @@ impl Drop for Compositor {
             }
         }
     }
+}
+
+extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
+    crate::panic_barrier::guard("on_sigchld", || {
+        // Reap every exited child (C sigchld_handler's waitpid loop).
+        loop {
+            let mut status: c_int = 0;
+            // SAFETY: plain waitpid; WNOHANG never blocks the loop.
+            let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+            if pid <= 0 {
+                break;
+            }
+            let Some(ctx) = Ctx::current() else { continue };
+            if let Some((watched, watch)) = ctx.inner.autolaunch.get()
+                && pid == watched
+            {
+                ctx.inner.autolaunch.set(None);
+                if watch {
+                    crate::log::log_line("westonite: autolaunched client exited, terminating");
+                    // SAFETY: data is the live wl_display registered
+                    // with this source.
+                    unsafe { weston_sys::wl_display_terminate(data.cast()) };
+                }
+            }
+        }
+    });
+    1
 }
 
 extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
