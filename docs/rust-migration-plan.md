@@ -886,10 +886,14 @@ halves can be mixed and smoke-tested at every phase boundary.
   *(done — see PROVENANCE.md log)*: the VNC backend + multi-backend
   loading + the `[keyboard]`/repaint-window compositor init; the
   full e2e suite minus `test_xwayland.py` now runs against
-  `westonite-rs` (51 passed).  Remaining in R2c:
-  x11/wayland/rdp/pipewire loaders, remoting/pipewire virtual
-  outputs, and the deferred clone/mirror-of + color-management
-  work. R2d xwayland
+  `westonite-rs` (51 passed).  *R2c-mirror* ✅ *(done — see PROVENANCE.md log)*: the mirror-of
+  machinery (remote-head deferral, output-created enable,
+  source-mode modeline, resize propagation), e2e-verified with VNC
+  mirroring headless.  Remaining in R2c: x11/wayland/rdp/pipewire
+  loaders (RDP deliberately deferred out of the mirror slice — its
+  monitor-negotiation surface has zero container reachability),
+  remoting/pipewire virtual outputs, and the deferred clone-of +
+  color-management work. R2d xwayland
   (`test_xwayland.py` + Phase-3 smoke). R2e screenshooter/recorder,
   including moving `screenshooter_create` ownership to the frontend
   (§4). The C `main.c` stays in-tree, buildable via meson, until R2

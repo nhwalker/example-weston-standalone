@@ -145,8 +145,13 @@ pub struct Settings {
     pub vnc_tls_cert: Option<String>,
     pub vnc_tls_key: Option<String>,
     pub rdp_external_listener_fd: Option<i32>,
-    pub rdp_no_clients_resize: bool,
+    /// C config field `resizeable` (CLI --no-resizeable inverts it).
+    pub rdp_resizeable: bool,
     pub rdp_force_no_compression: bool,
+    pub rdp4_key: Option<String>,
+    pub rdp_env_socket: bool,
+    /// C default true; CLI --no-remotefx-codec inverts.
+    pub rdp_remotefx_codec: bool,
 
     /// Autolaunch command: CLI trailing args win over `[autolaunch]
     /// path`; watch only from the config.
@@ -460,10 +465,12 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
             .clone()
             .or_else(|| config.vnc.tls_key.clone()),
         rdp_external_listener_fd: cli.external_listener_fd.or(config.rdp.external_listener_fd),
-        rdp_no_clients_resize: cli.no_clients_resize
-            || config.rdp.no_clients_resize.unwrap_or(false),
+        rdp_resizeable: !cli.no_resizeable && config.rdp.resizeable.unwrap_or(true),
         rdp_force_no_compression: cli.force_no_compression
             || config.rdp.force_no_compression.unwrap_or(false),
+        rdp4_key: cli.rdp4_key.clone(),
+        rdp_env_socket: cli.env_socket,
+        rdp_remotefx_codec: !cli.no_remotefx_codec && config.rdp.remotefx_codec.unwrap_or(true),
         autolaunch,
         // C main.c execute_command: a positional command line is always
         // watched; config [autolaunch] watch applies otherwise.

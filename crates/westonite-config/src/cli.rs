@@ -153,9 +153,19 @@ pub struct Cli {
     /// External listener fd (rdp).
     #[arg(long)]
     pub external_listener_fd: Option<i32>,
-    /// No client-driven resize (rdp).
+    /// No client-driven resize (rdp; C --no-resizeable).
     #[arg(long)]
-    pub no_clients_resize: bool,
+    pub no_resizeable: bool,
+    /// RDP4-style pre-shared key file (rdp; C --rdp4-key).
+    #[arg(long)]
+    pub rdp4_key: Option<String>,
+    /// Use an inherited socket instead of listening (rdp; C
+    /// --env-socket).
+    #[arg(long)]
+    pub env_socket: bool,
+    /// Disable the RemoteFX codec (rdp; C --no-remotefx-codec).
+    #[arg(long)]
+    pub no_remotefx_codec: bool,
     /// Disable compression (rdp).
     #[arg(long)]
     pub force_no_compression: bool,

@@ -17,6 +17,67 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-mirror (2026-07-26)** — the mirror-of machinery (plan §7 R2c,
+  second slice), branch `claude/rust-migration-j84b2p`:
+  - Fence: the three C mirror pieces around simple_head_enable —
+    remote-head deferral (a vnc head whose section carries mirror-of=
+    is skipped by heads-changed and waits for its source),
+    `mirror_on_output_created` (L6: a native output's creation enables
+    the deferred remote head, nested inside the source's
+    output_created emission exactly as C's wet_output_handle_create),
+    and `mirror_on_output_resized` (L2: reposition the remote over the
+    resized source and recompute its modeline; one compositor-wide
+    listener replaces C's per-tracker one — the rule table is the
+    discriminator).  enable_head gained the mirror parameter:
+    pre-enable sets output->mirror_of + position-over-source (C
+    wet_output_overlap_pre_enable, replacing lazy_align), the VNC
+    configure forces resizeable off with C's log line, post-enable
+    applies the source-derived modeline (C _post_enable).  L6 guards
+    an already-enabled head where C would double-create.  L3's
+    source-destroy → remote-disable exists only in C's DRM layoutput
+    path, so simple backends need none (verified in-source).
+  - **Found live: C aborts on a headless mirror source.**  Only
+    DRM-class backends call weston_output_copy_native_mode, so a
+    windowed/headless source leaves native_mode_copy zeroed and C dies
+    on `assert(output->native_mode_copy.width)` (main.c:2543 —
+    reproduced with the C oracle on the exact e2e config).  Deliberate
+    fail-loud divergence: apply_mirror_modeline falls back to the
+    source's current_mode (a static output's current mode IS its
+    native mode), and flags init_failed instead of reaching
+    libweston's compositing-area assert when no mode is usable at all.
+    This is what makes the whole machinery container-verifiable.
+  - RDP: deliberately deferred out of this slice.  Its configure path
+    (head_get_monitor negotiation, client desktop-scale) has zero
+    container reachability — porting it now would be sight-unseen
+    code.  Its CLI drift WAS fixed now (an R-G accuracy issue): the
+    invented --no-clients-resize became C's --no-resizeable, and
+    --rdp4-key/--env-socket/--no-remotefx-codec were added (all in the
+    unconsumed-flags table until the loader lands); the [rdp] model
+    key follows the C config field name (resizeable).
+  - Frontend: mirror-of unblocked with validation (requires the vnc
+    backend loaded; remote sections only; self-mirror rejected);
+    policy rules carry mirror_of; helpers has_mirror_of /
+    mirror_rule_for_source (unit-pinned).
+  - E2e (toml-only — the C oracle aborts on this config, cited in the
+    tests): VNC mirrors headless at the SOURCE's 1024x640 (framebuffer
+    capture, not just logs), the vnc-first order pins the deferral,
+    and the no-remote-backend case is fatal.  55 passed / 1 skipped.
+  - **Caught by the r0 valgrind gate during this slice's own
+    validation**: the first cut parked the two new frontend listeners
+    (L6/L2) in ctx.own_listener, whose teardown runs AFTER
+    weston_compositor_destroy when no shell is attached — but the
+    nodes sit on signal lists INSIDE the compositor struct, so the
+    detach wrote into freed memory (r0-smoke has no shell; the shell
+    path masked it by tearing down inside the destroy emission).
+    They are Compositor-owned now, detached next to heads_changed
+    before the destroy — the same ownership rule that listener always
+    had, and the reason it has it.
+  - Validation: valgrind clean on the mirror config AND the no-shell
+    r0 leg (0 errors, 0 definite leaks; the 5 suppressed are the known
+    upstream vnc ones); C-oracle test_outputs re-run green (new tests
+    correctly skip); clippy/fmt/fence/unit (53) green; full smoke +
+    rust e2e (55 passed / 1 skipped).
+
 - **R2c-vnc (2026-07-26)** — the VNC backend + multi-backend loading
   (plan §7 R2c, first slice), branch `claude/rust-migration-j84b2p`:
   - Fence: `load_vnc` (versioned config assembly; the backend strdup's

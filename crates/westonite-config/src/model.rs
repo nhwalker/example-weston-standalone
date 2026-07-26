@@ -233,7 +233,8 @@ pub struct Xwayland {
 pub struct Rdp {
     pub port: Option<u16>,
     pub address: Option<String>,
-    pub no_clients_resize: Option<bool>,
+    /// C config field `resizeable` (CLI spelling --no-resizeable).
+    pub resizeable: Option<bool>,
     pub force_no_compression: Option<bool>,
     pub remotefx_codec: Option<bool>,
     pub external_listener_fd: Option<i32>,

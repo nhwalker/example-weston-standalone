@@ -366,6 +366,7 @@ impl CompositorBuilder {
             ctx: ctx.clone(),
             log_ctx,
             heads_changed: None,
+            frontend_listeners: Vec::new(),
             signal_sources: Vec::new(),
             socket_bound: None,
             exit_code: 0,
@@ -403,6 +404,56 @@ impl CompositorBuilder {
         }
         listener.mark_attached();
         comp.heads_changed = Some(listener);
+
+        // Frontend mirror listeners (C wet_compositor.output_created_
+        // listener at main.c:4245 — L6 — and the wet_head_tracker
+        // resized listener — L2).  Installed unconditionally like C;
+        // both no-op unless an [[output]] rule carries mirror-of=.
+        // Sync tier: pure wrapper/policy work, no app borrow (A3) —
+        // enabling the mirror nests inside the source's
+        // output_created emission exactly as C's handler does.
+        let policy = self.policy.clone();
+        let out_created = Listener::new(
+            "frontend.output_created",
+            false,
+            Box::new(move |ctx, data| {
+                if let Some(o) = NonNull::new(data.cast::<weston_sys::weston_output>()) {
+                    mirror_on_output_created(ctx, &policy, o);
+                }
+            }),
+        );
+        let policy = self.policy.clone();
+        let out_resized = Listener::new(
+            "frontend.output_resized",
+            false,
+            Box::new(move |ctx, data| {
+                if let Some(o) = NonNull::new(data.cast::<weston_sys::weston_output>()) {
+                    mirror_on_output_resized(ctx, &policy, o);
+                }
+            }),
+        );
+        // SAFETY: compositor live; both signals are fields on it.
+        unsafe {
+            weston_sys::wsys_wl_signal_add(
+                &raw mut (*compositor).output_created_signal,
+                out_created.raw_ptr(),
+            );
+            weston_sys::wsys_wl_signal_add(
+                &raw mut (*compositor).output_resized_signal,
+                out_resized.raw_ptr(),
+            );
+        }
+        for l in [out_created, out_resized] {
+            l.mark_attached();
+            // Owned by the Compositor, NOT ctx.own_listener: these
+            // nodes sit on signal lists INSIDE the weston_compositor
+            // struct, and without a shell attached ctx.teardown() only
+            // runs after weston_compositor_destroy has freed it —
+            // detaching then is a write into freed memory (caught by
+            // the r0 valgrind gate).  Drop detaches them next to
+            // heads_changed, before the destroy.
+            comp.frontend_listeners.push(l);
+        }
 
         for spec in &self.backends {
             match spec {
@@ -486,6 +537,9 @@ pub struct Compositor {
     ctx: Ctx,
     log_ctx: *mut weston_sys::weston_log_context,
     heads_changed: Option<Listener>,
+    /// Frontend listeners on compositor-embedded signals (mirror L6 +
+    /// L2): detached in Drop before weston_compositor_destroy.
+    frontend_listeners: Vec<Listener>,
     signal_sources: Vec<*mut weston_sys::wl_event_source>,
     socket_bound: Option<String>,
     exit_code: i32,
@@ -726,6 +780,11 @@ impl Drop for Compositor {
         if let Some(l) = self.heads_changed.take() {
             l.detach();
         }
+        for l in self.frontend_listeners.drain(..) {
+            // SAFETY-relevant ordering: the signal lists these sit on
+            // live inside the compositor struct, freed just below.
+            l.detach();
+        }
         for src in self.signal_sources.drain(..) {
             // SAFETY: sources created on this display's loop and still
             // owned by us; removed before the display dies (main.c order).
@@ -839,21 +898,31 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
         };
         if connected && !enabled && !non_desktop {
             let name = head_name(head);
-            let setup = match kind {
-                BackendKind::Headless => policy.decide(&name).map(HeadSetup::Windowed),
-                BackendKind::Vnc => policy.decide_vnc(&name).map(HeadSetup::Vnc),
-            };
-            match setup {
-                Some(setup) => enable_head(ctx, head, setup),
-                None => {
-                    // [[output]] off: leave the head unenabled (our
-                    // re-spec extension; C windowed backends have no
-                    // per-output off switch).  The head stays
-                    // connected-and-unenabled forever, so every later
-                    // flush would re-log: register_head returning true
-                    // (first sight) is the once-per-head gate.
-                    if register_head(ctx, head, &name) {
-                        log::log_line(&format!("westonite: output {name} disabled by config"));
+            // C simple_head_enable's remote-mirror deferral: a remote
+            // head whose section carries mirror-of= waits for its
+            // source output — the frontend's output-created listener
+            // enables it (silent skip, like C's early return; the head
+            // stays connected-unenabled meanwhile, and the per-head
+            // device-changed reset below still runs, as in C).
+            if kind == BackendKind::Vnc && policy.has_mirror_of(&name) {
+                // deferred to the output-created path
+            } else {
+                let setup = match kind {
+                    BackendKind::Headless => policy.decide(&name).map(HeadSetup::Windowed),
+                    BackendKind::Vnc => policy.decide_vnc(&name).map(HeadSetup::Vnc),
+                };
+                match setup {
+                    Some(setup) => enable_head(ctx, head, setup, None),
+                    None => {
+                        // [[output]] off: leave the head unenabled (our
+                        // re-spec extension; C windowed backends have no
+                        // per-output off switch).  The head stays
+                        // connected-and-unenabled forever, so every later
+                        // flush would re-log: register_head returning true
+                        // (first sight) is the once-per-head gate.
+                        if register_head(ctx, head, &name) {
+                            log::log_line(&format!("westonite: output {name} disabled by config"));
+                        }
                     }
                 }
             }
@@ -868,6 +937,108 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
         // SAFETY: head live in the snapshot (nothing above frees heads;
         // disable destroys the *output*); C resets the flag per head.
         unsafe { weston_sys::weston_head_reset_device_changed(head.as_ptr()) };
+    }
+}
+
+/// C wet_head_find_by_name: scan the compositor's heads for `name`.
+fn find_head_by_name(ctx: &Ctx, name: &str) -> Option<NonNull<weston_sys::weston_head>> {
+    let compositor = ctx.inner.compositor.get();
+    if compositor.is_null() {
+        return None;
+    }
+    let mut iter: *mut weston_sys::weston_head = std::ptr::null_mut();
+    loop {
+        // SAFETY: compositor live; supported enumeration API.
+        iter = unsafe { weston_sys::weston_compositor_iterate_heads(compositor, iter) };
+        let head = NonNull::new(iter)?;
+        if head_name(head) == name {
+            return Some(head);
+        }
+    }
+}
+
+/// C wet_output_handle_create (L6): a native output was created — if
+/// an [[output]] rule mirrors it, enable that rule's (deferred) remote
+/// head now, with this output as the source.
+fn mirror_on_output_created(
+    ctx: &Ctx,
+    policy: &OutputPolicy,
+    output: NonNull<weston_sys::weston_output>,
+) {
+    // C ignores outputs created by remote backends (RDP/VNC/PIPEWIRE):
+    // a remote output can never be a mirror source.
+    // SAFETY: output live in its creation signal; backend is a bound
+    // POD field.
+    let out_backend = unsafe { (*output.as_ptr()).backend };
+    let is_remote = ctx
+        .inner
+        .backends
+        .borrow()
+        .iter()
+        .any(|(b, k)| *b == out_backend && *k == BackendKind::Vnc);
+    if is_remote {
+        return;
+    }
+    let source_name = output_name(output);
+    let Some(rule) = policy.mirror_rule_for_source(&source_name) else {
+        return;
+    };
+    let Some(head) = find_head_by_name(ctx, &rule.name) else {
+        return;
+    };
+    // Robustness divergence from C (documented in the PROVENANCE log):
+    // C re-enables without checking, which double-creates an output if
+    // a non-deferred head ends up here (e.g. mirror-of on a native
+    // section); an already-enabled head is left alone instead.
+    // SAFETY: head live; pure query.
+    if unsafe { weston_sys::weston_head_is_enabled(head.as_ptr()) } {
+        return;
+    }
+    let Some(setup) = policy.decide_vnc(&rule.name) else {
+        return; // off = true wins over mirror-of
+    };
+    enable_head(ctx, head, HeadSetup::Vnc(setup), Some(output));
+}
+
+/// C simple_heads_output_sharing_resize (L2): the mirror SOURCE
+/// resized — move the remote over it and recompute its modeline.
+fn mirror_on_output_resized(
+    ctx: &Ctx,
+    policy: &OutputPolicy,
+    resized: NonNull<weston_sys::weston_output>,
+) {
+    let source_name = output_name(resized);
+    let Some(rule) = policy.mirror_rule_for_source(&source_name) else {
+        return;
+    };
+    let Some(head) = find_head_by_name(ctx, &rule.name) else {
+        return;
+    };
+    // SAFETY: head live; getter is pure.
+    let remote = unsafe { weston_sys::weston_head_get_output(head.as_ptr()) };
+    let Some(remote) = NonNull::new(remote) else {
+        return; // mirror not (yet) enabled
+    };
+    // SAFETY: both outputs live inside the resized emission; the
+    // mirror_of check pins that `remote` really mirrors `resized`.
+    unsafe {
+        if (*remote.as_ptr()).mirror_of != resized.as_ptr() {
+            return;
+        }
+        weston_sys::weston_output_set_position(remote.as_ptr(), (*resized.as_ptr()).pos);
+    }
+    apply_mirror_modeline(ctx, &rule.name, resized, remote);
+}
+
+fn output_name(output: NonNull<weston_sys::weston_output>) -> String {
+    // SAFETY: output live; name copied at the fence (§3h).
+    unsafe {
+        let p = (*output.as_ptr()).name;
+        if p.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(p).to_string_lossy().into_owned()
+        }
     }
 }
 
@@ -946,7 +1117,16 @@ enum HeadSetup {
     Vnc(crate::output_policy::VncOutputSetup),
 }
 
-fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSetup) {
+/// `mirror_of`: the source output when this head mirrors one (C
+/// simple_head_enable's `head_to_mirror` +
+/// wet_output_overlap_pre/post_enable pair) — placement and the final
+/// modeline then come from the source instead of lazy_align.
+fn enable_head(
+    ctx: &Ctx,
+    head: NonNull<weston_sys::weston_head>,
+    setup: HeadSetup,
+    mirror_of: Option<NonNull<weston_sys::weston_output>>,
+) {
     let compositor = ctx.inner.compositor.get();
     let name = head_name(head);
     let cname = CString::new(name.clone()).unwrap_or_else(|_| c"head".into());
@@ -962,9 +1142,24 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSet
         return;
     };
 
-    // C simple_head_enable ordering: placement (lazy_align), then the
-    // backend configurator (scale/transform/size), then enable.
-    lazy_align(compositor, output);
+    // C simple_head_enable ordering: placement (pre_enable for a
+    // mirror, lazy_align otherwise), then the backend configurator
+    // (scale/transform/size), then enable.
+    match mirror_of {
+        Some(src) => {
+            // C wet_output_overlap_pre_enable: the backend reads
+            // output->mirror_of during configure/enable, and the
+            // mirror sits exactly over its source.
+            // SAFETY: output just created and not enabled; src is the
+            // live output whose creation signal we are inside (or a
+            // resolved live output on the resize path).
+            unsafe {
+                (*output.as_ptr()).mirror_of = src.as_ptr();
+                weston_sys::weston_output_set_position(output.as_ptr(), (*src.as_ptr()).pos);
+            }
+        }
+        None => lazy_align(compositor, output),
+    }
 
     // SAFETY: output live and not yet enabled; mirrors the C
     // per-backend configurator with the resolved policy decision
@@ -989,8 +1184,17 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSet
                     ) >= 0
             }
             // vnc_backend_output_configure: section scale, transform
-            // forced normal, three-arg set_size with resizeable.
+            // forced normal, three-arg set_size with resizeable —
+            // which a mirror forces off (C: `if (output->mirror_of &&
+            // resizeable)`, with its exact log line).
             HeadSetup::Vnc(s) => {
+                let mut resizeable = s.resizeable;
+                if mirror_of.is_some() && resizeable {
+                    resizeable = false;
+                    crate::log::log_line(&format!(
+                        "Use of mirror_of disables resizing for output {name}"
+                    ));
+                }
                 weston_sys::weston_output_set_scale(output.as_ptr(), s.scale);
                 weston_sys::weston_output_set_transform(
                     output.as_ptr(),
@@ -1007,7 +1211,7 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSet
                         output.as_ptr(),
                         s.width,
                         s.height,
-                        s.resizeable,
+                        resizeable,
                     ) >= 0
             }
         }
@@ -1046,6 +1250,67 @@ fn enable_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, setup: HeadSet
     // leave two destroy listeners keyed on one output address.
     register_head(ctx, head, &name);
     register_output(ctx, output, &name);
+
+    // C wet_output_overlap_post_enable: the mirror's final modeline is
+    // computed from the source's native mode and applied after enable.
+    if let Some(src) = mirror_of {
+        apply_mirror_modeline(ctx, &name, src, output);
+    }
+}
+
+/// C wet_output_compute_output_from_mirror + weston_output_mode_set_
+/// native: remote mode = source native mode / remote scale, refresh
+/// from the source; the scale argument is the SOURCE's current scale.
+///
+/// Deliberate divergence (fail-loud upgrade of a C crash, verified
+/// live against the oracle): only DRM-class backends ever call
+/// weston_output_copy_native_mode, so a headless (or other windowed)
+/// mirror source leaves native_mode_copy zeroed and C aborts on its
+/// `assert(output->native_mode_copy.width)` (main.c:2543).  A static
+/// output's current mode IS its native mode, so fall back to
+/// current_mode; if neither is usable, flag init_failed instead of
+/// letting libweston's compositing-area assert kill the process.
+fn apply_mirror_modeline(
+    ctx: &Ctx,
+    name: &str,
+    src: NonNull<weston_sys::weston_output>,
+    output: NonNull<weston_sys::weston_output>,
+) {
+    // SAFETY: both outputs live (inside the creation/resize emission);
+    // POD reads (current_mode is a live mode-list entry on an enabled
+    // output), then a plain libweston call with a stack mode whose
+    // fields mode_set_native copies.
+    unsafe {
+        let src_ref = &*src.as_ptr();
+        let (src_w, src_h, src_refresh) = if src_ref.native_mode_copy.width > 0 {
+            (
+                src_ref.native_mode_copy.width,
+                src_ref.native_mode_copy.height,
+                src_ref.native_mode_copy.refresh,
+            )
+        } else if !src_ref.current_mode.is_null() {
+            let m = &*src_ref.current_mode;
+            (m.width, m.height, m.refresh)
+        } else {
+            crate::log::log_line(&format!(
+                "mirror-of source '{}' has no usable mode for output '{name}'",
+                output_name(src)
+            ));
+            ctx.inner.init_failed.set(true);
+            return;
+        };
+        let remote_scale = (*output.as_ptr()).current_scale.max(1);
+        let mut mode: weston_sys::weston_mode = std::mem::zeroed();
+        mode.width = src_w / remote_scale;
+        mode.height = src_h / remote_scale;
+        mode.refresh = src_refresh;
+        let scale = src_ref.current_scale;
+        crate::log::log_line(&format!(
+            "Setting modeline to output '{name}' to {}x{}, scale: {scale}",
+            mode.width, mode.height
+        ));
+        weston_sys::weston_output_mode_set_native(output.as_ptr(), &mut mode, scale);
+    }
 }
 
 /// Returns true when this call registered the head, false when it was

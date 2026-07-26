@@ -77,8 +77,12 @@
 # An unknown name is a startup error.  CLI --transform overrides it.
 # (VNC outputs are always normal, as in C.)
 #transform = "normal"
-# vnc/rdp: allow client-driven desktop resize (default true).
+# vnc/rdp: allow client-driven desktop resize (default true;
+# forced off when this output mirrors another).
 #resizeable = true
+# Mirror a native output onto this remote head (vnc): the remote
+# tracks the source's mode/position and disables client resize.
+#mirror-of = "headless"
 
 # Leave a head unenabled.  `mode = "off"` is the same switch under the
 # ini spelling.  This is a westonite extension: C has no per-output off
