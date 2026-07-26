@@ -164,6 +164,16 @@ def test_dotted_override_reaches_the_config_tree(tmp_path):
 
 
 @toml_only
+def test_dotted_override_of_a_hex_valued_key(westonite):
+    # TOML reads 0x... as an integer, so an unquoted hex override of a
+    # string-spelled key must still resolve rather than dying as a type
+    # error -- this is the spelling the docs advertise.
+    w = westonite(extra_args=["-o", "shell.background-color=0xff336699"])
+    w.wait_ready()
+    assert "invalid type" not in w.log()
+
+
+@toml_only
 def test_unknown_config_key_is_fatal(tmp_path):
     # D9: deny_unknown_fields -- a typo'd key is a startup error with
     # the offending key named, replacing weston's silent-typo behavior

@@ -5,14 +5,28 @@
 //! entire crate is the risk R-D audit surface: the `pre_exec` closure
 //! runs between fork and exec and makes **only async-signal-safe
 //! calls** (sigmask reset, setsid, fcntl CLOEXEC clearing — raw libc,
-//! no allocation, no locking).  The child aborts rather than unwinds on
-//! any failure there (D16).
+//! no allocation, no locking).  Nothing unwinds out of it: every
+//! failure returns `Err`, which std reports to the parent through the
+//! exec status pipe and turns into a failed `spawn()` (D16).
 
 use std::ffi::OsString;
 use std::io;
 use std::os::fd::{AsRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as StdCommand, Stdio};
+
+/// The process's real uid.
+///
+/// Lives here because this crate already owns the process-credential
+/// syscalls the frontend needs and is already the audited-unsafe one:
+/// the safe `westonite` crate cannot make the call itself, and the C
+/// code this crate ports needs the same value for `wet_client_launch`'s
+/// `seteuid(getuid())` (main.c:469) when the helper-client path lands.
+pub fn real_uid() -> u32 {
+    // SAFETY: getuid is always successful, takes no arguments, and
+    // touches no memory (POSIX: "shall always be successful").
+    unsafe { libc::getuid() }
+}
 
 /// A client command under construction.
 pub struct Command {
@@ -40,13 +54,22 @@ impl Command {
     /// entries, the rest is whitespace-split into argv (the C
     /// custom_env `ENV=x cmd arg` contract; whitespace splitting only,
     /// no quoting — same as the C parser).
+    ///
+    /// Two **deliberate divergences** from
+    /// `custom_env_add_from_exec_string`, both narrowing what counts as
+    /// an assignment: C stops at the first `=` in the word with no
+    /// further checks, so `/opt/w=x/app` sets an env var named `/opt/w`
+    /// and `=v cmd` sets one named `""`.  Neither is reachable through
+    /// a useful config, and both produce a child that fails in a
+    /// confusing way, so a word whose key contains `/` or is empty ends
+    /// the env prefix here instead.
     pub fn from_exec_string(s: &str) -> Option<Command> {
         let mut env = Vec::new();
         let mut words = s.split_whitespace().peekable();
         while let Some(w) = words.peek() {
             match w.split_once('=') {
-                // A `=` before any `/` in the word marks an env
-                // assignment (C: strchr(w, '=') before the command).
+                // A `=` in the word marks an env assignment, unless the
+                // key looks like a path or is empty (see above).
                 Some((k, v)) if !k.contains('/') && !k.is_empty() => {
                     env.push((OsString::from(k), OsString::from(v)));
                     words.next();
@@ -154,7 +177,8 @@ mod tests {
 
     #[test]
     fn exec_string_path_with_equals_is_not_env() {
-        // A path containing '=' must not be eaten as an assignment.
+        // Deliberate divergence from the C parser (see from_exec_string):
+        // a path containing '=' is not eaten as an assignment.
         let c = Command::from_exec_string("/opt/w=x/app --flag").unwrap();
         assert_eq!(c.program, OsString::from("/opt/w=x/app"));
         assert!(c.env.is_empty());

@@ -4,9 +4,13 @@
 //! File discovery mirrors the ini search the C frontend had (P2), with
 //! the new name: `$XDG_CONFIG_HOME/westonite.toml`, then
 //! `$HOME/.config/westonite.toml`, then each of `$XDG_CONFIG_DIRS`
-//! (default `/etc/xdg`).  `WESTON_CONFIG_FILE` is dropped (D12).  If a
-//! legacy `westonite.ini` sits where the TOML is expected, resolution
-//! reports a one-line hint and otherwise ignores it (D11).
+//! (default `/etc/xdg`).  Both home locations are tried, in that order
+//! — libweston's `open_config_file` falls through from
+//! `$XDG_CONFIG_HOME` to `$HOME/.config` rather than treating the
+//! former as an override, and the C frontend inherits that.
+//! `WESTON_CONFIG_FILE` is dropped (D12).  If a legacy
+//! `westonite.ini` sits where the TOML is expected, resolution reports
+//! a one-line hint and otherwise ignores it (D11).
 
 use std::collections::HashMap;
 use std::fmt;
@@ -125,8 +129,17 @@ pub struct Settings {
     pub drm_current_mode: bool,
     pub continue_without_input: bool,
 
+    /// Listen port for whichever of rdp/vnc is in `backends` (`--port`
+    /// wins over the matching section).
     pub rdp_vnc_port: Option<u16>,
     pub vnc_disable_tls: bool,
+    pub rdp_tls_cert: Option<String>,
+    pub rdp_tls_key: Option<String>,
+    pub vnc_tls_cert: Option<String>,
+    pub vnc_tls_key: Option<String>,
+    pub rdp_external_listener_fd: Option<i32>,
+    pub rdp_no_clients_resize: bool,
+    pub rdp_force_no_compression: bool,
 
     /// Autolaunch command: CLI trailing args win over `[autolaunch]
     /// path`; watch only from the config.
@@ -166,10 +179,16 @@ fn split_list(s: &str) -> Vec<String> {
 /// path plus any ignored legacy ini next to the search locations.
 fn discover(env: &HashMap<String, String>) -> (Option<PathBuf>, Option<PathBuf>) {
     let mut dirs: Vec<PathBuf> = Vec::new();
+    // Both home locations, in order — not either/or: libweston tries
+    // $XDG_CONFIG_HOME and then falls through to $HOME/.config.
     if let Some(x) = env.get("XDG_CONFIG_HOME").filter(|v| !v.is_empty()) {
         dirs.push(PathBuf::from(x));
-    } else if let Some(h) = env.get("HOME").filter(|v| !v.is_empty()) {
-        dirs.push(Path::new(h).join(".config"));
+    }
+    if let Some(h) = env.get("HOME").filter(|v| !v.is_empty()) {
+        let home_config = Path::new(h).join(".config");
+        if !dirs.contains(&home_config) {
+            dirs.push(home_config);
+        }
     }
     match env.get("XDG_CONFIG_DIRS").filter(|v| !v.is_empty()) {
         Some(list) => {
@@ -265,6 +284,15 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         }
     }
 
+    // C load_headless_backend/load_x11_backend: use-gl and use-pixman
+    // are mutually exclusive, and neither may be combined with an
+    // explicit --renderer.  Wording kept from the C frontend.
+    if (cli.use_gl && cli.use_pixman) || (cli.renderer.is_some() && (cli.use_gl || cli.use_pixman))
+    {
+        return Err(ConfigError::Invalid(
+            "Conflicting renderer specifications".to_string(),
+        ));
+    }
     let renderer_name = cli
         .renderer
         .clone()
@@ -304,6 +332,36 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
     let modules = match &cli.modules {
         Some(m) => split_list(m),
         None => config.core.modules.clone(),
+    };
+
+    // C parse_simple_mode only applies --width/--height when they are
+    // non-zero, so a zero silently means "default" there and a negative
+    // reaches the backend as a size.  Neither is useful: reject both up
+    // front rather than hand a bad geometry to weston_windowed_output.
+    for (name, value) in [
+        ("--width", cli.width),
+        ("--height", cli.height),
+        ("--scale", cli.scale),
+    ] {
+        if let Some(v) = value
+            && v <= 0
+        {
+            return Err(ConfigError::Invalid(format!(
+                "{name} must be positive (got {v})"
+            )));
+        }
+    }
+
+    // Backend-specific sections belong to the backend that is actually
+    // loaded: keying only off "vnc first, else rdp" would let a stray
+    // [vnc] port hijack an RDP run.
+    let has = |b: Backend| backends.contains(&b);
+    let section_port = if has(Backend::Vnc) {
+        config.vnc.port
+    } else if has(Backend::Rdp) {
+        config.rdp.port
+    } else {
+        None
     };
 
     Ok(Settings {
@@ -346,9 +404,30 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         drm_additional_devices: cli.additional_devices.clone(),
         drm_current_mode: cli.current_mode,
         continue_without_input: cli.continue_without_input,
-        rdp_vnc_port: cli.port.or(config.vnc.port).or(config.rdp.port),
+        rdp_vnc_port: cli.port.or(section_port),
         vnc_disable_tls: cli.disable_transport_layer_security
             || config.vnc.disable_transport_layer_security.unwrap_or(false),
+        rdp_tls_cert: cli
+            .rdp_tls_cert
+            .clone()
+            .or_else(|| config.rdp.tls_cert.clone()),
+        rdp_tls_key: cli
+            .rdp_tls_key
+            .clone()
+            .or_else(|| config.rdp.tls_key.clone()),
+        vnc_tls_cert: cli
+            .vnc_tls_cert
+            .clone()
+            .or_else(|| config.vnc.tls_cert.clone()),
+        vnc_tls_key: cli
+            .vnc_tls_key
+            .clone()
+            .or_else(|| config.vnc.tls_key.clone()),
+        rdp_external_listener_fd: cli.external_listener_fd.or(config.rdp.external_listener_fd),
+        rdp_no_clients_resize: cli.no_clients_resize
+            || config.rdp.no_clients_resize.unwrap_or(false),
+        rdp_force_no_compression: cli.force_no_compression
+            || config.rdp.force_no_compression.unwrap_or(false),
         autolaunch,
         // C main.c execute_command: a positional command line is always
         // watched; config [autolaunch] watch applies otherwise.
@@ -501,6 +580,121 @@ mod tests {
         std::fs::write(&path, "[autolaunch]\npath = \"/bin/cfg-app\"\n").unwrap();
         let s2 = resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
         assert!(!s2.autolaunch_watch);
+    }
+
+    #[test]
+    fn hex_color_override_is_not_a_type_error() {
+        // TOML parses 0x… as an integer, so the documented spelling
+        // `-o shell.background-color=0xff336699` must still resolve.
+        let s = resolve_from(
+            &cli(&["--no-config", "-o", "shell.background-color=0xff336699"]),
+            &no_env(),
+        )
+        .unwrap();
+        assert_eq!(s.background_color, 0xff336699);
+    }
+
+    #[test]
+    fn color_accepts_quoted_and_bare_spellings() {
+        let dir = tempfile::tempdir().unwrap();
+        for (i, body) in [
+            "background-color = \"0xff336699\"",
+            "background-color = 0xff336699",
+            "background-color = 4281558681",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = dir.path().join(format!("c{i}.toml"));
+            std::fs::write(&path, format!("[shell]\n{body}\n")).unwrap();
+            let s =
+                resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
+            assert_eq!(s.background_color, 0xff336699, "{body}");
+        }
+    }
+
+    #[test]
+    fn list_keys_accept_comma_strings_and_arrays() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("westonite.toml");
+        // The ini spelling survives the near-diagonal D11 mapping.
+        std::fs::write(&path, "[core]\nbackends = \"headless,vnc\"\n").unwrap();
+        let s = resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
+        assert_eq!(s.backends, vec![Backend::Headless, Backend::Vnc]);
+
+        std::fs::write(&path, "[core]\nmodules = [\"a.so\", \"b.so\"]\n").unwrap();
+        let s = resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
+        assert_eq!(s.modules, vec!["a.so".to_string(), "b.so".to_string()]);
+
+        let s = resolve_from(
+            &cli(&["--no-config", "-o", "core.modules=a.so,b.so"]),
+            &no_env(),
+        )
+        .unwrap();
+        assert_eq!(s.modules, vec!["a.so".to_string(), "b.so".to_string()]);
+    }
+
+    #[test]
+    fn xdg_config_home_falls_through_to_home_config() {
+        // libweston's open_config_file tries $XDG_CONFIG_HOME and then
+        // $HOME/.config; an empty XDG_CONFIG_HOME must not mask a config
+        // sitting in the home fallback.
+        let dir = tempfile::tempdir().unwrap();
+        let xdg = dir.path().join("xdg");
+        let home = dir.path().join("home");
+        std::fs::create_dir_all(&xdg).unwrap();
+        std::fs::create_dir_all(home.join(".config")).unwrap();
+        std::fs::write(home.join(".config/westonite.toml"), "[core]\n").unwrap();
+        let mut env = no_env();
+        env.insert("XDG_CONFIG_HOME".into(), xdg.to_string_lossy().into_owned());
+        env.insert("HOME".into(), home.to_string_lossy().into_owned());
+        let s = resolve_from(&cli(&[]), &env).unwrap();
+        assert_eq!(s.config_path, Some(home.join(".config/westonite.toml")));
+    }
+
+    #[test]
+    fn conflicting_renderer_flags_are_rejected() {
+        for args in [
+            vec!["--no-config", "--use-gl", "--use-pixman"],
+            vec!["--no-config", "--renderer=gl", "--use-pixman"],
+        ] {
+            let err = resolve_from(&cli(&args), &no_env())
+                .unwrap_err()
+                .to_string();
+            assert_eq!(err, "Conflicting renderer specifications", "{args:?}");
+        }
+    }
+
+    #[test]
+    fn non_positive_geometry_is_rejected() {
+        for (flag, args) in [
+            ("--width", vec!["--no-config", "--width=0"]),
+            ("--height", vec!["--no-config", "--height=-1"]),
+            ("--scale", vec!["--no-config", "--scale=0"]),
+        ] {
+            let err = resolve_from(&cli(&args), &no_env())
+                .unwrap_err()
+                .to_string();
+            assert!(err.starts_with(flag), "{err}");
+        }
+    }
+
+    #[test]
+    fn backend_sections_do_not_leak_across_backends() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("westonite.toml");
+        std::fs::write(&path, "[vnc]\nport = 5900\n[rdp]\nport = 3389\n").unwrap();
+        let cfg = format!("--config={}", path.display());
+        let s = resolve_from(&cli(&[&cfg, "--backend=rdp"]), &no_env()).unwrap();
+        assert_eq!(s.rdp_vnc_port, Some(3389));
+        let s = resolve_from(&cli(&[&cfg, "--backend=vnc"]), &no_env()).unwrap();
+        assert_eq!(s.rdp_vnc_port, Some(5900));
+        // Neither backend loaded: no port at all, rather than a stray one.
+        let s = resolve_from(&cli(&[&cfg, "--backend=headless"]), &no_env()).unwrap();
+        assert_eq!(s.rdp_vnc_port, None);
+        // --port still wins.
+        let s = resolve_from(&cli(&[&cfg, "--backend=vnc", "--port=1234"]), &no_env()).unwrap();
+        assert_eq!(s.rdp_vnc_port, Some(1234));
     }
 
     #[test]

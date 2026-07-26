@@ -114,8 +114,8 @@ fn main() -> ExitCode {
 }
 
 /// C main.c verify_xdg_runtime_dir: unset or non-directory is fatal
-/// (the message wording is pinned by test_cli), wrong mode is a
-/// warning.
+/// (the message wording is pinned by test_cli), wrong mode *or owner*
+/// is a warning.
 fn verify_xdg_runtime_dir() -> Option<ExitCode> {
     use std::os::unix::fs::MetadataExt;
     let Some(dir) = std::env::var_os("XDG_RUNTIME_DIR") else {
@@ -127,24 +127,31 @@ fn verify_xdg_runtime_dir() -> Option<ExitCode> {
         ));
     };
     let path = PathBuf::from(&dir);
-    let Ok(meta) = std::fs::metadata(&path) else {
-        return Some(fatal(&format!(
+    let not_a_dir = || {
+        Some(fatal(&format!(
             "environment variable XDG_RUNTIME_DIR is set to \"{}\", which is not a directory.",
             path.display()
-        )));
+        )))
+    };
+    let Ok(meta) = std::fs::metadata(&path) else {
+        return not_a_dir();
     };
     if !meta.is_dir() {
-        return Some(fatal(&format!(
-            "environment variable XDG_RUNTIME_DIR is set to \"{}\", which is not a directory.",
-            path.display()
-        )));
+        return not_a_dir();
     }
-    let mode = meta.mode() & 0o7777;
-    if mode != 0o700 {
+    // C masks with 0777 — the setuid/setgid/sticky bits are not part of
+    // the check, and the owner must be us.
+    let mode = meta.mode() & 0o777;
+    // Through westonite-spawn: the getuid call itself belongs in the
+    // audited-unsafe crate, so this one keeps forbid(unsafe_code).
+    let uid = westonite_spawn::real_uid();
+    if mode != 0o700 || meta.uid() != uid {
         weston::log::message(&format!(
             "warning: XDG_RUNTIME_DIR \"{}\" is not configured correctly: unix access \
-             mode must be 0700 (current mode is {mode:o})",
-            path.display()
+             mode must be 0700 (current mode is {mode:04o}), and it must be owned by \
+             UID {uid} (current owner is UID {})",
+            path.display(),
+            meta.uid()
         ));
     }
     None
@@ -188,6 +195,36 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             "--no-outputs is not yet ported to the Rust frontend (lands at R2b)",
         ));
     }
+    // Output attributes the R2a bring-up cannot honour: it hands the
+    // fence a single width/height and nothing else, so accepting these
+    // silently would degrade rather than fail (plan §7).
+    if settings.scale.is_some() {
+        return Some(fatal(
+            "--scale is not yet ported to the Rust frontend (lands at R2b)",
+        ));
+    }
+    if settings.refresh_rate.is_some() {
+        return Some(fatal(
+            "--refresh-rate is not yet ported to the Rust frontend (lands at R2b)",
+        ));
+    }
+    // Only the section that applies to this run's head, as C does
+    // (weston_config_get_section("output", "name", output->name)):
+    // sections for other heads are inert here, exactly as in C.
+    if let Some(out) = headless_output_section(settings) {
+        if out.off == Some(true) || out.mode.as_deref() == Some("off") {
+            return Some(fatal(
+                "[[output]] 'headless': disabling an output is not yet ported to the Rust \
+                 frontend (lands at R2b with --no-outputs)",
+            ));
+        }
+        if out.scale.is_some() || out.transform.is_some() {
+            return Some(fatal(
+                "[[output]] 'headless': scale/transform are not yet ported to the Rust \
+                 frontend (lands at R2b)",
+            ));
+        }
+    }
     if let Some(shell) = &cli.shell {
         // Parity flag: the Rust frontend's shell is built in; only the
         // default spelling is accepted (D19).
@@ -211,16 +248,22 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     None
 }
 
+/// The `[[output]]` block that configures this run's headless head, if
+/// the config has one.
+fn headless_output_section(settings: &Settings) -> Option<&westonite_config::Output> {
+    settings
+        .config
+        .output
+        .iter()
+        .find(|o| o.name.as_deref() == Some("headless"))
+}
+
 /// Headless output geometry, C precedence (main.c wet_configure_windowed
 /// _output_from_config): defaults 1024x640 → `[[output]]` mode= for the
 /// "headless" head → CLI --width/--height.
 fn headless_geometry(settings: &Settings) -> (i32, i32) {
     let (mut width, mut height) = (1024, 640);
-    if let Some(out) = settings
-        .config
-        .output
-        .iter()
-        .find(|o| o.name.as_deref() == Some("headless"))
+    if let Some(out) = headless_output_section(settings)
         && let Some(mode) = &out.mode
     {
         if let Some((w, h)) = parse_mode(mode) {

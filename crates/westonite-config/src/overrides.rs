@@ -7,15 +7,25 @@ use toml::Value;
 /// Apply one `section.key=value` (or deeper `a.b.c=value`) override.
 /// Values parse as TOML when they can (numbers, booleans, arrays) and
 /// fall back to strings, so `-o core.xwayland=true` and
-/// `-o shell.background-color=0xff336699` both do what they look like.
+/// `-o shell.background-color=0xff336699` both do what they look like —
+/// the latter arrives as a TOML integer (`0x…` is integer syntax), which
+/// the model's numeric-string fields accept (`model::de_opt_scalar_string`).
 /// Array-of-table paths accept an index: `-o output.0.mode=off`.
 pub(crate) fn apply(root: &mut toml::Table, spec: &str) -> Result<(), String> {
     let Some((path, raw_value)) = spec.split_once('=') else {
         return Err(format!("override '{spec}': expected KEY.PATH=VALUE"));
     };
     let segments: Vec<&str> = path.split('.').collect();
-    if segments.is_empty() || segments.iter().any(|s| s.is_empty()) {
+    if segments.iter().any(|s| s.is_empty()) {
         return Err(format!("override '{spec}': empty key path segment"));
+    }
+    // Validated before the first mutation: a rejected override must not
+    // leave a half-built table behind in `root`.  A single segment names
+    // a whole section, which is not key-shaped.
+    if segments.len() < 2 {
+        return Err(format!(
+            "override '{spec}': path must have at least two segments"
+        ));
     }
 
     let value = parse_value(raw_value);
@@ -67,11 +77,9 @@ pub(crate) fn apply(root: &mut toml::Table, spec: &str) -> Result<(), String> {
         }
     }
 
-    // Single-segment path: `-o core=...` — only meaningful when the
-    // value is a table; reject to keep overrides key-shaped.
-    Err(format!(
-        "override '{spec}': path must have at least two segments"
-    ))
+    // Unreachable: the >= 2 segment check above guarantees the loop
+    // above returns from its `last` branch.
+    Err(format!("override '{spec}': could not be applied"))
 }
 
 fn parse_value(raw: &str) -> Value {
@@ -117,5 +125,26 @@ mod tests {
         assert!(apply(&mut root, "no-equals").is_err());
         assert!(apply(&mut root, "onlyroot=1").is_err());
         assert!(apply(&mut root, "a..b=1").is_err());
+    }
+
+    #[test]
+    fn rejected_specs_leave_the_tree_untouched() {
+        // A half-applied override would deserialize as a bogus empty
+        // section if the caller ever kept going after the error.
+        let mut root = toml::Table::new();
+        assert!(apply(&mut root, "onlyroot=1").is_err());
+        assert!(root.is_empty(), "{root:?}");
+    }
+
+    #[test]
+    fn prefixed_integers_stay_typed_for_the_model_to_widen() {
+        let mut root = toml::Table::new();
+        apply(&mut root, "shell.background-color=0xff336699").unwrap();
+        // TOML reads 0x… as an integer; the model accepts numbers for
+        // this key, so the override is not lost.
+        assert_eq!(
+            root["shell"]["background-color"],
+            Value::Integer(0xff336699)
+        );
     }
 }

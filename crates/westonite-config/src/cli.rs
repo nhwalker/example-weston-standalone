@@ -16,8 +16,9 @@ use clap::Parser;
     disable_version_flag = true,
     about = "Standalone Weston-based Wayland compositor",
     after_help = "Any [section] key of westonite.toml can be set with \
-                  -o section.key=value; trailing arguments (after --) \
-                  are launched as the autolaunch client."
+                  -o section.key=value; trailing arguments are launched \
+                  as the autolaunch client (put -- before them when they \
+                  carry flags of their own)."
 )]
 pub struct Cli {
     /// Print version and exit.

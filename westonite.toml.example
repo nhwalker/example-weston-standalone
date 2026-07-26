@@ -1,6 +1,6 @@
 # westonite.toml — annotated example configuration (plan §5, D9–D11).
 #
-# Search order (first hit wins):
+# Search order (each location tried in turn, first hit wins):
 #   $XDG_CONFIG_HOME/westonite.toml
 #   $HOME/.config/westonite.toml
 #   each dir in $XDG_CONFIG_DIRS (default /etc/xdg)
@@ -17,7 +17,8 @@
 # The R2a Rust frontend supports headless; others fail loudly until
 # their migration slice lands (the C frontend remains the oracle).
 #backend = "headless"
-# Or several: backends = ["drm", "vnc"] — ini `backends=drm,vnc`.
+# Or several: backends = ["drm", "vnc"] — the ini spelling
+# backends = "drm,vnc" is accepted too.
 # Renderer: auto (default), gl, pixman, noop.
 #renderer = "auto"
 # Require an input device before starting (default true).
@@ -30,7 +31,9 @@
 #modules = []
 
 [shell]
-# Background color, 0xAARRGGBB (string, keeps the hex spelling).
+# Background color, 0xAARRGGBB.  A quoted string keeps the hex spelling
+# the ini used; a bare 0xff002244 (TOML integer) works too, which is
+# what `-o shell.background-color=0xff002244` produces.
 #background-color = "0xff002244"
 
 [keyboard]

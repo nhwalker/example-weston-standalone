@@ -506,7 +506,12 @@ pub fn attach_shell_native(
         )
     };
     if !added {
-        return true;
+        // The hybrid path treats this as "another shell got there
+        // first" and yields.  Here it means a double attach on the one
+        // call site, i.e. a bug: yielding would leave the compositor
+        // running with no shell wired at all, so fail the build instead.
+        crate::log::log_line("westonite-shell: shell already attached to this compositor");
+        return false;
     }
     destroy.mark_attached();
 

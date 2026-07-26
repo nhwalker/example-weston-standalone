@@ -36,14 +36,20 @@ def ini_to_config(text):
     documented for users (D11)."""
     if CONFIG_FORMAT == "ini":
         return text
-    array_sections = {"output", "remote-output", "pipewire-output",
-                      "color_characteristics"}
+    # ini section name -> TOML array-of-tables name.  The TOML model is
+    # kebab-case throughout, so the one ini section spelled with an
+    # underscore ([color_characteristics]) is renamed here too.
+    array_sections = {"output": "output",
+                      "remote-output": "remote-output",
+                      "pipewire-output": "pipewire-output",
+                      "color_characteristics": "color-characteristics"}
     lines = []
     for line in text.splitlines():
         s = line.strip()
         if s.startswith("[") and s.endswith("]"):
             name = s[1:-1]
-            lines.append(f"[[{name}]]" if name in array_sections else s)
+            lines.append(f"[[{array_sections[name]}]]"
+                         if name in array_sections else s)
         elif "=" in s and not s.startswith("#"):
             key, value = s.split("=", 1)
             lines.append(f"{key.strip()} = {_toml_value(value.strip())}")
