@@ -855,7 +855,8 @@ halves can be mixed and smoke-tested at every phase boundary.
   (D18: ASAN cannot instrument the hybrid's C half; the pure-Rust
   legs run under nightly-ASAN instead — see PROVENANCE.md).
 - **Phase R2 — spawn + frontend in Rust** (slices, each ending
-  green — "green" means smoke **and** the full e2e suite): R2a core
+  green — "green" means smoke **and** the full e2e suite): R2a ✅
+  *(done — see PROVENANCE.md log)* core
   startup, logging (incl. the va_list shim), headless, **and the §5
   config interface** (`westonite-config`: TOML + clap + `-o`) — the
   one slice where e2e tests change by design: the

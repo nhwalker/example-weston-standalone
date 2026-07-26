@@ -1,0 +1,77 @@
+# westonite.toml — annotated example configuration (plan §5, D9–D11).
+#
+# Search order (first hit wins):
+#   $XDG_CONFIG_HOME/westonite.toml
+#   $HOME/.config/westonite.toml
+#   each dir in $XDG_CONFIG_DIRS (default /etc/xdg)
+# Or pass --config=PATH / --no-config.  Any key here can also be set on
+# the command line with `-o section.key=value` (repeatable; applied
+# after the file, before dedicated flags).
+#
+# Unknown keys and type errors are STARTUP ERRORS with a line/column
+# span — a typo'd key never silently does nothing.  Keys are
+# kebab-case, matching the old ini's hyphenated spellings.
+
+[core]
+# Backend: drm (default), headless, x11, wayland, rdp, vnc, pipewire.
+# The R2a Rust frontend supports headless; others fail loudly until
+# their migration slice lands (the C frontend remains the oracle).
+#backend = "headless"
+# Or several: backends = ["drm", "vnc"] — ini `backends=drm,vnc`.
+# Renderer: auto (default), gl, pixman, noop.
+#renderer = "auto"
+# Require an input device before starting (default true).
+#require-input = true
+# Enable color management.
+#color-management = false
+# Start Xwayland support lazily.
+#xwayland = false
+# Extra frontend modules (ini `modules=a.so,b.so` becomes an array).
+#modules = []
+
+[shell]
+# Background color, 0xAARRGGBB (string, keeps the hex spelling).
+#background-color = "0xff002244"
+
+[keyboard]
+#keymap-layout = "us"
+#repeat-rate = 40
+#repeat-delay = 400
+#numlock-on = false
+
+[libinput]
+#enable-tap = false
+#natural-scroll = false
+
+[autolaunch]
+# Client to spawn once the compositor is up.  `watch = true` ties the
+# session to it (compositor exits when the client exits).
+#path = "/usr/bin/some-client"
+#watch = false
+
+[xwayland]
+#path = "/usr/bin/Xwayland"
+
+# Repeated ini [output] sections become TOML array-of-tables.
+#[[output]]
+#name = "headless"
+#mode = "1024x640"
+#scale = 1
+#transform = "normal"
+
+#[[output]]
+#name = "DP-1"
+#mode = "1920x1080@60"
+
+[vnc]
+#port = 5900
+#refresh-rate = 60
+#tls-cert = "/path/tls.crt"
+#tls-key = "/path/tls.key"
+#disable-transport-layer-security = false
+
+[rdp]
+#port = 3389
+
+[pipewire]
+#num-outputs = 1

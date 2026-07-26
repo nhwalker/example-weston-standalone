@@ -17,6 +17,44 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2a (2026-07-26)** — Rust frontend core: config + spawn + headless
+  (plan §7 R2a), branch `claude/rust-migration-j84b2p`:
+  - New safe crates: `westonite-config` (§5 re-spec, D9–D12: serde
+    `Config` over the full ini surface, kebab-case,
+    `deny_unknown_fields`, clap CLI, `-o` dotted overrides, XDG
+    discovery of `westonite.toml` with the D11 legacy-ini hint,
+    resolution defaults → file → `-o` → flags into immutable
+    `Settings`; C-parity error strings) and the `westonite` binary
+    (`westonite-rs`: version/help, `--log` file sink, C
+    `verify_xdg_runtime_dir` port, headless bring-up via the fence
+    builder, statically linked Rust shell, autolaunch with X_OK
+    precheck and watch, `-o`-driven config).  New audited-unsafe crate
+    `westonite-spawn` (risk R-D: `pre_exec` limited to
+    async-signal-safe calls — sigmask reset, setsid, CLOEXEC clear).
+  - Fence additions: `attach_shell_native` (shared `wire_common` with
+    the hybrid path), `with_shell`/`with_socket_name` builder,
+    explicit-socket bind + `socket_name()`, `set_autolaunch` +
+    SIGCHLD event source (installed in `build()` — before any client
+    spawn, matching C's signals[]-before-`execute_autolaunch` order so
+    a fast-exiting watched client is never lost), `--log` file sink in
+    the log shim.  D12: no `WESTON_CONFIG_FILE` export.
+  - E2e: `test_cli.py` re-specified (mode-gated via
+    `WESTONITE_CONFIG_FORMAT`; new TOML-only tests: legacy-ini hint,
+    `-o` override plumb-through, unknown-key startup error, unported
+    backend fails loudly); harness gained a TOML config mode +
+    ini→TOML translation so `test_lifecycle.py`/`test_children.py`
+    behaviors run unmodified against both frontends (only the D12
+    export assert is mode-gated).  New `scripts/rust-e2e-test.sh` CI
+    leg: 27 passed / 1 deselected (VNC lifecycle — R2c) against
+    `westonite-rs`; the C leg keeps the full suite.
+  - Validation: workspace clippy-clean (`-D warnings`); 27 crate unit
+    tests; frontend valgrind-clean including the autolaunch/SIGCHLD
+    watch path (0 errors, 0 definite leaks); ASAN leg extended to the
+    frontend binary; fence checks classify the new crates
+    (safe: +westonite-config, +westonite; unsafe: +westonite-spawn).
+  - Docs: `westonite.toml.example` (validated by running the binary
+    against it), `docs/config-migration.md` (D11 ini→TOML mapping),
+    callback-inventory §6 (event-loop signal sources) + log-sink row.
 - **Review hardening (2026-07-26)** — post-merge review of the R0/R1 +
   planning PRs (#11, #13–#16), branch
   `claude/rust-migration-review-b9rjxw`:
