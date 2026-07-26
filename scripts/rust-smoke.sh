@@ -25,7 +25,9 @@ wait_for_marker() { # <file> <marker> <deadline-halfseconds>
 }
 
 echo "== rust 1: workspace builds"
-cargo build --locked --workspace --examples
+# --examples alone selects ONLY example targets; --bins must be listed
+# too or the westonite-rs binary the frontend legs run never builds.
+cargo build --locked --workspace --examples --bins
 
 echo "== rust 2: unit tests (fence fake-C harness D18, shell policy D20, config/spawn R2a)"
 cargo test --locked -p weston --features testsupport
