@@ -57,9 +57,9 @@ per cell; `git log` on the named modules is the per-row audit trail.
 
 | # | Field | Handler | Attach site | Signal | Tier | Notes | Status |
 |---|---|---|---|---|---|---|---|
-| L8 | `screenshooter.client_destroy_listener` | `screenshooter_client_destroy` (46) | `w-s.c:79` | client destroy | deferred | resets recorder client slot | — |
-| L9 | `screenshooter.compositor_destroy_listener` | `screenshooter_destroy` (119) | `w-s.c:148` | compositor `destroy_signal` | sync+inval | teardown ordering only | — |
-| L10 | `screenshooter.authorization` | `authorize_screenshooter` (108) | via auth API | auth request | sync (out-param) | — | — |
+| L8 | `screenshooter.client_destroy_listener` | `screenshooter_client_destroy` (46) | `w-s.c:79` | client destroy | **sync** (proof: resets the wrapper client slot only — a Cell write, no app borrow; C's handler is the same one-line reset) | oneshot Listener; its own box is retired via defer_drop (§3f — the firing frame is on the stack) | R2e (screenshooter.rs) |
+| L9 | `screenshooter.compositor_destroy_listener` | `screenshooter_destroy` (119) | `w-s.c:148` | compositor `destroy_signal` | sync+inval | teardown ordering only | R2e — **not a listener in Rust**: Compositor::drop calls screenshooter::teardown before weston_compositor_destroy (same detach-before-free effect as C's in-destroy removal) |
+| L10 | `screenshooter.authorization` | `authorize_screenshooter` (108) | via auth API | auth request | sync (out-param; writes att->authorized for the compositor's own spawned client only — wrapper state read, no app borrow) | attached by direct wl_signal_add on `output_capture.ask_auth` — the C helper (`weston_compositor_add_screenshot_authority`) would overwrite the Listener trampoline's notify | R2e (frontend_listeners: detached in Drop before destroy) |
 
 ### desktop-shell/shell.c + shell.h (19 fields — all rows R1 unless marked vestigial/deleted)
 
@@ -87,12 +87,12 @@ per cell; `git log` on the named modules is the per-row audit trail.
 *(L28 folds two sibling fields into one row for brevity; both are
 plain deferred notifications.  Field count: 7 + 3 + 19 = 29.)*
 
-## 2. Bindings (6 registrations — B3–B6 are R1; B1/B2 remain C until R2)
+## 2. Bindings (6 registrations — B3–B6 are R1; B1/B2 are R2e)
 
 | # | Binding | Handler | Site | Tier | Status |
 |---|---|---|---|---|---|
-| B1 | key Super+S | `screenshooter_binding` | `w-s.c:142` | deferred (spawns client) | — |
-| B2 | key Super+R | `recorder_binding` | `w-s.c:144` | deferred | — |
+| B1 | key Super+S | `screenshooter_binding` | `w-s.c:142` | **sync** (was planned deferred; proof: wrapper screenshooter state + fd/spawn plumbing + wl_client_create — no app borrow, and C's handler completes inside the binding too) | R2e (screenshooter.rs) |
+| B2 | key Super+R | `recorder_binding` | `w-s.c:144` | **sync** (proof: wrapper recorder Cell + weston_recorder start/stop — no app borrow) | R2e (divergence: C's empty-output-list fallback is a wild `container_of` on the list head; ours logs and no-ops) |
 | B3 | button BTN_LEFT | `click_to_activate_binding` | `shell.c:2120` | **sync** (reads pointer button/serial state valid only in the input frame; activation policy enqueued) | — |
 | B4 | button BTN_RIGHT | `click_to_activate_binding` | `shell.c:2123` | sync (as B3) | — |
 | B5 | touch | `touch_to_activate_binding` | `shell.c:2126` | sync (as B3) | — |

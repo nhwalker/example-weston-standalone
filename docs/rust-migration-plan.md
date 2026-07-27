@@ -915,10 +915,17 @@ halves can be mixed and smoke-tested at every phase boundary.
   destroy-before-compositor teardown) — `test_xwayland.py` now runs
   against `westonite-rs`, so the Rust frontend runs the ENTIRE e2e
   suite and the C oracle covers only the not-yet-ported backend
-  loaders. R2e screenshooter/recorder,
-  including moving `screenshooter_create` ownership to the frontend
-  (§4). The C `main.c` stays in-tree, buildable via meson, until R2
-  completes — it is the reference oracle for behavioral diffs.
+  loaders. R2e screenshooter/recorder ✅ *(done — see PROVENANCE.md
+  log)*: `frontend/weston-screenshooter.c` whole-file port
+  (Super+S client spawn + slot gate, Super+R wcap recorder, capture
+  authority on `ask_auth`), with `screenshooter_create` ownership
+  moved to the frontend as §4 planned for R3 — the Rust build()
+  calls it after the shell attaches, same registrations at the same
+  startup point.  e2e-verified over VNC QEMU-extended key events;
+  capture *completion* is blocked by an RPM-side abort found live
+  (e2e plan §6). The C `main.c` stays in-tree, buildable via meson,
+  until R2 completes — it is the reference oracle for behavioral
+  diffs.
 - **Phase R3 — decommission C**: delete C sources + meson, drop the
   `hybrid-r1` bindings from `weston-sys` (the shell now receives its
   typed `ShellConfig` from the Rust frontend and links statically —
