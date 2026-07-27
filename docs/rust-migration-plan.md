@@ -486,6 +486,21 @@ discipline in application code, converts missed cases into
     reactions are moot; the sync invalidation half already ran.
 - Any behavior difference caused by deferral that the e2e suite can
   observe is a **parity bug**, not an accepted divergence under D6.
+- **Known gap (found at the R2d review round, 2026-07-27):**
+  `Compositor::run` wraps `wl_display_run` in `with_depth`, so the
+  counter never returns to zero *inside* the event loop — trampolines
+  bottom out at depth 1 and the "common case" above does not
+  currently fire; deferred-tier events enqueued mid-run (busy-cursor
+  PingTimeout/Pong, GrabEnded, the destroy-policy Gone events) are
+  drained only when the loop exits.  Verified empirically with drain
+  probes (client connect/map/kill produced zero mid-run drains).  No
+  e2e test can observe the delay today — the visible halves of those
+  behaviors are wrapper-side and synchronous — which is why it sat
+  unnoticed since R0.  Fix (own slice, needs its own A3/A4 audit +
+  full battery, not a drive-by): drop the `run()` wrap so the loop's
+  base depth is zero, after auditing every bare-bodied event-source
+  callback (`on_term_signal`, `on_sigchld`) for A4 — the xwayland
+  `xserver_exited` relay is already wrapped in anticipation.
 
 **The `ShellHost` trait (D20).** The shell reaches the wrapper only
 through a trait implemented by `weston` (queries returning

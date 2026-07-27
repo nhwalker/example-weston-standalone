@@ -42,9 +42,10 @@ Rebase procedure on an EPEL weston bump: plan §8.
     are fence crates in rust-fence-check.sh — the dep-graph rule is
     about safe crates and is unchanged).
   - `-listenfd` vs `-listen` (C HAVE_XWAYLAND_LISTENFD): weston-sys
-    build.rs runs the same pkg-config probe as
-    `xwayland/meson.build:5-10` (`xwayland.pc` `have_listenfd`,
-    verified `true` in the build container) and exports
+    build.rs runs the same pkg-config probe as this repo's C build
+    (meson.build:111-114; upstream weston's xwayland/meson.build
+    carries the same check) — `xwayland.pc` `have_listenfd`, verified
+    `true` in the build container — and exports
     `weston_sys::XWAYLAND_LISTEN_ARG`.
   - Frontend: `--xwayland`/`[core] xwayland` + `[xwayland] path` were
     already in westonite-config (R2a); the R2d gate in
@@ -72,6 +73,26 @@ Rebase procedure on an EPEL weston bump: plan §8.
     **59 passed, 1 skipped** (the known EPEL neatvnc resize skip),
     xwm position-sync and titlebar-drag pixel tests included; C oracle
     `test_xwayland.py` re-run green (4 passed).
+  - Review round (e3afb7d, verified claim by claim): (1) the stale
+    readiness watch on respawn — REAL: a server that dies with its
+    displayfd EOF still queued in the same epoll batch can be replaced
+    (SIGCHLD → xserver_exited → fresh X connection, all in one
+    dispatch) before the EOF fires; the un-removed old source then
+    dispatches against a closed fd and its cleanup would tear down the
+    NEW server's watch, so `close_display_watch` on respawn (and
+    libwayland's remove-during-dispatch fd=-1 skip) is the right fix.
+    (2) byte-preserving the display name and (3) the compile-time pin
+    of the positional `_bindgen_ty_2` constant — both correct.  (4)
+    the `with_depth` around the SIGCHLD `xserver_exited` relay is kept
+    as the A4 convention, but its stated hazard was not live: `run()`
+    wraps `wl_display_run` at +1, so nothing inside the loop can
+    return the counter to zero — probing that claim empirically
+    exposed the pre-existing deferred-drain gap now tracked in plan
+    §3e/A4 (mid-run deferred events drain only at loop exit; own
+    slice).  (5) the meson citation was redirected to upstream's
+    `xwayland/meson.build`, a file not present in this repo — restored
+    to this repo's `meson.build:111-114`, whose `default_value:
+    'false'` semantics are exactly what build.rs mirrors.
 
 - **R2c-mirror (2026-07-26)** — the mirror-of machinery (plan §7 R2c,
   second slice), branch `claude/rust-migration-j84b2p`:

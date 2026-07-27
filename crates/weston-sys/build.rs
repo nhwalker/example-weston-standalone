@@ -33,7 +33,8 @@ fn main() {
         libweston.version
     );
 
-    // Xwayland -listenfd support (C xwayland/meson.build:5-10):
+    // Xwayland -listenfd support (this repo's C build, meson.build:111-114;
+    // upstream weston carries the same probe in xwayland/meson.build):
     // HAVE_XWAYLAND_LISTENFD comes from xwayland.pc's have_listenfd variable
     // at build time, with "-listen" as the fallback when the pc file is
     // absent (C: `dependency('xwayland', required: false)` not found) or says

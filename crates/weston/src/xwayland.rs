@@ -407,13 +407,16 @@ pub(crate) fn handle_child_exit(ctx: &Ctx, pid: i32, status: c_int) -> bool {
         log::log_line(&format!("{path} disappeared"));
     }
 
-    // At +1 dispatch depth like every other outbound call into C: this
-    // one tears down the module's WM and destroys the Xwayland
-    // wl_client, whose destroy signals re-enter our trampolines.  At
-    // depth zero each of those would return to depth zero on its own
-    // and drain the deferred queue (and free retired boxes) in the
-    // middle of the module's destroy walk; on_sigchld, unlike the other
-    // trampolines, does not wrap its body (§3e/A4).
+    // At +1 dispatch depth per the A4 rule (every outbound FFI call):
+    // this one tears down the module's WM and destroys the Xwayland
+    // wl_client, whose destroy signals re-enter our trampolines.
+    // Today this wrap has a backstop rather than a live failure mode —
+    // on_sigchld only ever fires inside wl_display_run, which run()
+    // itself holds at +1, so nested trampolines cannot return the
+    // counter to zero here even without it (verified empirically: no
+    // drain fires anywhere inside the run loop; see the plan §6 note
+    // on deferred-drain timing).  The wrap makes this call site
+    // A4-correct on its own instead of leaning on that run() wrap.
     // SAFETY: module loaded for the compositor's lifetime; no borrows
     // held (state reached through the Rc clone).
     ctx.with_depth(|| unsafe {
