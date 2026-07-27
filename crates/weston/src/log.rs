@@ -33,6 +33,21 @@ pub fn message(msg: &str) {
 }
 
 /// Emit one line through weston_log (goes to the handlers installed via
+/// C sigchld_handler's per-child exit lines (main.c:401-409), shared by
+/// every frontend-tracked child (xwayland, screenshooter).
+pub(crate) fn log_child_exit(path: &str, status: i32) {
+    if libc::WIFEXITED(status) {
+        log_line(&format!(
+            "{path} exited with status {}",
+            libc::WEXITSTATUS(status)
+        ));
+    } else if libc::WIFSIGNALED(status) {
+        log_line(&format!("{path} died on signal {}", libc::WTERMSIG(status)));
+    } else {
+        log_line(&format!("{path} disappeared"));
+    }
+}
+
 /// the shim; before a compositor/log context exists it still reaches the
 /// handler pair, which is why the panic barrier can use it early).
 pub(crate) fn log_line(msg: &str) {

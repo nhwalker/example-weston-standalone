@@ -483,11 +483,21 @@ impl CompositorBuilder {
             return Err(CompositorError::BackendLoad);
         }
 
+        let has_shell = self.shell.is_some();
         #[cfg(feature = "hybrid-r1")]
         if let Some((bg, factory)) = self.shell
             && !crate::shell_init::attach_shell_native(&ctx, bg, factory)
         {
             return Err(CompositorError::ShellInit);
+        }
+        // C wet_shell_init ends by calling screenshooter_create
+        // (shell.c:2232); at R2e the frontend owns that call — same
+        // registrations at the same point in startup (plan §4).
+        if has_shell {
+            let auth = crate::screenshooter::create(&ctx);
+            // Its node lives on a signal inside the compositor struct:
+            // Compositor-owned, detached in Drop before destroy.
+            comp.frontend_listeners.push(auth);
         }
 
         if self.socket {
@@ -813,6 +823,11 @@ impl Drop for Compositor {
         // C wet_xwayland_destroy runs before weston_compositor_destroy
         // (the module must still be live for xserver_exited).
         crate::xwayland::teardown(&self.ctx);
+        // Screenshooter: detach the per-client listener before the
+        // display (and its clients) dies; the authority listener is in
+        // frontend_listeners below (C screenshooter_destroy removes
+        // both from the compositor's destroy emission).
+        crate::screenshooter::teardown(&self.ctx);
         if let Some(l) = self.heads_changed.take() {
             l.detach();
         }
@@ -871,10 +886,14 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
                 }
                 continue;
             }
-            // The Xwayland server (C sigchld_handler's wet_process
-            // branch → xserver_cleanup): logged and relayed to the
-            // module, which respawns on the next X connection.
-            crate::xwayland::handle_child_exit(&ctx, pid, status);
+            // Frontend-tracked children (C sigchld_handler's
+            // wet_process walk): the Xwayland server (logged + relayed
+            // to the module, which respawns on the next X connection)
+            // and the screenshooter client (logged only).
+            if crate::xwayland::handle_child_exit(&ctx, pid, status) {
+                continue;
+            }
+            crate::screenshooter::handle_child_exit(&ctx, pid, status);
         }
     });
     1
