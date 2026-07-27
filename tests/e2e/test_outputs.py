@@ -112,6 +112,53 @@ def test_output_off_is_scoped_to_its_own_head(westonite):
     assert re.search(r"width:\s*1024\s*px,\s*height:\s*640\s*px", block), block
 
 
+@toml_only
+def test_vnc_mirrors_headless_output(westonite):
+    """mirror-of (R2c-mirror): the VNC output mirrors the headless one,
+    coming up at the SOURCE's mode (1024x640), not VNC's 640x480
+    default, with client resize disabled.
+
+    Rust frontend only: the C oracle ABORTS on this exact config —
+    headless never populates native_mode_copy and main.c:2543 asserts
+    on it (verified live); our frontend falls back to the source's
+    current mode instead (see apply_mirror_modeline)."""
+    w = westonite(backend="vnc", width=None,
+                  extra_args=["--backends=headless,vnc"],
+                  config="[output]\nname=vnc\nmirror-of=headless\n")
+    w.wait_for_log(r"Use of mirror_of disables resizing for output vnc")
+    w.wait_for_log(r"Setting modeline to output 'vnc' to 1024x640, scale: 1")
+    with w.vnc() as vnc:
+        assert (vnc.width, vnc.height) == (1024, 640)
+    # The mirror is enabled from inside the source's output-created
+    # signal, i.e. nested in the very heads-changed flush that still has
+    # the vnc head left to visit -- C resets the head's device-changed
+    # flag there (wet_output_handle_create) precisely so that pass stays
+    # quiet.  By now the flush is long over (a client has connected).
+    assert "Detected a monitor change" not in w.log(), w.log()
+
+
+@toml_only
+def test_vnc_mirror_defers_until_source_exists(westonite):
+    """With vnc listed FIRST, its head appears before the headless
+    output exists: the mirror must defer (C simple_head_enable's
+    remote-mirror early return) and still come up once the source's
+    output-created signal fires."""
+    w = westonite(backend="vnc", width=None,
+                  extra_args=["--backends=vnc,headless"],
+                  config="[output]\nname=vnc\nmirror-of=headless\n")
+    with w.vnc() as vnc:
+        assert (vnc.width, vnc.height) == (1024, 640)
+
+
+@toml_only
+def test_mirror_of_without_remote_backend_is_fatal(westonite):
+    # fail-loud: mirror-of needs a remote (vnc) backend loaded
+    w = westonite(config="[output]\nname=vnc\nmirror-of=headless\n",
+                  wait=False)
+    w.wait_for_log(r"mirror-of requires a remote backend")
+    assert w.wait_exit() != 0
+
+
 def test_vnc_output_mode_from_config(westonite):
     w = westonite(backend="vnc", width=None,
                   config="[output]\nname=vnc\nmode=800x500\n")

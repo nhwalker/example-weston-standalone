@@ -74,7 +74,12 @@ straight to `weston_output_set_scale`, where `0` trips an assert.
 lazily when a head of that name turns up: an unknown `transform` name
 is fatal (C's `Invalid transform "…"` wording), as is a section with
 no `name` key, and so is any key whose behaviour is not ported yet
-(`clone-of`, `mirror-of`, the colour-management attributes).  C
+(`clone-of`, the colour-management attributes).  `mirror-of` is
+ported for remote (vnc) heads — and unlike C, a *headless* mirror
+source works: C aborts on `assert(native_mode_copy.width)`
+(main.c:2543, verified live) because the headless backend publishes no
+native mode (drm/x11/pipewire do), and the Rust frontend falls back to
+the source's current mode instead.  C
 resolves a section only when its head appears, so a section that
 matches nothing is silently inert there — indistinguishable, from the
 outside, from one that was honoured.  An unparseable `mode` is the

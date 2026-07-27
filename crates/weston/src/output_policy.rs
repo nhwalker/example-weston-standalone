@@ -70,6 +70,11 @@ pub struct OutputRule {
     pub transform: Option<OutputTransform>,
     /// `[output] resizeable=` (vnc/rdp only; C default true).
     pub resizeable: Option<bool>,
+    /// `[output] mirror-of=` — the *source* output this (remote) head
+    /// mirrors (C wet_config_find_output_mirror family).  The rule's
+    /// `name` is the remote head; `mirror_of` names the native output
+    /// whose content it clones.
+    pub mirror_of: Option<String>,
 }
 
 /// CLI-level overrides (win over any section, C parsed_options).
@@ -200,6 +205,23 @@ impl OutputPolicy {
             resizeable,
         })
     }
+
+    /// Does this head's section carry `mirror-of=`?  (C
+    /// wet_config_head_has_mirror_of_entry — the remote-head deferral
+    /// test in simple_head_enable.)
+    pub fn has_mirror_of(&self, head_name: &str) -> bool {
+        self.rules
+            .iter()
+            .any(|r| r.name == head_name && r.mirror_of.is_some())
+    }
+
+    /// The rule (remote head) configured to mirror `source_name`, if
+    /// any (C wet_config_find_head_to_mirror's section scan).
+    pub fn mirror_rule_for_source(&self, source_name: &str) -> Option<&OutputRule> {
+        self.rules
+            .iter()
+            .find(|r| r.mirror_of.as_deref() == Some(source_name))
+    }
 }
 
 /// The resolved per-head decision for a VNC output (C
@@ -236,6 +258,7 @@ mod tests {
             scale: Some(2),
             transform: Some(OutputTransform::Rotate90),
             resizeable: None,
+            mirror_of: None,
         });
         assert_eq!(
             p.decide("headless").unwrap(),
@@ -307,6 +330,32 @@ mod tests {
         // off applies to vnc heads too.
         p.rules[0].off = true;
         assert!(p.decide_vnc("vnc").is_none());
+    }
+
+    #[test]
+    fn mirror_lookups_match_c_scan() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        p.rules.push(OutputRule {
+            name: "vnc".into(),
+            mirror_of: Some("headless".into()),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "X1".into(),
+            ..OutputRule::default()
+        });
+        assert!(p.has_mirror_of("vnc"));
+        assert!(!p.has_mirror_of("X1"));
+        assert!(!p.has_mirror_of("headless"));
+        assert_eq!(
+            p.mirror_rule_for_source("headless")
+                .map(|r| r.name.as_str()),
+            Some("vnc")
+        );
+        assert!(p.mirror_rule_for_source("vnc").is_none());
+        // A mirrored head's own decide_vnc still answers (the enable
+        // path forces resizeable off separately, as C's configure does).
+        assert!(p.decide_vnc("vnc").is_some());
     }
 
     #[test]

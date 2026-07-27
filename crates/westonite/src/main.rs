@@ -279,7 +279,10 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         (cli.rdp_tls_cert.is_some(), "--rdp-tls-cert"),
         (cli.rdp_tls_key.is_some(), "--rdp-tls-key"),
         (cli.external_listener_fd.is_some(), "--external-listener-fd"),
-        (cli.no_clients_resize, "--no-clients-resize"),
+        (cli.no_resizeable, "--no-resizeable"),
+        (cli.rdp4_key.is_some(), "--rdp4-key"),
+        (cli.env_socket, "--env-socket"),
+        (cli.no_remotefx_codec, "--no-remotefx-codec"),
         (cli.force_no_compression, "--force-no-compression"),
     ];
     for (set, flag) in headless_only_flags {
@@ -318,11 +321,37 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     // fail-loud so a request for them never silently degrades.
     for out in &settings.config.output {
         let name = out.name.as_deref().unwrap_or("<unnamed>");
-        if out.clone_of.is_some() || out.mirror_of.is_some() {
+        if out.clone_of.is_some() {
             return Some(fatal(&format!(
-                "[[output]] '{name}': clone-of/mirror-of are not yet ported to the Rust \
-                 frontend (DRM/remote sharing lands with the DRM slice)"
+                "[[output]] '{name}': clone-of is not yet ported to the Rust frontend \
+                 (same-CRTC clones land with the DRM slice)"
             )));
+        }
+        // mirror-of (R2c-mirror): valid only on a remote head's section
+        // — C's machinery only ever mirrors ONTO rdp/vnc/pipewire
+        // outputs (the simple_head_enable deferral is keyed on those
+        // backend types), and of them only vnc is ported, whose one
+        // head is named "vnc".  On any other section the key would be
+        // silently inert (C's lazy sections make it a no-op there;
+        // fail-loud instead).
+        if let Some(src) = &out.mirror_of {
+            if !settings.backends.contains(&Backend::Vnc) {
+                return Some(fatal(&format!(
+                    "[[output]] '{name}': mirror-of requires a remote backend (vnc) in \
+                     the loaded backends"
+                )));
+            }
+            if name != "vnc" {
+                return Some(fatal(&format!(
+                    "[[output]] '{name}': mirror-of is supported on remote outputs only \
+                     (the vnc head)"
+                )));
+            }
+            if src == name {
+                return Some(fatal(&format!(
+                    "[[output]] '{name}': mirror-of must name a different output"
+                )));
+            }
         }
         if out.icc_profile.is_some()
             || out.eotf_mode.is_some()
@@ -421,6 +450,7 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             scale: out.scale,
             transform: None,
             resizeable: out.resizeable,
+            mirror_of: out.mirror_of.clone(),
         };
         if let Some(mode) = &out.mode {
             if mode == "off" {
