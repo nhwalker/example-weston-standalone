@@ -33,10 +33,11 @@ fn main() {
         libweston.version
     );
 
-    // Xwayland -listenfd support (C meson.build:113): HAVE_XWAYLAND_LISTENFD
-    // comes from xwayland.pc's have_listenfd variable at build time, with
-    // "-listen" as the fallback when the pc file is absent or says false.
-    // Exposed to the fence as weston_sys::XWAYLAND_LISTEN_ARG.
+    // Xwayland -listenfd support (C xwayland/meson.build:5-10):
+    // HAVE_XWAYLAND_LISTENFD comes from xwayland.pc's have_listenfd variable
+    // at build time, with "-listen" as the fallback when the pc file is
+    // absent (C: `dependency('xwayland', required: false)` not found) or says
+    // false.  Exposed to the fence as weston_sys::XWAYLAND_LISTEN_ARG.
     let listenfd = pkg_config::get_variable("xwayland", "have_listenfd")
         .map(|v| v.trim() == "true")
         .unwrap_or(false);

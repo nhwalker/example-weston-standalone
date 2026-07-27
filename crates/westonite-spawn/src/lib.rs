@@ -89,6 +89,7 @@ impl Command {
             arg_fds: Vec::new(),
         }
     }
+
     /// From an argv list (CLI autolaunch trailing args).
     pub fn from_argv(argv: &[String]) -> Option<Command> {
         let (program, args) = argv.split_first()?;

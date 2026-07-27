@@ -42,9 +42,10 @@ Rebase procedure on an EPEL weston bump: plan §8.
     are fence crates in rust-fence-check.sh — the dep-graph rule is
     about safe crates and is unchanged).
   - `-listenfd` vs `-listen` (C HAVE_XWAYLAND_LISTENFD): weston-sys
-    build.rs runs the same pkg-config probe as meson.build:113
-    (`xwayland.pc` `have_listenfd`, verified `true` in the build
-    container) and exports `weston_sys::XWAYLAND_LISTEN_ARG`.
+    build.rs runs the same pkg-config probe as
+    `xwayland/meson.build:5-10` (`xwayland.pc` `have_listenfd`,
+    verified `true` in the build container) and exports
+    `weston_sys::XWAYLAND_LISTEN_ARG`.
   - Frontend: `--xwayland`/`[core] xwayland` + `[xwayland] path` were
     already in westonite-config (R2a); the R2d gate in
     `reject_unported` is removed and the settings now feed
@@ -53,8 +54,10 @@ Rebase procedure on an EPEL weston bump: plan §8.
     re-arms a level-triggered pipe that stays readable forever
     (spinning until the process watcher fires); we tear the watch down
     on EOF, which can never complete the line. (b) a dead server's
-    parked `wm_fd` is closed on respawn where C overwrites the number
-    and leaks the old fd. (c) C's child-side `seteuid(getuid())`
+    parked `wm_fd` — and any readiness watch it left installed, whose
+    EOF event the module can outrun by respawning inside the same
+    dispatch batch — are closed on respawn, where C overwrites the
+    number and leaks the old fd. (c) C's child-side `seteuid(getuid())`
     remains deferred with the R2a westonite-spawn audit note (euid ==
     uid in every supported deployment; the helper-client path revisits
     it).

@@ -20,9 +20,10 @@
 //!   ends), the write end goes to the child.
 
 use std::cell::{Cell, RefCell};
-use std::ffi::CStr;
+use std::ffi::{CStr, OsStr};
 use std::os::fd::{AsRawFd, BorrowedFd, IntoRawFd, OwnedFd};
 use std::os::raw::{c_char, c_int, c_void};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -34,6 +35,17 @@ use crate::log;
 /// libwayland's WL_EVENT_READABLE (an anonymous enum in the header, so
 /// bindgen gives it a positional module name).
 const WL_EVENT_READABLE: u32 = weston_sys::_bindgen_ty_2::WL_EVENT_READABLE;
+/// `_bindgen_ty_2` is *positional*: a header change that introduces an
+/// anonymous enum ahead of libwayland's event mask would silently point
+/// the constant above at an unrelated enum.  WL_EVENT_READABLE is 0x01
+/// by the wayland-server ABI — pin it (risk R-C, same family as the
+/// bindings version tripwire).  Spelled as a const `if`/`panic!` rather
+/// than `assert!`, which clippy reads as an always-true assertion.
+const _: () = {
+    if WL_EVENT_READABLE != 0x01 {
+        panic!("_bindgen_ty_2 is no longer libwayland's event mask — re-check the regen output");
+    }
+};
 
 /// Frontend-side Xwayland state (C `struct wet_xwayland`), reached from
 /// the spawn/displayfd/SIGCHLD callbacks via `ctx.inner.xwayland`.
@@ -58,6 +70,22 @@ pub(crate) struct XwaylandState {
 
 fn state(ctx: &Ctx) -> Option<Rc<XwaylandState>> {
     ctx.inner.xwayland.borrow().clone()
+}
+
+/// Remove the `-displayfd` readiness watch and close the pipe read end
+/// — C `handle_display_fd`'s `out:`, the same
+/// `wl_event_source_remove` + `close` pair.  Idempotent, and the only
+/// place either slot is cleared, which is what makes the removal paths
+/// (readiness, respawn, teardown) exclusive of one another.
+fn close_display_watch(st: &XwaylandState) {
+    let source = st.display_fd_source.replace(std::ptr::null_mut());
+    if !source.is_null() {
+        // SAFETY: the source was created on this display's event loop
+        // in spawn_xserver and is removed exactly once — the Cell
+        // hand-off above makes the concurrent paths exclusive.
+        unsafe { weston_sys::wl_event_source_remove(source) };
+    }
+    drop(st.display_pipe.borrow_mut().take());
 }
 
 /// C `wet_load_xwayland`: load the module, resolve the plugin API and
@@ -157,10 +185,11 @@ fn spawn_xserver_body(
     let null = std::ptr::null_mut();
     let Some(st) = state(ctx) else { return null };
     // SAFETY: the module passes its NUL-terminated display name (":0");
-    // copied at the fence (§3h).
-    let display = unsafe { CStr::from_ptr(display) }
-        .to_string_lossy()
-        .into_owned();
+    // copied at the fence (§3h).  Copied as bytes, not through
+    // to_string_lossy: argv is bytes on the C side, and a replacement
+    // character would hand the child a display name that is not the one
+    // the module is listening on.
+    let display = OsStr::from_bytes(unsafe { CStr::from_ptr(display) }.to_bytes()).to_os_string();
 
     let Ok((wl_ours, wl_child)) = westonite_spawn::socketpair_stream() else {
         log::log_line("wl connection socketpair failed");
@@ -207,10 +236,15 @@ fn spawn_xserver_body(
     let child = match cmd.spawn() {
         Ok(c) => c,
         Err(e) => {
-            // C: fork failure logs in wet_client_launch, then the
-            // caller adds its own line.
+            // C splits this in two: a fork failure logs in
+            // wet_client_launch, an exec failure writes "Error:
+            // Couldn't launch client '<path>'" from the child to
+            // stderr.  std reports both through spawn()'s Err (the
+            // child relays its pre-exec/exec errno over the CLOEXEC
+            // status pipe), so one line covers both — worded not to
+            // blame fork for what is usually a bad [xwayland] path.
             log::log_line(&format!(
-                "weston_client_launch: fork failed while launching '{}': {e}",
+                "weston_client_launch: couldn't launch '{}': {e}",
                 path.display()
             ));
             log::log_line("Couldn't start Xwayland");
@@ -242,12 +276,25 @@ fn spawn_xserver_body(
     // the number and leaks the old fd.)
     st.wm_fd.replace(Some(wm_ours));
 
+    // That same server can also leave its readiness watch installed:
+    // its pipe hits EOF when it dies, but the module can relay
+    // xserver_exited and be handed a fresh X connection in the very
+    // same wl_event_loop_dispatch batch, before that EOF event is
+    // dispatched.  Remove the old watch instead of just overwriting the
+    // slots below: an orphaned source outliving the pipe it watches is
+    // owned by nobody, and its next run would tear down THIS server's
+    // watch — leaving the WM unstarted.  (C overwrites the pointer and
+    // keeps the stale source; divergence (b) in PROVENANCE, same family
+    // as the wm_fd one above.)
+    close_display_watch(&st);
+
     // "During initialization the X server will round trip and block on
     // the wayland compositor, so avoid making blocking requests until
     // it's done with that" — hence the pipe watch instead of a blocking
     // read (C comment, kept verbatim in spirit).
-    // SAFETY: display live; the source is removed in handle_display_fd
-    // or teardown, both before the display dies.
+    // SAFETY: display live; the source is removed by
+    // close_display_watch (readiness, respawn or teardown), always
+    // before the display dies.
     let ev_loop = unsafe { weston_sys::wl_display_get_event_loop(ctx.inner.display.get()) };
     // SAFETY: loop live (owned by the display fetched just above); the
     // callback resolves state via Ctx::current, so data stays null.
@@ -292,9 +339,9 @@ fn display_fd_body(ctx: &Ctx, fd: c_int, mask: u32) -> c_int {
     let mut loaded = false;
     if mask & WL_EVENT_READABLE != 0 {
         let mut buf = [0u8; 64];
-        // SAFETY: fd is the pipe read end owned by st.display_pipe,
-        // live until the watch is torn down below; plain read into a
-        // stack buffer.
+        // SAFETY: fd is the displayfd pipe read end the loop is
+        // watching (our copy parked in st.display_pipe), live for the
+        // whole callback; plain read into a stack buffer.
         let n = unsafe { libc::read(fd, buf.as_mut_ptr().cast(), buf.len()) };
         let err = std::io::Error::last_os_error();
         if n < 0 && err.raw_os_error() != Some(libc::EAGAIN) {
@@ -333,14 +380,7 @@ fn display_fd_body(ctx: &Ctx, fd: c_int, mask: u32) -> c_int {
 
     // C's `out:` — every non-retry path removes the source and closes
     // the pipe.
-    let source = st.display_fd_source.replace(std::ptr::null_mut());
-    if !source.is_null() {
-        // SAFETY: the source was created on this display's loop and is
-        // only removed here or in teardown (the Cell hand-off makes the
-        // paths exclusive).
-        unsafe { weston_sys::wl_event_source_remove(source) };
-    }
-    drop(st.display_pipe.borrow_mut().take());
+    close_display_watch(&st);
     0
 }
 
@@ -367,11 +407,18 @@ pub(crate) fn handle_child_exit(ctx: &Ctx, pid: i32, status: c_int) -> bool {
         log::log_line(&format!("{path} disappeared"));
     }
 
+    // At +1 dispatch depth like every other outbound call into C: this
+    // one tears down the module's WM and destroys the Xwayland
+    // wl_client, whose destroy signals re-enter our trampolines.  At
+    // depth zero each of those would return to depth zero on its own
+    // and drain the deferred queue (and free retired boxes) in the
+    // middle of the module's destroy walk; on_sigchld, unlike the other
+    // trampolines, does not wrap its body (§3e/A4).
     // SAFETY: module loaded for the compositor's lifetime; no borrows
     // held (state reached through the Rc clone).
-    unsafe {
+    ctx.with_depth(|| unsafe {
         ((*st.api.as_ptr()).xserver_exited.expect("xserver_exited"))(st.xwayland.as_ptr());
-    }
+    });
     true
 }
 
@@ -384,12 +431,7 @@ pub(crate) fn teardown(ctx: &Ctx) {
     };
     // A pending readiness watch dies with us (C leaves the source to
     // the display teardown; we own the pipe fd, so do it explicitly).
-    let source = st.display_fd_source.replace(std::ptr::null_mut());
-    if !source.is_null() {
-        // SAFETY: as display_fd_body — exclusive removal via the Cell.
-        unsafe { weston_sys::wl_event_source_remove(source) };
-    }
-    drop(st.display_pipe.borrow_mut().take());
+    close_display_watch(&st);
     drop(st.wm_fd.borrow_mut().take());
 
     // C: wet_process_destroy(process, 0, true) → xserver_cleanup →
