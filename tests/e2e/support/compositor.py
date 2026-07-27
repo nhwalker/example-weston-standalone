@@ -145,7 +145,11 @@ class Westonite:
             else:
                 self.env[key] = value
 
+        # cwd: files the compositor (or a child it spawns) creates with
+        # relative paths -- capture.wcap, screenshots -- land in the
+        # test's own tmp dir instead of wherever pytest was started.
         self.proc = subprocess.Popen(argv, env=self.env,
+                                     cwd=str(self.workdir),
                                      stdout=subprocess.DEVNULL,
                                      stderr=subprocess.DEVNULL)
 
@@ -229,12 +233,13 @@ class Westonite:
     def spawn(self, argv, **popen_kw):
         return subprocess.Popen(argv, env=self.client_env(), **popen_kw)
 
-    def run_client(self, argv, timeout=15):
+    def run_client(self, argv, timeout=15, check=True):
         """Run a Wayland client to completion; return CompletedProcess
-        with captured text output. Asserts exit code 0."""
+        with captured text output. Asserts exit code 0 unless
+        check=False (for clients that are EXPECTED to fail)."""
         result = subprocess.run(argv, env=self.client_env(), timeout=timeout,
                                 capture_output=True, text=True)
-        assert result.returncode == 0, (
+        assert not check or result.returncode == 0, (
             f"{argv} exited {result.returncode}\n"
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}")
         return result
