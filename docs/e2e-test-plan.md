@@ -176,6 +176,7 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | output-sections | `[output]` scale/transform for the headless/VNC output reflected in `wayland-info` |
 | vnc-output-mode [vnc] | `[output] mode=WxH` for the vnc output → framebuffer received over VNC has exactly WxH |
 | vnc-resize [vnc][pix] | **skip-marked** — client-initiated resize segfaults EPEL's neatvnc/weston-libs (see §6); test exists and re-enables when the RPM stack is fixed |
+| mirror-of [vnc] | toml-only (the C oracle aborts on a headless source, main.c:2543): `[output] mirror-of=` on the vnc head → the mirror comes up at the *source's* mode with client resize disabled and no spurious monitor-change line; passes in both `--backends` orders (the vnc-first one pins the deferral); fatal with no remote backend loaded |
 | mirror-resize (P0) [vnc] | S2 spike: `mirror-of=` a VNC output — trigger needs rethinking, VNC client-resize is unusable (§6) |
 | multi-backend | `--backends=headless,vnc` → both outputs advertised, both usable |
 

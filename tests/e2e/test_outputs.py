@@ -129,6 +129,12 @@ def test_vnc_mirrors_headless_output(westonite):
     w.wait_for_log(r"Setting modeline to output 'vnc' to 1024x640, scale: 1")
     with w.vnc() as vnc:
         assert (vnc.width, vnc.height) == (1024, 640)
+    # The mirror is enabled from inside the source's output-created
+    # signal, i.e. nested in the very heads-changed flush that still has
+    # the vnc head left to visit -- C resets the head's device-changed
+    # flag there (wet_output_handle_create) precisely so that pass stays
+    # quiet.  By now the flush is long over (a client has connected).
+    assert "Detected a monitor change" not in w.log(), w.log()
 
 
 @toml_only

@@ -940,6 +940,19 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
     }
 }
 
+/// The kind of the loaded backend that owns `backend`, if we loaded it
+/// (C keys this off `weston_get_backend_type` / walks its
+/// `backend_list` in `wet_get_backend_from_head`; one listener here, so
+/// our own load-order table is the map).
+fn backend_kind(ctx: &Ctx, backend: *mut weston_sys::weston_backend) -> Option<BackendKind> {
+    ctx.inner
+        .backends
+        .borrow()
+        .iter()
+        .find(|(b, _)| *b == backend)
+        .map(|(_, k)| *k)
+}
+
 /// C wet_head_find_by_name: scan the compositor's heads for `name`.
 fn find_head_by_name(ctx: &Ctx, name: &str) -> Option<NonNull<weston_sys::weston_head>> {
     let compositor = ctx.inner.compositor.get();
@@ -970,13 +983,7 @@ fn mirror_on_output_created(
     // SAFETY: output live in its creation signal; backend is a bound
     // POD field.
     let out_backend = unsafe { (*output.as_ptr()).backend };
-    let is_remote = ctx
-        .inner
-        .backends
-        .borrow()
-        .iter()
-        .any(|(b, k)| *b == out_backend && *k == BackendKind::Vnc);
-    if is_remote {
+    if backend_kind(ctx, out_backend) == Some(BackendKind::Vnc) {
         return;
     }
     let source_name = output_name(output);
@@ -994,10 +1001,31 @@ fn mirror_on_output_created(
     if unsafe { weston_sys::weston_head_is_enabled(head.as_ptr()) } {
         return;
     }
-    let Some(setup) = policy.decide_vnc(&rule.name) else {
+    // C wet_get_backend_from_head + `assert(wb)`: the configurator is
+    // the mirrored head's OWN backend's, never a fixed one — so the
+    // kind decides, and a head from a backend we did not load is
+    // skipped where C would assert.
+    // SAFETY: head live; `backend` is a bound POD field.
+    let head_backend = unsafe { (*head.as_ptr()).backend };
+    let Some(kind) = backend_kind(ctx, head_backend) else {
+        return;
+    };
+    let setup = match kind {
+        BackendKind::Headless => policy.decide(&rule.name).map(HeadSetup::Windowed),
+        BackendKind::Vnc => policy.decide_vnc(&rule.name).map(HeadSetup::Vnc),
+    };
+    let Some(setup) = setup else {
         return; // off = true wins over mirror-of
     };
-    enable_head(ctx, head, HeadSetup::Vnc(setup), Some(output));
+    enable_head(ctx, head, setup, Some(output));
+    // C wet_output_handle_create resets the flag right after the
+    // enable, and it is load-bearing: this head was created with
+    // device_changed set (weston_head_set_monitor_strings), and the
+    // heads-changed flush we are nested inside still has it to visit —
+    // now enabled — so without the reset it takes the `enabled &&
+    // changed` branch and logs a spurious monitor-change line.
+    // SAFETY: head live; plain flag write on it.
+    unsafe { weston_sys::weston_head_reset_device_changed(head.as_ptr()) };
 }
 
 /// C simple_heads_output_sharing_resize (L2): the mirror SOURCE
@@ -1263,13 +1291,19 @@ fn enable_head(
 /// from the source; the scale argument is the SOURCE's current scale.
 ///
 /// Deliberate divergence (fail-loud upgrade of a C crash, verified
-/// live against the oracle): only DRM-class backends ever call
-/// weston_output_copy_native_mode, so a headless (or other windowed)
-/// mirror source leaves native_mode_copy zeroed and C aborts on its
-/// `assert(output->native_mode_copy.width)` (main.c:2543).  A static
-/// output's current mode IS its native mode, so fall back to
+/// live against the oracle): the headless backend publishes no native
+/// mode — it points current_mode at its one static mode and never
+/// calls weston_output_copy_native_mode, where drm/x11/pipewire do and
+/// vnc/rdp get it through weston_output_set_single_mode — so a
+/// headless mirror source leaves native_mode_copy zeroed and C aborts
+/// on its `assert(output->native_mode_copy.width)` (main.c:2543).  A
+/// static output's current mode IS its native mode, so fall back to
 /// current_mode; if neither is usable, flag init_failed instead of
 /// letting libweston's compositing-area assert kill the process.
+///
+/// Shared by the enable and the resize path; C computes the same
+/// modeline in both but logs it only in _post_enable, so a resize
+/// gains one informational line here.
 fn apply_mirror_modeline(
     ctx: &Ctx,
     name: &str,

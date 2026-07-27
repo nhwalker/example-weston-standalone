@@ -36,9 +36,11 @@ Rebase procedure on an EPEL weston bump: plan §8.
     an already-enabled head where C would double-create.  L3's
     source-destroy → remote-disable exists only in C's DRM layoutput
     path, so simple backends need none (verified in-source).
-  - **Found live: C aborts on a headless mirror source.**  Only
-    DRM-class backends call weston_output_copy_native_mode, so a
-    windowed/headless source leaves native_mode_copy zeroed and C dies
+  - **Found live: C aborts on a headless mirror source.**  The
+    headless backend points current_mode at its one static mode and
+    never calls weston_output_copy_native_mode (drm/x11/pipewire do,
+    and vnc/rdp get it via weston_output_set_single_mode), so a
+    headless source leaves native_mode_copy zeroed and C dies
     on `assert(output->native_mode_copy.width)` (main.c:2543 —
     reproduced with the C oracle on the exact e2e config).  Deliberate
     fail-loud divergence: apply_mirror_modeline falls back to the
@@ -59,9 +61,24 @@ Rebase procedure on an EPEL weston bump: plan §8.
     policy rules carry mirror_of; helpers has_mirror_of /
     mirror_rule_for_source (unit-pinned).
   - E2e (toml-only — the C oracle aborts on this config, cited in the
-    tests): VNC mirrors headless at the SOURCE's 1024x640 (framebuffer
-    capture, not just logs), the vnc-first order pins the deferral,
-    and the no-remote-backend case is fatal.  55 passed / 1 skipped.
+    tests): VNC mirrors headless at the SOURCE's 1024x640 (the
+    negotiated framebuffer geometry over a real RFB connection, not
+    just logs), the vnc-first order pins the deferral, and the
+    no-remote-backend case is fatal.  55 passed / 1 skipped.
+  - Review round on this slice, two fidelity fixes in L6:
+    - The device-changed reset C does right after its enable
+      (wet_output_handle_create) was missing.  The remote head is
+      created with the flag set (weston_head_set_monitor_strings), and
+      the heads-changed flush L6 nests inside still has that head to
+      visit — now enabled — so `--backends=headless,vnc` logged a
+      spurious `Detected a monitor change on head 'vnc'` that C never
+      emits.  E2e now asserts the line's absence.
+    - L6 hardcoded the VNC configurator for the mirrored head.  C takes
+      it from the head's OWN backend (wet_get_backend_from_head +
+      assert(wb)), so the kind now decides — the vnc-only shape is a
+      frontend validation rule, not an assumption the fence gets to
+      make — and a head from a backend we did not load is skipped
+      where C asserts.
   - **Caught by the r0 valgrind gate during this slice's own
     validation**: the first cut parked the two new frontend listeners
     (L6/L2) in ctx.own_listener, whose teardown runs AFTER
