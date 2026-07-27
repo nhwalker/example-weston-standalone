@@ -11,7 +11,7 @@
 
 use std::ffi::OsString;
 use std::io;
-use std::os::fd::{AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::process::{Child, Command as StdCommand, Stdio};
 
@@ -28,6 +28,42 @@ pub fn real_uid() -> u32 {
     unsafe { libc::getuid() }
 }
 
+/// A CLOEXEC `AF_UNIX`/`SOCK_STREAM` socketpair for parent↔child
+/// communication (C `os_socketpair_cloexec`, the frontend's
+/// wayland/WM socket source).
+pub fn socketpair_stream() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: plain syscall writing two fds into the stack array; on
+    // success both are fresh and owned by us (wrapped immediately).
+    let r = unsafe {
+        libc::socketpair(
+            libc::AF_UNIX,
+            libc::SOCK_STREAM | libc::SOCK_CLOEXEC,
+            0,
+            fds.as_mut_ptr(),
+        )
+    };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: the kernel just handed us these two fds; nothing else
+    // refers to them.
+    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+}
+
+/// A CLOEXEC pipe, `(read end, write end)` (C `pipe2(O_CLOEXEC)`, the
+/// frontend's Xwayland `-displayfd` readiness channel).
+pub fn pipe_cloexec() -> io::Result<(OwnedFd, OwnedFd)> {
+    let mut fds = [0; 2];
+    // SAFETY: as socketpair_stream — fresh fds into a stack array.
+    let r = unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: as socketpair_stream.
+    unsafe { Ok((OwnedFd::from_raw_fd(fds[0]), OwnedFd::from_raw_fd(fds[1]))) }
+}
+
 /// A client command under construction.
 pub struct Command {
     program: OsString,
@@ -36,9 +72,24 @@ pub struct Command {
     /// (env var name, fd) pairs: the var is set to the fd number and
     /// the fd survives exec (CLOEXEC cleared in pre_exec).
     pass_fds: Vec<(OsString, OwnedFd)>,
+    /// fds referenced by number in `args` (see [`Command::arg_fd`]);
+    /// they survive exec like `pass_fds` but set no env var.
+    arg_fds: Vec<OwnedFd>,
 }
 
 impl Command {
+    /// An empty command for `program` (argv assembled with
+    /// [`Command::arg`]/[`Command::arg_fd`] — the Xwayland spawn path).
+    pub fn new(program: impl Into<OsString>) -> Command {
+        Command {
+            program: program.into(),
+            args: Vec::new(),
+            env: Vec::new(),
+            pass_fds: Vec::new(),
+            arg_fds: Vec::new(),
+        }
+    }
+
     /// From an argv list (CLI autolaunch trailing args).
     pub fn from_argv(argv: &[String]) -> Option<Command> {
         let (program, args) = argv.split_first()?;
@@ -47,6 +98,7 @@ impl Command {
             args: args.iter().map(Into::into).collect(),
             env: Vec::new(),
             pass_fds: Vec::new(),
+            arg_fds: Vec::new(),
         })
     }
 
@@ -83,11 +135,28 @@ impl Command {
             args: words.map(Into::into).collect(),
             env,
             pass_fds: Vec::new(),
+            arg_fds: Vec::new(),
         })
     }
 
     pub fn env(mut self, key: impl Into<OsString>, value: impl Into<OsString>) -> Command {
         self.env.push((key.into(), value.into()));
+        self
+    }
+
+    pub fn arg(mut self, arg: impl Into<OsString>) -> Command {
+        self.args.push(arg.into());
+        self
+    }
+
+    /// Pass an fd by argv position: appends the decimal fd number as
+    /// the next argument (the C fdstr contract for `-listenfd N`,
+    /// `-displayfd N`, `-wm N`) and keeps the fd alive across exec
+    /// (CLOEXEC cleared after fork).  The number is stable: the
+    /// `OwnedFd` is held until exec, and fork changes no fd numbers.
+    pub fn arg_fd(mut self, fd: OwnedFd) -> Command {
+        self.args.push(fd.as_raw_fd().to_string().into());
+        self.arg_fds.push(fd);
         self
     }
 
@@ -107,9 +176,12 @@ impl Command {
         for (k, v) in &self.env {
             cmd.env(k, v);
         }
-        let mut raw_fds = Vec::with_capacity(self.pass_fds.len());
+        let mut raw_fds = Vec::with_capacity(self.pass_fds.len() + self.arg_fds.len());
         for (k, fd) in &self.pass_fds {
             cmd.env(k, fd.as_raw_fd().to_string());
+            raw_fds.push(fd.as_raw_fd());
+        }
+        for fd in &self.arg_fds {
             raw_fds.push(fd.as_raw_fd());
         }
         cmd.stdin(Stdio::inherit())
@@ -152,6 +224,7 @@ impl Command {
         // Parent side: drop our copies of the passed fds now that the
         // child owns them (OwnedFd drop closes).
         drop(self.pass_fds);
+        drop(self.arg_fds);
         Ok(child)
     }
 }
@@ -194,12 +267,10 @@ mod tests {
     #[test]
     fn spawn_runs_with_env_and_clean_session() {
         let out = tempfile_path();
-        let c = Command {
-            program: "/bin/sh".into(),
-            args: vec!["-c".into(), format!("echo -n $MARK > {out}").into()],
-            env: vec![(OsString::from("MARK"), OsString::from("yes"))],
-            pass_fds: Vec::new(),
-        };
+        let c = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(format!("echo -n $MARK > {out}"))
+            .env("MARK", "yes");
         let mut child = c.spawn().unwrap();
         assert!(child.wait().unwrap().success());
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "yes");
@@ -209,5 +280,40 @@ mod tests {
     fn tempfile_path() -> String {
         let p = std::env::temp_dir().join(format!("wspawn-test-{}", std::process::id()));
         p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn arg_fd_survives_exec_by_number() {
+        // The child writes to the pipe write-end whose NUMBER it got as
+        // an argv word — the -displayfd contract.
+        let (read, write) = pipe_cloexec().unwrap();
+        let mut child = Command::new("/bin/sh")
+            .arg("-c")
+            .arg("echo done >&$1; exit 0")
+            .arg("sh")
+            .arg_fd(write)
+            .spawn()
+            .unwrap();
+        assert!(child.wait().unwrap().success());
+        let mut buf = [0u8; 16];
+        // SAFETY-free read via File wrapper.
+        let n = {
+            use std::io::Read;
+            let mut f = std::fs::File::from(read);
+            f.read(&mut buf).unwrap()
+        };
+        assert_eq!(&buf[..n], b"done\n");
+    }
+
+    #[test]
+    fn socketpair_ends_are_connected() {
+        let (a, b) = socketpair_stream().unwrap();
+        let mut sa = std::os::unix::net::UnixStream::from(a);
+        let mut sb = std::os::unix::net::UnixStream::from(b);
+        use std::io::{Read, Write};
+        sa.write_all(b"ping").unwrap();
+        let mut buf = [0u8; 4];
+        sb.read_exact(&mut buf).unwrap();
+        assert_eq!(&buf, b"ping");
     }
 }

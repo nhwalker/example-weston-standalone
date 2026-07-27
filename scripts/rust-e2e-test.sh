@@ -1,10 +1,8 @@
 #!/bin/bash
 # Build the Rust frontend (westonite-rs) and run the e2e suite against
-# it (plan §7 R2a/R2b/R2c).  Since R2c the Rust frontend serves VNC, so
-# this leg runs the whole suite — the framebuffer-driven shell tests
-# included — except test_xwayland.py (R2d).  The C frontend leg
-# (e2e-test.sh) remains the oracle for xwayland and the not-yet-ported
-# backends.
+# it (plan §7 R2a/R2b/R2c/R2d).  Since R2d (xwayland) the Rust frontend
+# runs the ENTIRE suite; the C frontend leg (e2e-test.sh) remains the
+# oracle only for the not-yet-ported backends.
 #
 # The suite needs the meson-built test clients (wtest-client) and the
 # VNC PAM stack, so this mirrors e2e-test.sh's setup with the Rust
@@ -46,7 +44,7 @@ exec runuser -u "$E2E_USER" -- env \
 	WESTONITE_VNC_USER="$E2E_USER" \
 	WESTONITE_VNC_PASSWORD="$E2E_PASSWORD" \
 	WTEST_CLIENT=/src/build/tests/e2e/clients/wtest-client \
+	WTEST_XCLIENT=/src/build/tests/e2e/clients/wtest-xclient \
 	WESTONITE_E2E_ARTIFACTS="$RESULTS/failures-rust-frontend" \
 	python3 -m pytest /src/tests/e2e -v -p no:cacheprovider \
-		--ignore=/src/tests/e2e/test_xwayland.py \
 		--junit-xml="$RESULTS/e2e-rust-frontend.xml"

@@ -14,8 +14,85 @@ Rebase procedure on an EPEL weston bump: plan §8.
 | `crates/weston/src/{desktop,grab,curtain,layer,input_bindings,shell_init}.rs` | `desktop-shell/shell.c` @ 14.0.1+T9: desktop api vtable (1607-1619), grabs (117-925), curtains (1925-1988), layers, bindings (2117-2130), wet_shell_init (2171-2239) | wrapper half of the R1 shell port |
 | `crates/westonite-shell/src/lib.rs` | `desktop-shell/shell.c` @ 14.0.1+T9: policy half (focus/activation 343-458 + 1622-1727, children 1457-1476, commit/map 1296-1397, output policy 1822-2045, teardown 2047-2115) | safe half; §10.3 bool** bug fixed by design |
 | `crates/westonite-shell-plugin/src/lib.rs` | `wet_shell_init` entry contract | R1-only cdylib, deleted at R3 (D2) |
+| `crates/weston/src/xwayland.rs` | `frontend/xwayland.c` @ 14.0.1 (whole file: `wet_load_xwayland` 234, `spawn_xserver` 105, `handle_display_fd` 58, `xserver_cleanup` 92, `wet_xwayland_destroy` 221) + `wet_client_launch`/`sigchld_handler` slices of `frontend/main.c` (437/376) | R2d; process side in `westonite-spawn` |
 
 ## Migration log
+
+- **R2d (2026-07-27)** — xwayland (plan §7 R2d), branch
+  `claude/rust-migration-j84b2p`:
+  - Fence (`crates/weston/src/xwayland.rs`, all of C
+    `frontend/xwayland.c`): module load + `weston_xwayland_v3` plugin
+    API resolution + `api->listen` (C wet_load_xwayland, every failure
+    fatal at startup); `spawn_xserver` — the module calls back on the
+    first X connection, we build the wayland/WM socketpairs and the
+    `-displayfd` pipe, dup the module's two listen fds (borrowed in C,
+    passed by raw number; the dup is the owned equivalent), fork
+    `[xwayland] path` through `westonite-spawn`, and hand the parent
+    wayland end to `wl_client_create`; `handle_display_fd` — the
+    newline-terminated displayfd write hands `wm_fd` to
+    `api->xserver_loaded` (WM start); the SIGCHLD handler's pid match
+    logs C's exit lines and relays `api->xserver_exited` (lazy respawn
+    on the next connection); teardown before
+    `weston_compositor_destroy` (C wet_xwayland_destroy order).
+    `install_signal_sources` now also blocks SIGUSR1 process-wide
+    before backend threads spawn (C main.c:4570).
+  - `westonite-spawn` additions: `Command::new/arg/arg_fd` (fd passed
+    by argv number, the C fdstr contract), `socketpair_stream`,
+    `pipe_cloexec`; `weston` now depends on `westonite-spawn` (both
+    are fence crates in rust-fence-check.sh — the dep-graph rule is
+    about safe crates and is unchanged).
+  - `-listenfd` vs `-listen` (C HAVE_XWAYLAND_LISTENFD): weston-sys
+    build.rs runs the same pkg-config probe as this repo's C build
+    (meson.build:111-114; upstream weston's xwayland/meson.build
+    carries the same check) — `xwayland.pc` `have_listenfd`, verified
+    `true` in the build container — and exports
+    `weston_sys::XWAYLAND_LISTEN_ARG`.
+  - Frontend: `--xwayland`/`[core] xwayland` + `[xwayland] path` were
+    already in westonite-config (R2a); the R2d gate in
+    `reject_unported` is removed and the settings now feed
+    `CompositorBuilder::with_xwayland`.
+  - Documented divergences: (a) displayfd EOF — C returns 1 and
+    re-arms a level-triggered pipe that stays readable forever
+    (spinning until the process watcher fires); we tear the watch down
+    on EOF, which can never complete the line. (b) a dead server's
+    parked `wm_fd` — and any readiness watch it left installed, whose
+    EOF event the module can outrun by respawning inside the same
+    dispatch batch — are closed on respawn, where C overwrites the
+    number and leaks the old fd. (c) C's child-side `seteuid(getuid())`
+    remains deferred with the R2a westonite-spawn audit note (euid ==
+    uid in every supported deployment; the helper-client path revisits
+    it).
+  - Validation: fmt/clippy/unit/fence-check green;
+    `rust-smoke.sh` gains leg 8 — the full xwayland lifecycle (lazy
+    spawn → xdpyinfo → WM up → SIGTERM teardown) under valgrind, 0
+    errors / 0 definite leaks; live probes: lazy spawn (no `launching`
+    before the first X client), kill -9 respawn (`died on signal 9` +
+    relaunch on reconnect, launch count 2), clean exit 0 both runs.
+    `rust-e2e-test.sh` drops the `test_xwayland.py` ignore and sets
+    `WTEST_XCLIENT`: the Rust frontend now runs the ENTIRE e2e suite —
+    **59 passed, 1 skipped** (the known EPEL neatvnc resize skip),
+    xwm position-sync and titlebar-drag pixel tests included; C oracle
+    `test_xwayland.py` re-run green (4 passed).
+  - Review round (e3afb7d, verified claim by claim): (1) the stale
+    readiness watch on respawn — REAL: a server that dies with its
+    displayfd EOF still queued in the same epoll batch can be replaced
+    (SIGCHLD → xserver_exited → fresh X connection, all in one
+    dispatch) before the EOF fires; the un-removed old source then
+    dispatches against a closed fd and its cleanup would tear down the
+    NEW server's watch, so `close_display_watch` on respawn (and
+    libwayland's remove-during-dispatch fd=-1 skip) is the right fix.
+    (2) byte-preserving the display name and (3) the compile-time pin
+    of the positional `_bindgen_ty_2` constant — both correct.  (4)
+    the `with_depth` around the SIGCHLD `xserver_exited` relay is kept
+    as the A4 convention, but its stated hazard was not live: `run()`
+    wraps `wl_display_run` at +1, so nothing inside the loop can
+    return the counter to zero — probing that claim empirically
+    exposed the pre-existing deferred-drain gap now tracked in plan
+    §3e/A4 (mid-run deferred events drain only at loop exit; own
+    slice).  (5) the meson citation was redirected to upstream's
+    `xwayland/meson.build`, a file not present in this repo — restored
+    to this repo's `meson.build:111-114`, whose `default_value:
+    'false'` semantics are exactly what build.rs mirrors.
 
 - **R2c-mirror (2026-07-26)** — the mirror-of machinery (plan §7 R2c,
   second slice), branch `claude/rust-migration-j84b2p`:

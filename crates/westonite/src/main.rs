@@ -145,6 +145,11 @@ fn main() -> ExitCode {
             background_color: bg,
         }))
     });
+    // C main.c:4725: --xwayland / [core] xwayland loads the module
+    // (lazy server spawn from [xwayland] path).
+    if settings.xwayland {
+        builder = builder.with_xwayland(settings.xwayland_path.clone());
+    }
 
     let mut compositor = match builder.build() {
         Ok(c) => c,
@@ -299,12 +304,6 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         if set {
             return Some(unhandled_option(flag));
         }
-    }
-    if settings.xwayland {
-        return Some(fatal(
-            "--xwayland is not yet ported to the Rust frontend (lands at R2d); \
-             use the C westonite",
-        ));
     }
     if !settings.modules.is_empty() {
         return Some(fatal(

@@ -33,6 +33,20 @@ fn main() {
         libweston.version
     );
 
+    // Xwayland -listenfd support (this repo's C build, meson.build:111-114;
+    // upstream weston carries the same probe in xwayland/meson.build):
+    // HAVE_XWAYLAND_LISTENFD comes from xwayland.pc's have_listenfd variable
+    // at build time, with "-listen" as the fallback when the pc file is
+    // absent (C: `dependency('xwayland', required: false)` not found) or says
+    // false.  Exposed to the fence as weston_sys::XWAYLAND_LISTEN_ARG.
+    let listenfd = pkg_config::get_variable("xwayland", "have_listenfd")
+        .map(|v| v.trim() == "true")
+        .unwrap_or(false);
+    println!(
+        "cargo:rustc-env=WSYS_XWAYLAND_LISTENFD={}",
+        if listenfd { "1" } else { "0" }
+    );
+
     // The C shim (§3k) + optional fake-C-object test harness (D18).
     let mut cc = cc::Build::new();
     cc.file("shim/shim.c");

@@ -137,7 +137,21 @@ plain deferred notifications.  Field count: 7 + 3 + 19 = 29.)*
 | Source | Handler | Site | Tier | Status |
 |---|---|---|---|---|
 | SIGTERM / SIGINT | `on_term_signal` | `compositor.rs` `install_signal_sources` (C main.c:4553 block) | sync, no app borrow (`wl_display_terminate` only; delivered via signalfd on the loop, not async signal context) | R0 |
-| SIGCHLD | `on_sigchld` | same site — installed in `build()`, deliberately **before** the frontend spawns any client (C installs signals[] before `execute_autolaunch`; a watched client exiting in that window must not be lost) | sync, no app borrow (panic-guarded `waitpid` WNOHANG loop; autolaunch-watch match terminates the display) | R2a |
+| SIGCHLD | `on_sigchld` | same site — installed in `build()`, deliberately **before** the frontend spawns any client (C installs signals[] before `execute_autolaunch`; a watched client exiting in that window must not be lost) | sync, no app borrow (panic-guarded `waitpid` WNOHANG loop; autolaunch-watch match terminates the display; since R2d an Xwayland-pid match logs the exit and relays `xserver_exited` — wrapper state + module call only) | R2a (+R2d xwayland branch) |
+
+The same `install_signal_sources` also blocks SIGUSR1 process-wide
+(C main.c:4570, unconditional): no handler consumes it in 14.x — the
+block only keeps a stray SIGUSR1 from Xwayland from killing the
+process, and must precede backend worker-thread creation so the
+threads inherit it.
+
+## 7. Xwayland plugin-API callbacks (R2d — C frontend/xwayland.c; no `wl_listener`s, so outside the §1 counts)
+
+| Callback | Registered via | Tier | Notes / hazards | Status |
+|---|---|---|---|---|
+| `spawn_xserver` | `weston_xwayland_api.listen` (xwayland.rs `load`, C wet_load_xwayland) | **sync with a return value** (the module consumes the returned `wl_client` immediately; proof: fd plumbing + `westonite-spawn` fork/exec + `wl_client_create` — wrapper xwayland state only, no app borrow) | `abstract_fd`/`unix_fd` are **borrowed** from the module (C passes the raw numbers to the child; we dup) — never close them; on `wl_client_create` failure the spawned server stays untracked, like C's `err_proc` unlink | R2d |
+| `handle_display_fd` | `wl_event_loop_add_fd` on the `-displayfd` pipe (registered inside `spawn_xserver`) | sync, no app borrow (reads the pipe; on the newline marker hands `wm_fd` to `xserver_loaded` — module call with no borrows held) | C returns 1 on EOF too (re-arms a level-triggered pipe that stays readable forever); we tear the watch down on EOF instead — documented divergence in xwayland.rs. Exactly one watch may exist: `spawn_xserver` removes a watch a previous server left behind (it can outrun its own EOF event when the module respawns inside the same dispatch batch) instead of overwriting the slot as C does | R2d |
+| (C `xserver_cleanup` wet_process callback) | folded into the §6 SIGCHLD row — the pid match replaces C's `wet_process` list walk | — | teardown calls `xserver_exited` for a still-running server before `weston_compositor_destroy` (C wet_xwayland_destroy order) | R2d |
 
 Maintenance rule: growing the sync tier or adding a callback without a
 row here fails review; the R1/R2 porting PRs update the Status column

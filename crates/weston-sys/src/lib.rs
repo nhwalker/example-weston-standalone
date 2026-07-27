@@ -19,3 +19,12 @@
 #[rustfmt::skip] // generated file — must stay byte-identical to the regen script's output
 mod bindings;
 pub use bindings::*;
+
+/// The Xwayland listen-socket flag (C frontend xwayland.c LISTEN_STR):
+/// `-listenfd` when the build-time xwayland.pc advertises
+/// `have_listenfd`, the deprecated `-listen` spelling otherwise —
+/// build.rs runs the same probe as the C meson.build.
+pub const XWAYLAND_LISTEN_ARG: &str = match env!("WSYS_XWAYLAND_LISTENFD").as_bytes() {
+    [b'1'] => "-listenfd",
+    _ => "-listen",
+};

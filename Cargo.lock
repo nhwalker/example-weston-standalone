@@ -406,6 +406,7 @@ dependencies = [
  "bitflags",
  "libc",
  "weston-sys",
+ "westonite-spawn",
 ]
 
 [[package]]

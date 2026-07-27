@@ -107,6 +107,7 @@ pub enum CompositorError {
     SignalSource,
     ShellInit,
     OutputInit,
+    Xwayland,
 }
 
 impl std::fmt::Display for CompositorError {
@@ -122,6 +123,7 @@ impl std::fmt::Display for CompositorError {
             CompositorError::SignalSource => "installing signal sources failed",
             CompositorError::ShellInit => "shell initialization failed",
             CompositorError::OutputInit => "configuring the outputs failed",
+            CompositorError::Xwayland => "loading the xwayland module failed",
         };
         f.write_str(s)
     }
@@ -140,6 +142,8 @@ pub struct CompositorBuilder {
     socket: bool,
     socket_name: Option<String>,
     shell: Option<(u32, ShellFactory)>,
+    /// Some(xserver path) loads xwayland.so in build() (C main.c:4725).
+    xwayland: Option<std::path::PathBuf>,
 }
 
 impl Default for CompositorBuilder {
@@ -163,7 +167,15 @@ impl CompositorBuilder {
             socket: false,
             socket_name: None,
             shell: None,
+            xwayland: None,
         }
+    }
+
+    /// Load the xwayland module at build() and lazily spawn `xserver`
+    /// on the first X connection (C --xwayland / [core] xwayland).
+    pub fn with_xwayland(mut self, xserver: std::path::PathBuf) -> Self {
+        self.xwayland = Some(xserver);
+        self
     }
 
     /// `[keyboard]` configuration (C weston_compositor_init_config).
@@ -526,6 +538,13 @@ impl CompositorBuilder {
             return Err(CompositorError::OutputInit);
         }
 
+        // C wet_main loads xwayland after the socket and shell, before
+        // wake ("Load xwayland before other modules", main.c:4717);
+        // failure is fatal (goto out).
+        if let Some(xserver) = self.xwayland {
+            crate::xwayland::load(&ctx, xserver)?;
+        }
+
         // SAFETY: compositor is live.
         unsafe { weston_sys::weston_compositor_wake(compositor) };
 
@@ -756,6 +775,20 @@ impl Compositor {
         self.signal_sources.push(s1);
         self.signal_sources.push(s2);
         self.signal_sources.push(s3);
+
+        // C main.c:4570: block SIGUSR1 up front, unconditionally —
+        // "Xwayland uses SIGUSR1 for communicating with weston" — so
+        // that (a) a stray SIGUSR1 can't kill the process with its
+        // default action, and (b) backend worker threads spawned later
+        // inherit the block.  Same placement rationale as the signalfd
+        // masks above.
+        // SAFETY: plain sigset syscalls on a stack-local set.
+        unsafe {
+            let mut mask: libc::sigset_t = std::mem::zeroed();
+            libc::sigemptyset(&mut mask);
+            libc::sigaddset(&mut mask, libc::SIGUSR1);
+            libc::pthread_sigmask(libc::SIG_BLOCK, &mask, std::ptr::null_mut());
+        }
         Ok(())
     }
 
@@ -777,6 +810,9 @@ impl Drop for Compositor {
         // Teardown order mirrors main.c's `out:` path; shutting_down
         // first so destroy-storm policy events are discarded (§3e).
         self.ctx.inner.shutting_down.set(true);
+        // C wet_xwayland_destroy runs before weston_compositor_destroy
+        // (the module must still be live for xserver_exited).
+        crate::xwayland::teardown(&self.ctx);
         if let Some(l) = self.heads_changed.take() {
             l.detach();
         }
@@ -833,7 +869,12 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
                     // with this source.
                     unsafe { weston_sys::wl_display_terminate(data.cast()) };
                 }
+                continue;
             }
+            // The Xwayland server (C sigchld_handler's wet_process
+            // branch → xserver_cleanup): logged and relayed to the
+            // module, which respawns on the next X connection.
+            crate::xwayland::handle_child_exit(&ctx, pid, status);
         }
     });
     1

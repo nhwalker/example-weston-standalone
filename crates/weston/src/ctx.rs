@@ -104,6 +104,10 @@ pub(crate) struct CtxInner {
     /// Autolaunch watch (R2a): (pid, watch) — the SIGCHLD handler
     /// terminates the display when the watched client exits.
     pub(crate) autolaunch: Cell<Option<(i32, bool)>>,
+    /// Xwayland frontend glue (R2d, C wet_xwayland): present iff
+    /// --xwayland loaded the module.  Rc so trampolines clone out and
+    /// drop the borrow before any FFI call.
+    pub(crate) xwayland: RefCell<Option<Rc<crate::xwayland::XwaylandState>>>,
 }
 
 thread_local! {
@@ -170,6 +174,7 @@ impl Ctx {
             desktop: Cell::new(std::ptr::null_mut()),
             active_grabs: RefCell::new(Vec::new()),
             autolaunch: Cell::new(None),
+            xwayland: RefCell::new(None),
         });
         CURRENT.with(|c| {
             let mut slot = c.borrow_mut();

@@ -9,6 +9,7 @@ description = "The fence crate (plan §2/§3): safe, sound wrappers over libwest
 weston-sys = { workspace = true }
 bitflags = { workspace = true }
 libc = { workspace = true }
+westonite-spawn = { workspace = true }
 
 [features]
 # Pulls in the fake-C-object shim so primitives are testable without a
