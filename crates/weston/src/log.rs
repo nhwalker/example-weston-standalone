@@ -33,6 +33,20 @@ pub fn message(msg: &str) {
 }
 
 /// Emit one line through weston_log (goes to the handlers installed via
+/// the shim; before a compositor/log context exists it still reaches the
+/// handler pair, which is why the panic barrier can use it early).
+pub(crate) fn log_line(msg: &str) {
+    // Sanitize interior NULs rather than fail: this is the logging path
+    // the panic barrier depends on.
+    let c = CString::new(msg.replace('\0', "\u{fffd}"))
+        .unwrap_or_else(|_| CString::new("westonite: <unloggable>").expect("static"));
+    // SAFETY: weston_log is a plain variadic; "%s\n" consumes exactly the
+    // one pointer argument we pass, which outlives the call.
+    unsafe {
+        weston_sys::weston_log(c"%s\n".as_ptr(), c.as_ptr());
+    }
+}
+
 /// C sigchld_handler's per-child exit lines (main.c:401-409), shared by
 /// every frontend-tracked child (xwayland, screenshooter).
 pub(crate) fn log_child_exit(path: &str, status: i32) {
@@ -45,20 +59,6 @@ pub(crate) fn log_child_exit(path: &str, status: i32) {
         log_line(&format!("{path} died on signal {}", libc::WTERMSIG(status)));
     } else {
         log_line(&format!("{path} disappeared"));
-    }
-}
-
-/// the shim; before a compositor/log context exists it still reaches the
-/// handler pair, which is why the panic barrier can use it early).
-pub(crate) fn log_line(msg: &str) {
-    // Sanitize interior NULs rather than fail: this is the logging path
-    // the panic barrier depends on.
-    let c = CString::new(msg.replace('\0', "\u{fffd}"))
-        .unwrap_or_else(|_| CString::new("westonite: <unloggable>").expect("static"));
-    // SAFETY: weston_log is a plain variadic; "%s\n" consumes exactly the
-    // one pointer argument we pass, which outlives the call.
-    unsafe {
-        weston_sys::weston_log(c"%s\n".as_ptr(), c.as_ptr());
     }
 }
 

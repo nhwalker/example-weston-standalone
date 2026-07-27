@@ -26,9 +26,12 @@ Rebase procedure on an EPEL weston bump: plan §8.
     `weston-screenshooter` (BINDIR resolution through
     `weston_module_path_from_env` + /usr/bin, C wet_get_bindir_path;
     wayland socketpair + WAYLAND_SOCKET via westonite-spawn, C
-    wet_client_start), gated by the in-flight client slot; an oneshot
-    client-destroy Listener resets the slot (its box retired via
-    defer_drop — the firing frame is on the stack, §3f); Super+R
+    wet_client_start), gated by the in-flight client slot; one
+    oneshot client-destroy Listener, embedded in the state and
+    reattached per spawn exactly as C reuses its embedded listener,
+    resets the slot (NOT a box per press retired through defer_drop:
+    pending-drop only drains at dispatch depth zero, which the run
+    loop never reaches — the R2d deferred-drain note); Super+R
     toggles `weston_recorder_start/stop` on the keyboard-focus output
     with C's first-output fallback; the capture-authority listener
     authorizes exactly the spawned client, attached by direct

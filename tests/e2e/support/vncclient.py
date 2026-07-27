@@ -126,6 +126,8 @@ class VncClient:
                    + b"".join(struct.pack(">i", e) for e in encodings))
         # screen layout, learned from ExtendedDesktopSize rects
         self.screens = [(0, 0, 0, self.width, self.height, 0)]
+        # set by the server's one-time QEMU_EXT_KEY ack pseudo-rect
+        self.qemu_keys = False
 
     # -- framebuffer ----------------------------------------------------
 

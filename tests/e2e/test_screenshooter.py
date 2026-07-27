@@ -27,6 +27,7 @@ server-side.  (The abort on the authorized path is itself proof the
 authority listener authorized the spawned client.)
 """
 
+import re
 import struct
 import time
 
@@ -54,12 +55,14 @@ def test_super_s_spawns_screenshooter_and_slot_recycles(westonite, tmp_path):
     the child/client dies immediately) the in-flight slot frees and a
     second Super+S spawns again."""
     exe = tmp_path / "absent-screenshooter"  # never created
+    # wait_for_log takes a REGEX; the tmp path is literal text.
+    spawn_line = f"launching '{exe}'"
     w = westonite(backend="vnc",
                   env={"WESTON_MODULE_MAP": f"weston-screenshooter={exe}"})
     with w.vnc() as vnc:
         vnc.capture()
         super_tap(vnc, KEY_S)
-        w.wait_for_log(rf"launching '{exe}'")
+        w.wait_for_log(re.escape(spawn_line))
 
         def second_spawn_logged():
             # keep tapping: the exact moment the slot frees is an
@@ -67,7 +70,7 @@ def test_super_s_spawns_screenshooter_and_slot_recycles(westonite, tmp_path):
             # wl_client dies; the Rust frontend fails the spawn before
             # a client exists)
             super_tap(vnc, KEY_S)
-            return w.log().count(f"launching '{exe}'") >= 2
+            return w.log().count(spawn_line) >= 2
 
         wait_until(second_spawn_logged, message="slot to free and respawn")
 

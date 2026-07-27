@@ -13,8 +13,10 @@
 //! as a structural, not behavioral, change.
 
 use std::cell::{Cell, RefCell};
+use std::ffi::OsStr;
 use std::os::fd::AsRawFd;
 use std::os::raw::{c_char, c_int, c_void};
+use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::ptr::NonNull;
 use std::rc::Rc;
@@ -35,9 +37,17 @@ pub(crate) struct ScreenshooterState {
     /// means none, and gates re-entry ("Don't start a screenshot
     /// whilst we already have one in progress").
     client: Cell<*mut weston_sys::wl_client>,
-    /// Destroy listener on that client (C `client_destroy_listener`);
-    /// oneshot — its firing resets `client` and retires the box.
-    client_destroy: RefCell<Option<Listener>>,
+    /// Destroy listener for that client (C's embedded
+    /// `client_destroy_listener`): ONE node, reattached per spawn
+    /// exactly as C reuses the listener embedded in `struct
+    /// screenshooter`.  Oneshot, so the firing takes the node off the
+    /// dying client's list and leaves it ready for the next Super+S.
+    /// Deliberately not a box-per-spawn retired through `defer_drop`:
+    /// the pending-drop list only drains at dispatch depth zero, which
+    /// `run()` never reaches inside the loop (§3e, and the R2d note on
+    /// deferred-drain timing), so a repeatable user action must not
+    /// mint a box per press.
+    client_destroy: Listener,
     /// C `shooter->recorder`: the active wcap recorder, if any.
     recorder: Cell<*mut weston_sys::weston_recorder>,
     /// pid + argv[0] of the spawned client for the SIGCHLD exit lines
@@ -60,9 +70,23 @@ fn state(ctx: &Ctx) -> Option<Rc<ScreenshooterState>> {
 pub(crate) fn create(ctx: &Ctx) -> Listener {
     let compositor = ctx.inner.compositor.get();
 
+    // C `screenshooter_client_destroy`: free the slot so a new Super+S
+    // can spawn.  The oneshot trampoline has already taken the node off
+    // the dying client's list by the time this runs, leaving the single
+    // embedded listener reattachable (see the field comment).
+    let client_destroy = Listener::new(
+        "screenshooter.client_destroy",
+        true,
+        Box::new(move |ctx, _data| {
+            if let Some(st) = state(ctx) {
+                st.client.set(std::ptr::null_mut());
+            }
+        }),
+    );
+
     *ctx.inner.screenshooter.borrow_mut() = Some(Rc::new(ScreenshooterState {
         client: Cell::new(std::ptr::null_mut()),
-        client_destroy: RefCell::new(None),
+        client_destroy,
         recorder: Cell::new(std::ptr::null_mut()),
         pid: Cell::new(None),
         exe: RefCell::new(None),
@@ -185,6 +209,12 @@ fn screenshooter_binding_body(ctx: &Ctx) {
     let pid = child.id() as i32;
     drop(child); // reaped by the SIGCHLD handler, like every child
 
+    // C's wet_client_launch puts the wet_process on the child list
+    // before wet_client_start reaches wl_client_create, so a child
+    // whose wl_client never came up still gets its exit logged.
+    st.pid.set(Some(pid));
+    *st.exe.borrow_mut() = Some(exe.clone());
+
     // SAFETY: display live; on success libwayland owns the fd (forget
     // below), on failure ownership stays with `ours` (drop closes).
     let client = unsafe { weston_sys::wl_client_create(ctx.inner.display.get(), ours.as_raw_fd()) };
@@ -200,33 +230,15 @@ fn screenshooter_binding_body(ctx: &Ctx) {
     std::mem::forget(ours);
 
     st.client.set(client);
-    st.pid.set(Some(pid));
-    *st.exe.borrow_mut() = Some(exe);
 
-    // C client_destroy_listener: firing resets the slot so a new
-    // Super+S can spawn again.  Oneshot: the node detaches itself
-    // inside the emission; the box is retired via defer_drop because
-    // its own trampoline frame is on the stack (§3f).
-    let l = Listener::new(
-        "screenshooter.client_destroy",
-        true,
-        Box::new(move |ctx, _data| {
-            let Some(st) = state(ctx) else { return };
-            st.client.set(std::ptr::null_mut());
-            if let Some(l) = st.client_destroy.borrow_mut().take() {
-                ctx.defer_drop(Box::new(l));
-            }
-        }),
-    );
-    // SAFETY: client just created and live; the node is detached by the
-    // oneshot firing or by teardown, both before the client's list dies.
-    unsafe { weston_sys::wl_client_add_destroy_listener(client, l.raw_ptr()) };
-    l.mark_attached();
-    // A previous listener box can only still be parked here if the slot
-    // logic broke — the oneshot retires itself; replace defensively.
-    if let Some(old) = st.client_destroy.borrow_mut().replace(l) {
-        ctx.defer_drop(Box::new(old));
-    }
+    // C reattaches its embedded client_destroy_listener to each new
+    // client; ours is detached by the previous oneshot firing (or was
+    // never attached), so the node is free to go back on a list here.
+    // SAFETY: client just created and live; the node comes off again in
+    // the oneshot firing or in teardown, both before the client's list
+    // dies.
+    unsafe { weston_sys::wl_client_add_destroy_listener(client, st.client_destroy.raw_ptr()) };
+    st.client_destroy.mark_attached();
 }
 
 /// C `recorder_binding`: Super+R toggles the wcap recorder on the
@@ -315,9 +327,14 @@ fn bindir_path(name: &str) -> Option<PathBuf> {
             buf.len(),
         )
     };
-    if len > 0 {
-        let mapped = String::from_utf8_lossy(&buf[..len]).into_owned();
-        return Some(PathBuf::from(mapped));
+    // `len == 0` means unmapped.  Copied as bytes, not through
+    // to_string_lossy: this path becomes argv[0] for execve, and a
+    // replacement character would spawn something other than the binary
+    // the map named (same rule as the Xwayland display name, §3h).
+    if len > 0
+        && let Some(bytes) = buf.get(..len)
+    {
+        return Some(PathBuf::from(OsStr::from_bytes(bytes)));
     }
     Some(PathBuf::from("/usr/bin").join(name))
 }
@@ -332,8 +349,11 @@ pub(crate) fn handle_child_exit(ctx: &Ctx, pid: i32, status: c_int) -> bool {
         return false;
     }
     st.pid.set(None);
-    if let Some(exe) = st.exe.borrow().as_ref() {
-        log::log_child_exit(&exe.display().to_string(), status);
+    // Copy the path out before logging: weston_log is an outbound FFI
+    // call and this module holds no borrow across one.
+    let exe = st.exe.borrow().as_ref().map(|p| p.display().to_string());
+    if let Some(exe) = exe {
+        log::log_child_exit(&exe, status);
     }
     true
 }
@@ -350,9 +370,8 @@ pub(crate) fn teardown(ctx: &Ctx) {
     let Some(st) = ctx.inner.screenshooter.borrow_mut().take() else {
         return;
     };
-    if let Some(l) = st.client_destroy.borrow_mut().take() {
-        // SAFETY-relevant ordering: the node sits on the live client's
-        // destroy list; the display (and its clients) dies after this.
-        l.detach();
-    }
+    // SAFETY-relevant ordering: while attached the node sits on the live
+    // client's destroy list; the display (and its clients) dies after
+    // this.  A no-op when the client already died (oneshot detached).
+    st.client_destroy.detach();
 }
