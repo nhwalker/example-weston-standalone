@@ -111,4 +111,27 @@ grep -q "westonite-shell: Rust shell initialized" /tmp/rs-vnc.log \
 kill -TERM "$VNCPID"
 wait "$VNCPID" || { cat /tmp/rs-vnc-vg.log >&2; fail "vnc frontend valgrind reported errors or leaks"; }
 
+echo "== rust 8: westonite-rs --xwayland (R2d) full lifecycle under valgrind"
+# Lazy spawn → xdpyinfo roundtrip (displayfd + xserver_loaded + WM) →
+# SIGTERM with the server still running (teardown's xserver_exited
+# path).  Gates the new fence code in weston::xwayland end to end.
+mkdir -p -m 1777 /tmp/.X11-unix
+rm -f /tmp/rs-xw.log
+valgrind --error-exitcode=42 --leak-check=full \
+	--errors-for-leak-kinds=definite \
+	target/debug/westonite-rs --backend=headless --xwayland --no-config \
+	--socket=rs-xw-smoke --log=/tmp/rs-xw.log > /tmp/rs-xw-vg.log 2>&1 &
+XWPID=$!
+wait_for_marker /tmp/rs-xw.log "xserver listening on display" 120 \
+	|| { cat /tmp/rs-xw.log /tmp/rs-xw-vg.log >&2; fail "xwayland: module did not listen"; }
+grep -q "launching '/usr/bin/Xwayland'" /tmp/rs-xw.log \
+	&& { cat /tmp/rs-xw.log >&2; fail "xwayland: eager spawn (must be lazy)"; }
+XDISP=$(grep -oP "listening on display \K:[0-9]+" /tmp/rs-xw.log)
+DISPLAY="$XDISP" xdpyinfo > /dev/null \
+	|| { cat /tmp/rs-xw.log /tmp/rs-xw-vg.log >&2; fail "xwayland: xdpyinfo roundtrip failed"; }
+wait_for_marker /tmp/rs-xw.log "created wm" 120 \
+	|| { cat /tmp/rs-xw.log >&2; fail "xwayland: WM did not start (xserver_loaded path)"; }
+kill -TERM "$XWPID"
+wait "$XWPID" || { cat /tmp/rs-xw-vg.log >&2; fail "xwayland valgrind reported errors or leaks"; }
+
 echo "ALL RUST SMOKE TESTS PASSED"
