@@ -61,9 +61,45 @@ Rebase procedure on an EPEL weston bump: plan §8.
     no-ops.  (b) a failed spawn is reported in the parent (std's
     status pipe) and creates no wl_client, where C forks first and
     leaves a doomed client whose death resets the slot — both settle
-    in the same state.  (c) B1/B2 run sync-tier (planned "deferred"
-    pre-R0; the handlers touch only wrapper state — A3 proofs in the
+    in the same state.  Corollary: C tracks children on a *list*, we
+    keep one pid slot per subsystem, so in the narrow case where
+    `wl_client_create` fails and a second Super+S lands before the
+    first child's SIGCHLD, C logs both exits and we log only the
+    later one.  (c) B1/B2 run sync-tier (planned "deferred" pre-R0;
+    the handlers touch only wrapper state — A3 proofs in the
     inventory).
+  - Review round (ae2f18a, verified claim by claim — all six changes
+    kept): (1) the **doc-comment splice** in log.rs was a real
+    mistake of mine (my Edit anchor cut `log_line`'s doc comment in
+    half, orphaning its second line onto the new helper). (2) the
+    **client-destroy listener reuse** is right and more C-faithful —
+    C reattaches the single listener embedded in `struct
+    screenshooter` on every spawn, and my box-per-press +
+    `defer_drop` would have accumulated one box per Super+S because
+    pending-drop only drains at depth zero (the R2d gap). Verified
+    live in a **debug** build (so `mark_attached`'s `debug_assert!(!
+    attached, "double attach")` was armed) with the client diverted
+    to `/bin/true`, which makes `wl_client_create` succeed and the
+    client die at once: 5 spawn→connect→die→reattach cycles gave 5
+    launches, 5 exit lines, no double-attach, and valgrind 0 errors
+    / 0 definitely-lost. (3) setting pid/exe **before**
+    `wl_client_create` matches C, where `wet_client_launch` lists the
+    process before `wet_client_start` reaches client creation. (4)
+    byte-preserving `bindir_path` (argv[0] must not go through
+    `to_string_lossy`) — note the C helper returns 0 rather than a
+    truncated length when the mapping exceeds the buffer
+    (compositor.c:10556), so the added `buf.get(..len)` is defensive,
+    not a panic fix. (5) copying the exe path out before
+    `log_child_exit` upholds the no-borrow-across-FFI rule. (6) the
+    `re.escape` and `qemu_keys = False` test fixes are correct.
+  - Chased the reviewer's `defer_drop` rationale to its root and
+    **measured** it: instrumenting `defer_drop` showed the
+    pending-drop list growing monotonically (len=1,2,3 at depth=2)
+    across one move-grab e2e test, so the R2d deferred-drain gap is
+    a lifetime-long memory leak as well as an ordering delay — plan
+    §3e/A4 now records that second dimension. (A surface-destroy
+    probe did *not* reproduce a retirement, so the blast radius
+    beyond the grab path is unmeasured and left unclaimed.)
   - e2e infrastructure: `vncclient.py` gained the QEMU Extended Key
     Event pseudo-encoding (-258) + `key_code()` (qnum keycodes) —
     the server's keysym path never tracks the Super modifier, so
