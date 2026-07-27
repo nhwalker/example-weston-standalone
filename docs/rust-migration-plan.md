@@ -893,8 +893,14 @@ halves can be mixed and smoke-tested at every phase boundary.
   loaders (RDP deliberately deferred out of the mirror slice — its
   monitor-negotiation surface has zero container reachability),
   remoting/pipewire virtual outputs, and the deferred clone-of +
-  color-management work. R2d xwayland
-  (`test_xwayland.py` + Phase-3 smoke). R2e screenshooter/recorder,
+  color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
+  log)*: the `frontend/xwayland.c` glue (module load + plugin API,
+  lazy `spawn_xserver` through `westonite-spawn`, `-displayfd`
+  readiness watch, SIGCHLD-driven `xserver_exited` respawn,
+  destroy-before-compositor teardown) — `test_xwayland.py` now runs
+  against `westonite-rs`, so the Rust frontend runs the ENTIRE e2e
+  suite and the C oracle covers only the not-yet-ported backend
+  loaders. R2e screenshooter/recorder,
   including moving `screenshooter_create` ownership to the frontend
   (§4). The C `main.c` stays in-tree, buildable via meson, until R2
   completes — it is the reference oracle for behavioral diffs.
