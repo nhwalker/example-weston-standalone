@@ -263,3 +263,46 @@ def test_unresponsive_client_handled(westonite):
         vnc.click(x + bw // 2, y + bh // 2)
         client.wait_for_line(r"pointer: button")
         assert client.proc.poll() is None
+
+
+def test_focus_moves_to_survivor_when_focused_window_closes(westonite):
+    """C focus_state_surface_destroy: when the focused surface dies, the
+    shell activates the next remaining one.
+
+    That policy rides the DEFERRED tier (TrackedSurfaceGone), so this is
+    the observable regression test for drain-at-the-edge (plan §3e/A4):
+    with the drain not firing inside the event loop, the survivor stays
+    unfocused for the rest of the session."""
+    w = westonite(backend="vnc")
+    with w.vnc() as vnc, \
+         make_client(w, "--color", "ffcc0000",
+                     "--focus-color", "ffff4444", "--title", "A") as a, \
+         make_client(w, "--color", "ff0000cc",
+                     "--focus-color", "ff4444ff", "--title", "B") as b:
+        a.wait_mapped()
+        b.wait_mapped()
+
+        # map order is not spawn order: discover who holds focus
+        focused = {}
+
+        def find_focused():
+            _, _, fb = vnc.capture()
+            for bright, client, other, other_bright in (
+                    (BRIGHT_RED, a, b, BRIGHT_BLUE),
+                    (BRIGHT_BLUE, b, a, BRIGHT_RED)):
+                if pick_pixel(fb, vnc.width, bright):
+                    focused.update(client=client, other=other,
+                                   other_bright=other_bright)
+                    return True
+            return False
+
+        wait_until(find_focused, message="one window to show focused")
+        other, other_bright = focused["other"], focused["other_bright"]
+        n_enter = other.count(r"focus: enter")
+
+        focused["client"].terminate()
+
+        # the survivor must take focus: it says so on its own protocol
+        # output and repaints in its focused color
+        other.wait_for_count(r"focus: enter", n_enter + 1)
+        wait_for_region(vnc, other_bright)

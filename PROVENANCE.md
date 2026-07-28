@@ -19,6 +19,47 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **Deferred-drain fix (2026-07-28)** — the dispatch-core defect found
+  at the R2d review round and measured at R2e, branch
+  `claude/rust-migration-j84b2p`.  Not a port slice: it fixes our own
+  R0-era wrapper bug, taken before R3 while the C frontend is still
+  around to diff against.
+  - Root cause: `Compositor::run` wrapped `wl_display_run` in
+    `with_depth`, holding the dispatch counter at ≥1 for the whole
+    session, so A4's drain-at-the-edge could only fire after the loop
+    exited.  Deferred-tier events were delivered in one batch at
+    shutdown and `defer_drop` boxes were never freed until then.
+  - **Proven as a user-visible parity bug before fixing.** New e2e
+    test `test_focus_moves_to_survivor_when_focused_window_closes`
+    (two wtest-clients with distinct focus colors; kill the focused
+    one, assert the survivor takes focus on both its protocol output
+    and in the framebuffer).  Against the C oracle: PASS.  Against
+    the unfixed Rust frontend: FAIL (10.5s timeout).  After the fix:
+    PASS, 3/3, in 0.59s.  C `focus_state_surface_destroy` is the
+    behavior; ours rides `TrackedSurfaceGone`, a deferred event.
+  - Fix: leave the loop call unwrapped (it *is* the loop — wrapping
+    it defeats the rule it appears to follow) and wrap the two
+    bare-bodied event-loop signal callbacks instead, so one handler
+    means one drain.  `on_sigchld` in particular would otherwise
+    drain between two `waitpid` iterations via its own inner
+    outbound calls.  Audit of every C→Rust entry point recorded in
+    the plan §3e/A4 note: everything else already wraps through
+    `Listener::trampoline` / `with_ctx` / `guard_ctx` / the
+    binding/xwayland/screenshooter wrappers, and the label/log/no-op
+    vtable entries must stay unwrapped (draining from inside the log
+    sink would run app handlers on a log call).
+  - De-risking argument, and why this was safe to take now: the
+    **hybrid** build has dispatched our trampolines from C's own
+    `wl_display_run` since R1 — base depth zero — so drain- and
+    free-at-the-edge (§3f) have been under destroy-storm stress all
+    along.  The fix makes the pure-Rust frontend match the hybrid.
+    `rust-stress-test.sh` gained `WESTONITE_BIN` so the storms run
+    against both: hybrid and westonite-rs, valgrind-clean, 41 clients
+    mapped each.
+  - Validation: fmt/clippy/unit/fence green; all 8 smoke legs
+    (valgrind); both stress targets; full e2e **Rust 63 passed / 1
+    skipped**, **C oracle 53 passed / 11 skipped**.
+
 - **R2e (2026-07-27)** — screenshooter/wcap recorder (plan §7 R2e),
   branch `claude/rust-migration-j84b2p`:
   - Fence (`crates/weston/src/screenshooter.rs`, all of C
@@ -29,9 +70,9 @@ Rebase procedure on an EPEL weston bump: plan §8.
     wet_client_start), gated by the in-flight client slot; one
     oneshot client-destroy Listener, embedded in the state and
     reattached per spawn exactly as C reuses its embedded listener,
-    resets the slot (NOT a box per press retired through defer_drop:
-    pending-drop only drains at dispatch depth zero, which the run
-    loop never reaches — the R2d deferred-drain note); Super+R
+    resets the slot (NOT a box per press retired through defer_drop,
+    which was a per-press leak while the drain gap lasted — fixed
+    2026-07-28, see the entry above); Super+R
     toggles `weston_recorder_start/stop` on the keyboard-focus output
     with C's first-output fallback; the capture-authority listener
     authorizes exactly the spawned client, attached by direct
