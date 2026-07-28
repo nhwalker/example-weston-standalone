@@ -23,6 +23,10 @@ cd /src
 WTEST=${WTEST_CLIENT:-/src/build/tests/e2e/clients/wtest-client}
 BIN=${WESTONITE_BIN:-westonite}
 [ -x "$WTEST" ] || { echo "wtest-client missing (build with -De2e-test-client=true)"; exit 1; }
+# Check the compositor up front: a bad WESTONITE_BIN would otherwise
+# surface 20s later as "compositor socket never appeared" with a
+# valgrind log that only says the exec failed.
+command -v "$BIN" >/dev/null 2>&1 || { echo "compositor '$BIN' not found (WESTONITE_BIN)"; exit 1; }
 
 export XDG_RUNTIME_DIR=/tmp/xdg-stress
 mkdir -p -m 0700 "$XDG_RUNTIME_DIR"

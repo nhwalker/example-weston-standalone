@@ -48,6 +48,26 @@ Rebase procedure on an EPEL weston bump: plan §8.
     binding/xwayland/screenshooter wrappers, and the label/log/no-op
     vtable entries must stay unwrapped (draining from inside the log
     sink would run app handlers on a log call).
+  - Review round: (1) the first cut of the `on_sigchld` wrap took
+    `Ctx::current()` before the reap and returned early without it,
+    which silently turned "no Ctx" into "never call waitpid" —
+    zombie children for a wrapper-state problem.  The reap now runs
+    unconditionally and only the bookkeeping and the depth wrap take
+    the Ctx (`debug_assert` for the teardown-ordering bug it would
+    signal, as elsewhere in §3j).  (2) `on_term_signal`'s comment
+    claimed a Ctx-less late signal became "a no-op instead of an
+    unguarded FFI call" while the code still terminated the display —
+    the code is right (dropping a SIGTERM is worse than skipping an
+    empty drain); the comment was corrected.  (3) The audit missed
+    two stale/incomplete spots: `xwayland::handle_child_exit` still
+    justified its own wrap by "run() holds the loop at +1", and the
+    `run()` audit described the unwrapped entry points as touching no
+    `Ctx` state — `desktop::tramp_get_position` reads wrapper view
+    state, and is correct to stay unwrapped for a different reason
+    (no outbound call, so nothing to drain).  Both rewritten.
+    (4) `rust-stress-test.sh` now checks `WESTONITE_BIN` resolves
+    before launching valgrind, so a typo fails immediately instead of
+    at the 20s socket timeout.
   - De-risking argument, and why this was safe to take now: the
     **hybrid** build has dispatched our trampolines from C's own
     `wl_display_run` since R1 — base depth zero — so drain- and

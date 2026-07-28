@@ -820,10 +820,17 @@ impl Compositor {
         // code ran the same handler.
         //
         // SAFETY: the run loop dispatches into our trampolines; every
-        // one re-enters through Ctx::current + with_depth (audited: the
-        // only bare-bodied entry points are the event-loop signal
-        // callbacks below, which wrap their own bodies, and the
-        // label/log/no-op vtable entries, which touch no Ctx state).
+        // one re-enters through Ctx::current + with_depth.  Full audit
+        // of the entry points that deliberately do NOT wrap:
+        //   - the two event-loop signal callbacks below — they wrap
+        //     their own bodies instead, so one handler is one drain;
+        //   - the label / no-op vtable entries (curtain_get_label,
+        //     curtain_committed, the grab noops) and the weston_log
+        //     sink, which must stay unwrapped: draining from inside the
+        //     log sink would run app handlers on a log call;
+        //   - desktop::tramp_get_position, which answers from
+        //     wrapper-held view state into out-params and makes no
+        //     outbound call at all, so it has nothing to drain.
         unsafe { weston_sys::wl_display_run(display) };
         self.exit_code
     }
@@ -885,9 +892,18 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
         // wl_display_terminate) would otherwise each return the counter
         // to zero and drain mid-reap, running shell handlers between
         // two waitpid iterations.  One wrap ⇒ one drain, at the edge.
-        let Some(ctx0) = Ctx::current() else { return };
-        ctx0.with_depth(|| {
-            // Reap every exited child (C sigchld_handler's waitpid loop).
+        //
+        // Resolved once, up front — but the reap must NOT depend on it.
+        // A missing Ctx here would be a teardown-ordering bug (§3j; not
+        // reachable today, since Drop removes the signal sources before
+        // Ctx::teardown), and the one thing a SIGCHLD handler may never
+        // skip is waitpid: bailing out would leave real zombies behind
+        // for a wrapper-state problem.  Reap either way; only the
+        // frontend bookkeeping and the depth wrap need the Ctx.
+        let ctx = Ctx::current();
+        debug_assert!(ctx.is_some(), "on_sigchld with no live Ctx");
+        // Reap every exited child (C sigchld_handler's waitpid loop).
+        let reap = || {
             loop {
                 let mut status: c_int = 0;
                 // SAFETY: plain waitpid; WNOHANG never blocks the loop.
@@ -895,7 +911,7 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
                 if pid <= 0 {
                     break;
                 }
-                let Some(ctx) = Ctx::current() else { continue };
+                let Some(ctx) = ctx.as_ref() else { continue };
                 if let Some((watched, watch)) = ctx.inner.autolaunch.get()
                     && pid == watched
                 {
@@ -912,12 +928,16 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
                 // wet_process walk): the Xwayland server (logged + relayed
                 // to the module, which respawns on the next X connection)
                 // and the screenshooter client (logged only).
-                if crate::xwayland::handle_child_exit(&ctx, pid, status) {
+                if crate::xwayland::handle_child_exit(ctx, pid, status) {
                     continue;
                 }
-                crate::screenshooter::handle_child_exit(&ctx, pid, status);
+                crate::screenshooter::handle_child_exit(ctx, pid, status);
             }
-        });
+        };
+        match ctx.as_ref() {
+            Some(c) => c.with_depth(reap),
+            None => reap(),
+        }
     });
     1
 }
@@ -928,9 +948,11 @@ extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
     //
     // Wrapped like on_sigchld now that the loop's base depth is zero
     // (see `run`).  wl_display_terminate only clears the loop's run
-    // flag — it emits nothing and cannot re-enter us — so this is
-    // A4 hygiene rather than a live hazard; it also means a Ctx-less
-    // late signal is a no-op instead of an unguarded FFI call.
+    // flag — it emits nothing and cannot re-enter us — so this is A4
+    // hygiene rather than a live hazard.  A Ctx-less late signal still
+    // terminates, just unwrapped: the display outlives the Ctx in
+    // Compositor::drop, and dropping a SIGTERM on the floor would be a
+    // worse failure than skipping a drain with nothing to drain.
     let Some(ctx) = Ctx::current() else {
         // SAFETY: as below; without a Ctx there is nothing to drain.
         unsafe { weston_sys::wl_display_terminate(data.cast()) };
