@@ -23,6 +23,11 @@ APPLE_DH = 30
 RAW_ENCODING = 0
 DESKTOP_SIZE = -223
 EXTENDED_DESKTOP_SIZE = -308
+# QEMU Extended Key Event: keycode-carrying key messages. Needed for
+# modifier-key input -- the server's keysym path deliberately skips
+# xkb modifier tracking for everything but Ctrl/Alt (RFC6143 7.5.4
+# shift-state rules), so Super+X bindings only work via keycodes.
+QEMU_EXT_KEY = -258
 
 
 class RfbError(AssertionError):
@@ -115,11 +120,14 @@ class VncClient:
         self._send(struct.pack(">Bxxx", 0) + pixel_format)
         # SetEncodings: Raw pixels (uncompressed) plus the desktop-size
         # pseudo-encodings so the server tells us about output resizes
-        encodings = [RAW_ENCODING, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE]
+        encodings = [RAW_ENCODING, DESKTOP_SIZE, EXTENDED_DESKTOP_SIZE,
+                     QEMU_EXT_KEY]
         self._send(struct.pack(">BxH", 2, len(encodings))
                    + b"".join(struct.pack(">i", e) for e in encodings))
         # screen layout, learned from ExtendedDesktopSize rects
         self.screens = [(0, 0, 0, self.width, self.height, 0)]
+        # set by the server's one-time QEMU_EXT_KEY ack pseudo-rect
+        self.qemu_keys = False
 
     # -- framebuffer ----------------------------------------------------
 
@@ -133,7 +141,8 @@ class VncClient:
             fb = bytearray(self.width * self.height * 4)
             got_pixels = False
             resized = False
-            while not got_pixels and not resized:
+            update_without_pixels = False
+            while not got_pixels and not resized and not update_without_pixels:
                 msg_type = self._read(1)[0]
                 if msg_type == 0:  # FramebufferUpdate
                     self._read(1)
@@ -162,8 +171,18 @@ class VncClient:
                             if (w, h) != (self.width, self.height):
                                 self.width, self.height = w, h
                                 resized = True
+                        elif enc == QEMU_EXT_KEY:
+                            # payload-less ack pseudo-rect: the server
+                            # accepts keycode key events
+                            self.qemu_keys = True
                         else:
                             raise RfbError(f"unexpected encoding {enc}")
+                    if not got_pixels and not resized:
+                        # a pseudo-rect-only update (e.g. the one-time
+                        # QEMU ext-key ack) CONSUMES our update request
+                        # server-side (neatvnc send_ext_support_frame)
+                        # -- go around and request again
+                        update_without_pixels = True
                 elif msg_type == 1:  # SetColourMapEntries
                     head = self._read(5)
                     ncolours = struct.unpack(">H", head[3:5])[0]
@@ -220,6 +239,12 @@ class VncClient:
     def key_tap(self, keysym):
         self.key(keysym, True)
         self.key(keysym, False)
+
+    def key_code(self, keysym, keycode, down):
+        """QEMU Extended Key Event (message 255/0): key by keycode, so
+        the server tracks modifier state (see QEMU_EXT_KEY above)."""
+        self._send(struct.pack(">BBHII", 255, 0, 1 if down else 0,
+                               keysym, keycode))
 
     def close(self):
         try:

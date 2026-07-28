@@ -395,17 +395,7 @@ pub(crate) fn handle_child_exit(ctx: &Ctx, pid: i32, status: c_int) -> bool {
     }
     st.pid.set(None);
 
-    let path = st.xserver_path.display();
-    if libc::WIFEXITED(status) {
-        log::log_line(&format!(
-            "{path} exited with status {}",
-            libc::WEXITSTATUS(status)
-        ));
-    } else if libc::WIFSIGNALED(status) {
-        log::log_line(&format!("{path} died on signal {}", libc::WTERMSIG(status)));
-    } else {
-        log::log_line(&format!("{path} disappeared"));
-    }
+    log::log_child_exit(&st.xserver_path.display().to_string(), status);
 
     // At +1 dispatch depth per the A4 rule (every outbound FFI call):
     // this one tears down the module's WM and destroys the Xwayland

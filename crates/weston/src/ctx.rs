@@ -108,6 +108,10 @@ pub(crate) struct CtxInner {
     /// --xwayland loaded the module.  Rc so trampolines clone out and
     /// drop the borrow before any FFI call.
     pub(crate) xwayland: RefCell<Option<Rc<crate::xwayland::XwaylandState>>>,
+    /// Screenshooter/recorder glue (R2e, C struct screenshooter):
+    /// present iff a shell attached (C: the shell calls
+    /// screenshooter_create).  Same Rc clone-out discipline.
+    pub(crate) screenshooter: RefCell<Option<Rc<crate::screenshooter::ScreenshooterState>>>,
 }
 
 thread_local! {
@@ -175,6 +179,7 @@ impl Ctx {
             active_grabs: RefCell::new(Vec::new()),
             autolaunch: Cell::new(None),
             xwayland: RefCell::new(None),
+            screenshooter: RefCell::new(None),
         });
         CURRENT.with(|c| {
             let mut slot = c.borrow_mut();

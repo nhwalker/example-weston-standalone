@@ -496,11 +496,30 @@ discipline in application code, converts missed cases into
   probes (client connect/map/kill produced zero mid-run drains).  No
   e2e test can observe the delay today — the visible halves of those
   behaviors are wrapper-side and synchronous — which is why it sat
-  unnoticed since R0.  Fix (own slice, needs its own A3/A4 audit +
-  full battery, not a drive-by): drop the `run()` wrap so the loop's
-  base depth is zero, after auditing every bare-bodied event-source
-  callback (`on_term_signal`, `on_sigchld`) for A4 — the xwayland
-  `xserver_exited` relay is already wrapped in anticipation.
+  unnoticed since R0.
+
+  **Second dimension, measured at the R2e review round
+  (2026-07-27): it is also a memory leak, not only an ordering
+  delay.** The same depth-zero condition gates the *pending-drop*
+  list (§3f), so every box retired through `defer_drop` — ended
+  grabs (`grab.rs`, three sites), retired registry listeners
+  (`retire_listener`) — is held for the compositor's whole lifetime
+  instead of being freed at the next edge. Instrumenting
+  `defer_drop` showed the list growing monotonically (`len=1,2,3`,
+  all at `depth=2`) across a *single* move-grab e2e test, i.e. it
+  grows with ordinary user actions like dragging a window. Nothing
+  is unsound (the boxes stay owned and reachable; this is growth,
+  not a dangling free), and no e2e test observes it, but it turns
+  the fix from cosmetic into load-bearing for long-lived sessions.
+
+  Fix (own slice, needs its own A3/A4 audit + full battery, not a
+  drive-by): drop the `run()` wrap so the loop's base depth is zero,
+  after auditing every bare-bodied event-source callback
+  (`on_term_signal`, `on_sigchld`) for A4 — the xwayland
+  `xserver_exited` relay is already wrapped in anticipation. Until
+  it lands, code on a **repeatable** path must not mint a box per
+  action (R2e's client-destroy listener is one reused node for
+  exactly this reason).
 
 **The `ShellHost` trait (D20).** The shell reaches the wrapper only
 through a trait implemented by `weston` (queries returning
@@ -915,10 +934,17 @@ halves can be mixed and smoke-tested at every phase boundary.
   destroy-before-compositor teardown) — `test_xwayland.py` now runs
   against `westonite-rs`, so the Rust frontend runs the ENTIRE e2e
   suite and the C oracle covers only the not-yet-ported backend
-  loaders. R2e screenshooter/recorder,
-  including moving `screenshooter_create` ownership to the frontend
-  (§4). The C `main.c` stays in-tree, buildable via meson, until R2
-  completes — it is the reference oracle for behavioral diffs.
+  loaders. R2e screenshooter/recorder ✅ *(done — see PROVENANCE.md
+  log)*: `frontend/weston-screenshooter.c` whole-file port
+  (Super+S client spawn + slot gate, Super+R wcap recorder, capture
+  authority on `ask_auth`), with `screenshooter_create` ownership
+  moved to the frontend as §4 planned for R3 — the Rust build()
+  calls it after the shell attaches, same registrations at the same
+  startup point.  e2e-verified over VNC QEMU-extended key events;
+  capture *completion* is blocked by an RPM-side abort found live
+  (e2e plan §6). The C `main.c` stays in-tree, buildable via meson,
+  until R2 completes — it is the reference oracle for behavioral
+  diffs.
 - **Phase R3 — decommission C**: delete C sources + meson, drop the
   `hybrid-r1` bindings from `weston-sys` (the shell now receives its
   typed `ShellConfig` from the Rust frontend and links statically —

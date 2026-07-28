@@ -15,8 +15,106 @@ Rebase procedure on an EPEL weston bump: plan §8.
 | `crates/westonite-shell/src/lib.rs` | `desktop-shell/shell.c` @ 14.0.1+T9: policy half (focus/activation 343-458 + 1622-1727, children 1457-1476, commit/map 1296-1397, output policy 1822-2045, teardown 2047-2115) | safe half; §10.3 bool** bug fixed by design |
 | `crates/westonite-shell-plugin/src/lib.rs` | `wet_shell_init` entry contract | R1-only cdylib, deleted at R3 (D2) |
 | `crates/weston/src/xwayland.rs` | `frontend/xwayland.c` @ 14.0.1 (whole file: `wet_load_xwayland` 234, `spawn_xserver` 105, `handle_display_fd` 58, `xserver_cleanup` 92, `wet_xwayland_destroy` 221) + `wet_client_launch`/`sigchld_handler` slices of `frontend/main.c` (437/376) | R2d; process side in `westonite-spawn` |
+| `crates/weston/src/screenshooter.rs` | `frontend/weston-screenshooter.c` @ 14.0.1 (whole file) + `wet_client_start` (main.c:512) and `wet_get_bindir_path` (main.c:1025) | R2e; created by the frontend, not the shell (§4 ownership fix, pulled forward from R3) |
 
 ## Migration log
+
+- **R2e (2026-07-27)** — screenshooter/wcap recorder (plan §7 R2e),
+  branch `claude/rust-migration-j84b2p`:
+  - Fence (`crates/weston/src/screenshooter.rs`, all of C
+    `frontend/weston-screenshooter.c`): Super+S key binding spawns
+    `weston-screenshooter` (BINDIR resolution through
+    `weston_module_path_from_env` + /usr/bin, C wet_get_bindir_path;
+    wayland socketpair + WAYLAND_SOCKET via westonite-spawn, C
+    wet_client_start), gated by the in-flight client slot; one
+    oneshot client-destroy Listener, embedded in the state and
+    reattached per spawn exactly as C reuses its embedded listener,
+    resets the slot (NOT a box per press retired through defer_drop:
+    pending-drop only drains at dispatch depth zero, which the run
+    loop never reaches — the R2d deferred-drain note); Super+R
+    toggles `weston_recorder_start/stop` on the keyboard-focus output
+    with C's first-output fallback; the capture-authority listener
+    authorizes exactly the spawned client, attached by direct
+    wl_signal_add on `output_capture.ask_auth` because C's helper
+    overwrites the notify our Listener trampoline needs; teardown
+    from Compositor::drop before weston_compositor_destroy (C
+    screenshooter_destroy runs inside the destroy emission).
+    Ownership: created by build() right after the shell attaches —
+    the §4 "frontend owns screenshooter_create" fix, pulled forward
+    from R3 (the C tree still has shell.c:2232 call it; behavior
+    identical).
+  - **Found live: any weston-output-capture attempt aborts the
+    compositor once a VNC peer is connected** —
+    `assert(wl_list_empty(&ci->pending_capture_list))`,
+    output-capture.c:193: vnc_output_repaint reaches the renderer
+    only through neatvnc's aml dispatch, so queued capture tasks can
+    outlive the repaint cycle.  Reproduced with the C frontend for an
+    authorized Super+S shot AND a denied foreign client; headless
+    denies cleanly (the stock client then dies on its own
+    screenshot.c:101 zero-width assert).  RPM-side, out of scope
+    (our-code-only); e2e exercises the spawn path with the binary
+    diverted via WESTON_MODULE_MAP and the deny path on headless —
+    see docs/e2e-test-plan.md §6/§2.7.
+  - Documented divergences: (a) C's recorder fallback does
+    `container_of(output_list.next)` with no empty check — a wild
+    pointer under --no-outputs; ours logs "no output to record" and
+    no-ops.  (b) a failed spawn is reported in the parent (std's
+    status pipe) and creates no wl_client, where C forks first and
+    leaves a doomed client whose death resets the slot — both settle
+    in the same state.  Corollary: C tracks children on a *list*, we
+    keep one pid slot per subsystem, so in the narrow case where
+    `wl_client_create` fails and a second Super+S lands before the
+    first child's SIGCHLD, C logs both exits and we log only the
+    later one.  (c) B1/B2 run sync-tier (planned "deferred" pre-R0;
+    the handlers touch only wrapper state — A3 proofs in the
+    inventory).
+  - Review round (ae2f18a, verified claim by claim — all six changes
+    kept): (1) the **doc-comment splice** in log.rs was a real
+    mistake of mine (my Edit anchor cut `log_line`'s doc comment in
+    half, orphaning its second line onto the new helper). (2) the
+    **client-destroy listener reuse** is right and more C-faithful —
+    C reattaches the single listener embedded in `struct
+    screenshooter` on every spawn, and my box-per-press +
+    `defer_drop` would have accumulated one box per Super+S because
+    pending-drop only drains at depth zero (the R2d gap). Verified
+    live in a **debug** build (so `mark_attached`'s `debug_assert!(!
+    attached, "double attach")` was armed) with the client diverted
+    to `/bin/true`, which makes `wl_client_create` succeed and the
+    client die at once: 5 spawn→connect→die→reattach cycles gave 5
+    launches, 5 exit lines, no double-attach, and valgrind 0 errors
+    / 0 definitely-lost. (3) setting pid/exe **before**
+    `wl_client_create` matches C, where `wet_client_launch` lists the
+    process before `wet_client_start` reaches client creation. (4)
+    byte-preserving `bindir_path` (argv[0] must not go through
+    `to_string_lossy`) — note the C helper returns 0 rather than a
+    truncated length when the mapping exceeds the buffer
+    (compositor.c:10556), so the added `buf.get(..len)` is defensive,
+    not a panic fix. (5) copying the exe path out before
+    `log_child_exit` upholds the no-borrow-across-FFI rule. (6) the
+    `re.escape` and `qemu_keys = False` test fixes are correct.
+  - Chased the reviewer's `defer_drop` rationale to its root and
+    **measured** it: instrumenting `defer_drop` showed the
+    pending-drop list growing monotonically (len=1,2,3 at depth=2)
+    across one move-grab e2e test, so the R2d deferred-drain gap is
+    a lifetime-long memory leak as well as an ordering delay — plan
+    §3e/A4 now records that second dimension. (A surface-destroy
+    probe did *not* reproduce a retirement, so the blast radius
+    beyond the grab path is unmeasured and left unclaimed.)
+  - e2e infrastructure: `vncclient.py` gained the QEMU Extended Key
+    Event pseudo-encoding (-258) + `key_code()` (qnum keycodes) —
+    the server's keysym path never tracks the Super modifier, so
+    Super+X bindings are reachable only by keycode; the capture loop
+    now re-requests after a pseudo-rect-only update (neatvnc's
+    one-time ext-ack consumes an update request); the compositor runs
+    with cwd in the test tmp dir.  New `test_screenshooter.py` (3
+    tests, §2.7), green against BOTH frontends.
+  - Validation: fmt/clippy/unit/fence green; all 8 smoke legs pass
+    (legs 5-8 exercise screenshooter create + authority teardown on
+    every shell attach); full e2e vs the Rust frontend **62 passed,
+    1 skipped**; full C-oracle suite re-run green (one resize-grab
+    timing flake, 3/3 green in isolation); targeted valgrind probe of
+    the recorder cycle + diverted spawns + slot reuse + TERM
+    teardown: 0 errors, 0 definite leaks.
 
 - **R2d (2026-07-27)** — xwayland (plan §7 R2d), branch
   `claude/rust-migration-j84b2p`:

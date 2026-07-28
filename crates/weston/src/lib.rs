@@ -55,6 +55,7 @@ pub(crate) mod layer;
 pub(crate) mod listener;
 pub(crate) mod panic_barrier;
 pub(crate) mod registry;
+pub(crate) mod screenshooter;
 pub(crate) mod xwayland;
 
 #[cfg(feature = "hybrid-r1")]

@@ -218,6 +218,21 @@ workspaces (single, upstream).
 | installed-suite | the `@pytest.mark.installed` subset (clean shutdown, both background pixel tests, P2 config discovery incl. the weston.ini negative, no-helpers, autolaunch-watch, Xwayland round-trip) re-run against the **installed RPM** in the pristine container — same tests, different binaries; excludes anything needing the build tree (wtest-client/xclient, wayland-info) |
 | session-file | `wayland-sessions/westonite.desktop` passes `desktop-file-validate`; `Exec=` resolves in PATH |
 
+### 2.7 Screenshooter & wcap recorder [vnc] *(added at R2e)*
+
+Keys go in as QEMU extended key events — `vncclient.py` gained the
+`-258` pseudo-encoding + `key_code()` (qnum keycodes) because the
+server's keysym path never tracks the Super modifier
+(`vnc_handle_key_event`: only Ctrl/Alt get STATE_UPDATE_AUTOMATIC).
+Capture *completion* is blocked by the RPM-side abort documented in
+§6.
+
+| Test | Asserts |
+|---|---|
+| super-s-spawn | Super+S resolves the client via `WESTON_MODULE_MAP` (both frontends use `weston_module_path_from_env`) and logs the spawn; the in-flight slot frees after the attempt dies and a second Super+S spawns again |
+| foreign-capture-denied | a `weston-screenshooter` the compositor did not spawn gets no capture (headless — see §6) and the compositor survives |
+| super-r-wcap [pix] | Super+R starts the recorder (`capture.wcap` appears in the compositor cwd), damage produces frames, second Super+R stops it; header magic/format/geometry match the output |
+
 ---
 
 ## 3. Pixel determinism *(as implemented)*
@@ -346,6 +361,25 @@ Each phase lands as an independently green PR; the suite is additive.
   skip with this reason (the RFB client retains its
   `set_desktop_size()` support for when EPEL ships a fix), and S2
   cannot use VNC resize as its trigger.
+- **Found during R2e — any weston-output-capture attempt aborts the
+  compositor once a VNC peer is connected.** The vnc backend's
+  repaint (`vnc_output_repaint`) reaches the renderer only indirectly
+  through neatvnc's aml dispatch, so a capture task queued on the
+  output can survive the repaint cycle and trip
+  `assert(wl_list_empty(&ci->pending_capture_list))`
+  (output-capture.c:193, weston-libs 14.0.1). Reproduced with the C
+  frontend both for a Super+S-authorized screenshot and for a
+  *denied* foreign client; without an RFB peer the foreign client
+  hangs instead (VNC output powered off), and on headless the deny is
+  clean server-side while the stock `weston-screenshooter` client
+  aborts on its own `screenshot.c:101` zero-width assert. Entirely
+  inside EPEL's weston-libs (our-code-only decision). Consequences
+  for the suite (§2 test_screenshooter.py): Super+S is exercised with
+  the client binary diverted via `WESTON_MODULE_MAP` (binding, gate,
+  spawn, slot recycling — no capture committed), the authority-denial
+  test runs on headless, and the wcap recorder (a renderer-hook
+  mechanism, not output-capture) is verified end-to-end. Capture
+  *completion* re-enables when EPEL ships a fixed backend.
 - **Found during E3 — VNC drag deltas reach resize grabs halved.**
   During an interactive resize drive over VNC, only every second
   pointer motion reaches the shell's resize grab and at half its
