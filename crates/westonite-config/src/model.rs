@@ -176,6 +176,12 @@ pub struct Shell {
     /// `[shell] client=` — empty means "no helper client" (P3); kept
     /// for surface completeness.
     pub client: Option<String>,
+    /// `[shell] cursor-theme=` / `cursor-size=`: read by the nested
+    /// wayland backend for the cursor it draws on the parent
+    /// compositor (C load_wayland_backend, main.c:4084).  C default
+    /// size 32.
+    pub cursor_theme: Option<String>,
+    pub cursor_size: Option<i32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]

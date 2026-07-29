@@ -132,7 +132,34 @@ fn main() -> ExitCode {
                 tls_key: settings.vnc_tls_key.clone(),
                 disable_tls: settings.vnc_disable_tls,
             }),
-            // reject_unported() has already refused everything else.
+            Backend::X11 => builder.add_x11(weston::X11Options {
+                fullscreen: settings.fullscreen,
+                no_input: settings.no_input,
+                output_count: settings
+                    .output_count
+                    .and_then(|v| i32::try_from(v).ok())
+                    .unwrap_or(1),
+            }),
+            Backend::Wayland => builder.add_wayland(weston::WaylandOptions {
+                display_name: settings.wayland_display.clone(),
+                fullscreen: settings.fullscreen,
+                sprawl: settings.sprawl,
+                output_count: settings
+                    .output_count
+                    .and_then(|v| i32::try_from(v).ok())
+                    .unwrap_or(1),
+                cursor_theme: settings.cursor_theme.clone(),
+                cursor_size: settings.cursor_size,
+            }),
+            Backend::Pipewire => builder.add_pipewire(weston::PipewireOptions {
+                gbm_format: settings.gbm_format.clone(),
+                num_outputs: settings
+                    .pipewire_num_outputs
+                    .and_then(|v| i32::try_from(v).ok())
+                    .unwrap_or(1),
+            }),
+            // reject_unported() has already refused everything else
+            // (drm; rdp is a permanent product decision — see there).
             _ => builder,
         };
     }
@@ -224,16 +251,34 @@ fn verify_xdg_runtime_dir() -> Option<ExitCode> {
 /// fatal wherever it appears.  `build_output_policy` validates the
 /// ported keys on the same all-sections basis.
 fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
+    // RDP is a deliberate product decision, not a gap: it stays
+    // unimplemented, so say so in its own words rather than promising a
+    // future slice (see PROVENANCE / plan §7).
+    if settings.backends.contains(&Backend::Rdp) {
+        return Some(fatal(
+            "the rdp backend is not supported by westonite (deliberately dropped); \
+             use the vnc backend for remote access",
+        ));
+    }
     let unported: Vec<&str> = settings
         .backends
         .iter()
-        .filter(|b| !matches!(b, Backend::Headless | Backend::Vnc))
+        .filter(|b| {
+            !matches!(
+                b,
+                Backend::Headless
+                    | Backend::Vnc
+                    | Backend::X11
+                    | Backend::Wayland
+                    | Backend::Pipewire
+            )
+        })
         .map(|b| b.name())
         .collect();
     if !unported.is_empty() {
         return Some(fatal(&format!(
-            "backend \"{}\" is not yet ported to the Rust frontend (R2c supports \
-             headless and vnc); use the C westonite",
+            "backend \"{}\" is not yet ported to the Rust frontend (drm lands with its \
+             own slice); use the C westonite",
             unported.join("\", \"")
         )));
     }
@@ -244,38 +289,65 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     // not a silent no-op.
     let has_headless = settings.backends.contains(&Backend::Headless);
     let has_vnc = settings.backends.contains(&Backend::Vnc);
-    // Of the two ported backends, only headless has these in its
-    // weston_option table (main.c load_headless_backend).
-    let headless_only_flags = [
-        (settings.scale.is_some(), "--scale"),
-        (settings.transform.is_some(), "--transform"),
-        (settings.no_outputs, "--no-outputs"),
-        (settings.refresh_rate.is_some(), "--refresh-rate"),
-        (cli.use_gl, "--use-gl"),
-        (cli.use_pixman, "--use-pixman"),
-    ];
-    // ... and only vnc has these (main.c load_vnc_backend).
-    let vnc_only_flags = [
-        (cli.port.is_some(), "--port"),
-        (cli.address.is_some(), "--address"),
-        (cli.vnc_tls_cert.is_some(), "--vnc-tls-cert"),
-        (cli.vnc_tls_key.is_some(), "--vnc-tls-key"),
+    let has_x11 = settings.backends.contains(&Backend::X11);
+    let has_wayland = settings.backends.contains(&Backend::Wayland);
+    let has_pipewire = settings.backends.contains(&Backend::Pipewire);
+    // One row per flag, with the set of loaded backends that would
+    // consume it — transcribed from the C `weston_option` tables:
+    // headless main.c:3497, x11 3947, wayland 4070, vnc 3707,
+    // pipewire 3625.  (--width/--height are in every table, so they
+    // never appear here.)
+    let per_backend_flags = [
+        (
+            settings.scale.is_some(),
+            "--scale",
+            has_headless || has_x11 || has_wayland,
+        ),
+        (settings.transform.is_some(), "--transform", has_headless),
+        (settings.no_outputs, "--no-outputs", has_headless),
+        (
+            settings.refresh_rate.is_some(),
+            "--refresh-rate",
+            has_headless,
+        ),
+        (cli.use_gl, "--use-gl", has_headless),
+        (
+            cli.use_pixman,
+            "--use-pixman",
+            has_headless || has_x11 || has_wayland,
+        ),
+        (cli.fullscreen, "--fullscreen", has_x11 || has_wayland),
+        (
+            cli.output_count.is_some(),
+            "--output-count",
+            has_x11 || has_wayland,
+        ),
+        (cli.no_input, "--no-input", has_x11),
+        (cli.sprawl, "--sprawl", has_wayland),
+        (cli.display.is_some(), "--display", has_wayland),
+        (cli.port.is_some(), "--port", has_vnc),
+        (cli.address.is_some(), "--address", has_vnc),
+        (cli.vnc_tls_cert.is_some(), "--vnc-tls-cert", has_vnc),
+        (cli.vnc_tls_key.is_some(), "--vnc-tls-key", has_vnc),
         (
             cli.disable_transport_layer_security,
             "--disable-transport-layer-security",
+            has_vnc,
         ),
     ];
-    // Consumed by no ported backend at all: only drm/x11/wayland/rdp
-    // parse these, and reaching here means none of them is loaded — so
-    // the flag is left over unconditionally, C's `unhandled option`.
-    // (--width/--height are absent from all three tables on purpose:
-    // both ported backends parse them.)
+    // `has_pipewire` has no flags of its own (C's pipewire table is
+    // width/height only); named so the set stays visibly complete.
+    let _ = has_pipewire;
+    for (set, flag, consumed_by_a_loaded_backend) in per_backend_flags {
+        if set && !consumed_by_a_loaded_backend {
+            return Some(unhandled_option(flag));
+        }
+    }
+    // Consumed by no ported backend at all: the drm-only options, and
+    // the rdp ones (a backend westonite deliberately does not ship).
+    // Reaching here means the flag is left over unconditionally — C's
+    // `unhandled option`.
     let unconsumed_flags = [
-        (cli.fullscreen, "--fullscreen"),
-        (cli.output_count.is_some(), "--output-count"),
-        (cli.no_input, "--no-input"),
-        (cli.sprawl, "--sprawl"),
-        (cli.display.is_some(), "--display"),
         (cli.seat.is_some(), "--seat"),
         (cli.drm_device.is_some(), "--drm-device"),
         (cli.additional_devices.is_some(), "--additional-devices"),
@@ -290,16 +362,6 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         (cli.no_remotefx_codec, "--no-remotefx-codec"),
         (cli.force_no_compression, "--force-no-compression"),
     ];
-    for (set, flag) in headless_only_flags {
-        if set && !has_headless {
-            return Some(unhandled_option(flag));
-        }
-    }
-    for (set, flag) in vnc_only_flags {
-        if set && !has_vnc {
-            return Some(unhandled_option(flag));
-        }
-    }
     for (set, flag) in unconsumed_flags {
         if set {
             return Some(unhandled_option(flag));
@@ -449,6 +511,7 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             scale: out.scale,
             transform: None,
             resizeable: out.resizeable,
+            gbm_format: out.gbm_format.clone(),
             mirror_of: out.mirror_of.clone(),
         };
         if let Some(mode) = &out.mode {

@@ -8,6 +8,34 @@ on:
   pull_request:
 
 jobs:
+  # Throwaway probe (not a gate): can a GitHub-hosted runner give us a
+  # virtual KMS device?  That decides how the DRM backend gets tested --
+  # vkms straight on the runner, or a VM (qemu/virtme) with vkms inside.
+  # continue-on-error so a "no" is information, never a red build.
+  # Delete this job once the DRM slice picks its route.
+  drm-vkms-probe:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Probe for vkms (virtual KMS) on the runner
+        run: |
+          echo "== kernel: $(uname -r)"
+          echo "== is the module present?"
+          find /lib/modules/"$(uname -r)" -name 'vkms*' -print 2>/dev/null || true
+          modinfo vkms 2>&1 | head -5 || echo "modinfo: no vkms"
+          echo "== can we load it?"
+          if sudo modprobe vkms 2>&1; then
+            echo "modprobe vkms: OK"
+          else
+            echo "modprobe vkms: FAILED"
+          fi
+          echo "== resulting DRM devices:"
+          ls -l /dev/dri 2>&1 || echo "no /dev/dri"
+          echo "== KVM available (would a VM route work)?"
+          ls -l /dev/kvm 2>&1 || echo "no /dev/kvm"
+          echo "== modules-extra installed?"
+          dpkg -l | grep -c linux-modules-extra || true
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

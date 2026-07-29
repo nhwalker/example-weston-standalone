@@ -934,10 +934,20 @@ halves can be mixed and smoke-tested at every phase boundary.
   machinery (remote-head deferral, output-created enable,
   source-mode modeline, resize propagation), e2e-verified with VNC
   mirroring headless.  Remaining in R2c: x11/wayland/rdp/pipewire
-  loaders (RDP deliberately deferred out of the mirror slice — its
-  monitor-negotiation surface has zero container reachability),
-  remoting/pipewire virtual outputs, and the deferred clone-of +
-  color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
+  loaders.  *R2c-nested* ✅ *(done — see PROVENANCE.md log)*: x11,
+  wayland and pipewire, all three **e2e-tested rather than
+  inspection-verified** — the earlier "no container reachability"
+  assessment was wrong for these three, and testing them needs no VM
+  and no GPU: the wayland backend nests inside a headless westonite,
+  the x11 backend runs as a client of the Xwayland *we* spawn (EL10
+  ships no X.org server at all, so there is no Xvfb route), and
+  pipewire needs only its daemon.  **RDP is dropped as a product
+  decision** (2026-07-29): westonite does not ship it, `--backend=rdp`
+  says so, and VNC is the supported remote path.  Remaining in R2c:
+  the DRM backend (the one that genuinely needs a virtual KMS device —
+  a throwaway CI probe job decides between vkms-on-the-runner and a
+  VM), remoting/pipewire *virtual output* plugins, and the deferred
+  clone-of + color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
   log)*: the `frontend/xwayland.c` glue (module load + plugin API,
   lazy `spawn_xserver` through `westonite-spawn`, `-displayfd`
   readiness watch, SIGCHLD-driven `xserver_exited` respawn,

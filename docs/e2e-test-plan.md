@@ -233,6 +233,26 @@ Capture *completion* is blocked by the RPM-side abort documented in
 | foreign-capture-denied | a `weston-screenshooter` the compositor did not spawn gets no capture (headless — see §6) and the compositor survives |
 | super-r-wcap [pix] | Super+R starts the recorder (`capture.wcap` appears in the compositor cwd), damage produces frames, second Super+R stops it; header magic/format/geometry match the output |
 
+### 2.8 Nested & streaming backends *(added at R2c-nested)*
+
+No VM and no GPU: each backend runs against something the suite already
+knows how to start.  All three take `--renderer=pixman` (they default
+to GL; there is no GPU in the container).
+
+| Test | Asserts |
+|---|---|
+| wayland-nested | a second westonite with `--backend=wayland` inside a headless one advertises `wayland0` and serves its own clients |
+| wayland-count-size | `--output-count=2` creates `wayland0`/`wayland1`; `--width/--height` size them |
+| x11-nested | `--backend=x11` as a client of the Xwayland *we* spawn advertises `screen0` (EL10 ships **no X.org server** — no Xvfb — so the compositor under test provides the X server) |
+| x11-default-size | x11's own configure defaults, 1024x600, distinct from every other backend's |
+| pipewire-output | with a pipewire daemon running, `--backend=pipewire` publishes the `pipewire` output (skipped where the daemon is absent) |
+| rdp-refused [toml] | `--backend=rdp` is a startup error naming the product decision (C still builds RDP, so Rust-only) |
+
+Nested instances also fixed a harness assumption: the `westonite`
+fixture now tears instances down in **reverse** creation order, since a
+nested child dies non-zero if its host (and with it the parent display
+or X server) is killed first.
+
 ---
 
 ## 3. Pixel determinism *(as implemented)*

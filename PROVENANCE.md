@@ -15,9 +15,64 @@ Rebase procedure on an EPEL weston bump: plan §8.
 | `crates/westonite-shell/src/lib.rs` | `desktop-shell/shell.c` @ 14.0.1+T9: policy half (focus/activation 343-458 + 1622-1727, children 1457-1476, commit/map 1296-1397, output policy 1822-2045, teardown 2047-2115) | safe half; §10.3 bool** bug fixed by design |
 | `crates/westonite-shell-plugin/src/lib.rs` | `wet_shell_init` entry contract | R1-only cdylib, deleted at R3 (D2) |
 | `crates/weston/src/xwayland.rs` | `frontend/xwayland.c` @ 14.0.1 (whole file: `wet_load_xwayland` 234, `spawn_xserver` 105, `handle_display_fd` 58, `xserver_cleanup` 92, `wet_xwayland_destroy` 221) + `wet_client_launch`/`sigchld_handler` slices of `frontend/main.c` (437/376) | R2d; process side in `westonite-spawn` |
+| `crates/weston/src/compositor.rs` (x11/wayland/pipewire loaders) | `frontend/main.c` @ 14.0.1: `load_x11_backend` (3924), `load_wayland_backend` (4044), `load_pipewire_backend` (3611) + their `*_output_configure` (3910/4030/3558) | R2c-nested |
 | `crates/weston/src/screenshooter.rs` | `frontend/weston-screenshooter.c` @ 14.0.1 (whole file) + `wet_client_start` (main.c:512) and `wet_get_bindir_path` (main.c:1025) | R2e; created by the frontend, not the shell (§4 ownership fix, pulled forward from R3) |
 
 ## Migration log
+
+- **R2c-nested (2026-07-29)** — the x11, wayland and pipewire backends,
+  branch `claude/rust-migration-j84b2p`.
+  - **The premise changed before the code did.** These three were
+    slated as "inspection-verified, zero container reachability".  That
+    was wrong: probing the environment first (with the *C* frontend, so
+    the environment was proven before anything was ported) showed all
+    three run in the existing container with no VM and no GPU —
+    wayland nests inside a headless westonite, x11 runs as a client of
+    the Xwayland *we* spawn, pipewire needs only its daemon.  So they
+    are ported the same way every other slice was: with e2e tests that
+    actually run.
+  - Two environment findings worth keeping: EL10 ships **no X.org
+    server at all** (only Xwayland — so there is no `Xvfb` route and
+    the compositor under test supplies the X server for the compositor
+    under test), and all three backends default to the GL renderer, so
+    the harness passes `--renderer=pixman` exactly as the VNC leg does.
+  - Fence: `load_x11` / `load_wayland` / `load_pipewire` mirroring the
+    C loaders, plus `create_windowed_heads` for the shared
+    section-name-then-default create_head loop ('X'→`screenN`,
+    'WL'→`waylandN`).  `HeadSetup::Windowed` now carries *which*
+    windowed plugin API to drive — it previously hardcoded the
+    headless one, which would have silently misconfigured x11/wayland
+    outputs.  New `HeadSetup::Pipewire` for the set_gbm_format +
+    output_set_size configure.  `OutputPolicy::decide_sized` supplies
+    the per-backend defaults that C keeps in each configure's
+    `wet_output_config defaults` (x11 1024x600 is the one that differs
+    visibly, and has its own test).
+  - Frontend: the per-flag fail-loud table was restructured from
+    "headless-only / vnc-only / nobody" into one row per flag with the
+    set of loaded backends that consumes it, transcribed from the C
+    `weston_option` tables — `--scale` and `--use-pixman` are shared by
+    three backends now, so the old shape would have rejected valid
+    invocations.
+  - **RDP dropped as a product decision** (owner's call, 2026-07-29):
+    not a porting gap.  `--backend=rdp` fails with a message that says
+    westonite does not ship it and points at VNC; its CLI flags stay in
+    the unconsumed table.  The R2c-mirror decision to defer RDP turned
+    out to be moot in the best way.
+  - Harness: the `westonite` fixture tears instances down in **reverse**
+    creation order — a nested child exits non-zero when its host (and
+    with it the parent display or X server) is killed first, which is a
+    teardown artefact, not a failure.  `[shell] cursor-theme` /
+    `cursor-size` added (C reads them for the nested wayland cursor).
+    `pipewire`/`pipewire-utils` added to the build image.
+  - CI: a throwaway `drm-vkms-probe` job (`continue-on-error`) reports
+    whether a GitHub-hosted runner can `modprobe vkms`, whether
+    `/dev/dri` appears and whether `/dev/kvm` exists — the cheap
+    experiment that picks the DRM route (vkms on the runner vs. a
+    VM/virtme).  Delete it once DRM lands.
+  - Validation: fmt/clippy/unit/fence green; all 8 smoke legs; full
+    e2e **Rust 69 passed / 1 skipped**, **C oracle 58 passed / 12
+    skipped**; every new test green against BOTH frontends (the
+    rdp-refusal one is Rust-only policy, so it is `toml_only`).
 
 - **Deferred-drain fix (2026-07-28)** — the dispatch-core defect found
   at the R2d review round and measured at R2e, branch
