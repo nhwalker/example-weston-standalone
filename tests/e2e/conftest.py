@@ -57,7 +57,12 @@ def westonite(tmp_path):
     yield launch
 
     errors = []
-    for w in instances:
+    # Reverse creation order: nested instances (a wayland backend inside
+    # another westonite, an x11 backend on our own Xwayland) depend on
+    # the one launched before them.  Tearing the host down first pulls
+    # the child's display out from under it and it exits non-zero --
+    # a teardown artefact, not a test failure.
+    for w in reversed(instances):
         try:
             if w.proc.poll() is None:
                 w.terminate()

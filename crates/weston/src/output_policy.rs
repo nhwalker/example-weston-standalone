@@ -70,6 +70,9 @@ pub struct OutputRule {
     pub transform: Option<OutputTransform>,
     /// `[output] resizeable=` (vnc/rdp only; C default true).
     pub resizeable: Option<bool>,
+    /// `[output] gbm-format=` (pipewire configure reads it per output;
+    /// the DRM one is not ported).
+    pub gbm_format: Option<String>,
     /// `[output] mirror-of=` — the *source* output this (remote) head
     /// mirrors (C wet_config_find_output_mirror family).  The rule's
     /// `name` is the remote head; `mirror_of` names the native output
@@ -122,13 +125,22 @@ impl OutputPolicy {
     /// (`off`).  Precedence: defaults → section → CLI (C
     /// parse_simple_mode / wet_output_set_scale / _set_transform).
     pub fn decide(&self, head_name: &str) -> Option<OutputSetup> {
+        self.decide_sized(head_name, self.default_size)
+    }
+
+    /// As [`OutputPolicy::decide`], but with the backend's own default
+    /// size.  Every windowed backend shares
+    /// `wet_configure_windowed_output_from_config` and differs only in
+    /// the `wet_output_config defaults` it passes: headless 1024x640
+    /// (main.c:3438), x11 1024x600 (3910), wayland 1024x640 (4030).
+    pub fn decide_sized(&self, head_name: &str, default_size: (i32, i32)) -> Option<OutputSetup> {
         let rule = self.rules.iter().find(|r| r.name == head_name);
         if let Some(r) = rule
             && r.off
         {
             return None;
         }
-        let (mut width, mut height) = self.default_size;
+        let (mut width, mut height) = default_size;
         let mut scale = self.default_scale;
         let mut transform = self.default_transform;
         if let Some(r) = rule {
@@ -170,6 +182,43 @@ impl OutputPolicy {
     /// comes from the section ONLY (C passes `parsed_scale = 0`, so
     /// `--scale` never reaches a VNC output); the transform is forced
     /// normal (no section read at all); `resizeable=` defaults true.
+    /// C pipewire_backend_output_configure: 640x480 defaults, scale
+    /// from the section, transform forced NORMAL (so no transform
+    /// field here), plus the section's own `gbm-format`.
+    pub fn decide_pipewire(&self, head_name: &str) -> Option<PipewireOutputSetup> {
+        let rule = self.rules.iter().find(|r| r.name == head_name);
+        if let Some(r) = rule
+            && r.off
+        {
+            return None;
+        }
+        let (mut width, mut height) = (640, 480);
+        let mut scale = 1;
+        let mut gbm_format = None;
+        if let Some(r) = rule {
+            if let Some((w, h)) = r.size {
+                width = w;
+                height = h;
+            }
+            if let Some(s) = r.scale {
+                scale = s;
+            }
+            gbm_format = r.gbm_format.clone();
+        }
+        if let Some(w) = self.cli.width {
+            width = w;
+        }
+        if let Some(h) = self.cli.height {
+            height = h;
+        }
+        Some(PipewireOutputSetup {
+            width,
+            height,
+            scale,
+            gbm_format,
+        })
+    }
+
     pub fn decide_vnc(&self, head_name: &str) -> Option<VncOutputSetup> {
         let rule = self.rules.iter().find(|r| r.name == head_name);
         if let Some(r) = rule
@@ -224,6 +273,17 @@ impl OutputPolicy {
     }
 }
 
+/// What the pipewire configure needs (C pipewire_backend_output_configure,
+/// main.c:3558): parse_simple_mode defaults 640x480, `wet_output_set_scale`,
+/// a per-output `gbm-format`, and the transform forced NORMAL.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PipewireOutputSetup {
+    pub width: i32,
+    pub height: i32,
+    pub scale: i32,
+    pub gbm_format: Option<String>,
+}
+
 /// The resolved per-head decision for a VNC output (C
 /// vnc_backend_output_configure: no transform — always normal).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -258,6 +318,7 @@ mod tests {
             scale: Some(2),
             transform: Some(OutputTransform::Rotate90),
             resizeable: None,
+            gbm_format: None,
             mirror_of: None,
         });
         assert_eq!(
@@ -311,6 +372,7 @@ mod tests {
             scale: Some(2),
             transform: Some(OutputTransform::Rotate90), // ignored for vnc
             resizeable: Some(false),
+            gbm_format: None,
             ..OutputRule::default()
         });
         // CLI --scale must NOT reach a VNC output (C parsed_scale = 0);

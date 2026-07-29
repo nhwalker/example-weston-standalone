@@ -114,7 +114,12 @@ class Westonite:
             argv += ["--renderer=pixman",
                      f"--port={self.vnc_port}",
                      "--disable-transport-layer-security"]
-        if backend in ("vnc", "headless") and width is not None:
+        elif backend in ("wayland", "x11", "pipewire"):
+            # nested/streaming backends default to the GL renderer and
+            # there is no GPU in the test container; pixman is what the
+            # vnc leg uses for the same reason
+            argv += ["--renderer=pixman"]
+        if backend in ("vnc", "headless", "wayland", "x11") and width is not None:
             argv += [f"--width={width}", f"--height={height}"]
         if socket_name:
             argv += [f"--socket={socket_name}"]

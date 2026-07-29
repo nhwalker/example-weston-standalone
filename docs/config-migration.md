@@ -70,6 +70,11 @@ positive; C silently treated `0` as "use the default", which hid
 typos.  `[[output]] scale` follows the same rule — C passed it
 straight to `weston_output_set_scale`, where `0` trips an assert.
 
+`[shell]` gains `cursor-theme` and `cursor-size` (C read them from
+the same section for the nested wayland backend's cursor; default size
+32).  `[pipewire] num-outputs` and `[[output]] gbm-format` are live for
+the pipewire backend.
+
 `[[output]]` sections are validated at startup, all of them, not
 lazily when a head of that name turns up: an unknown `transform` name
 is fatal (C's `Invalid transform "…"` wording), as is a section with

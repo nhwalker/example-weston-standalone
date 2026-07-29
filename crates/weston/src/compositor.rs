@@ -23,6 +23,9 @@ use crate::output_policy::{OutputPolicy, OutputSetup};
 pub enum BackendKind {
     Headless,
     Vnc,
+    X11,
+    Wayland,
+    Pipewire,
 }
 
 /// Headless backend options (C load_headless_backend's CLI slice).
@@ -53,6 +56,43 @@ pub struct VncOptions {
 enum BackendSpec {
     Headless(HeadlessOptions),
     Vnc(VncOptions),
+    X11(X11Options),
+    Wayland(WaylandOptions),
+    Pipewire(PipewireOptions),
+}
+
+/// X11 backend options (C load_x11_backend's CLI slice, main.c:3947).
+#[derive(Debug, Clone, Default)]
+pub struct X11Options {
+    pub fullscreen: bool,
+    pub no_input: bool,
+    /// C --output-count, default 1: how many `screenN` heads to create
+    /// beyond the `[[output]]` sections whose name starts with 'X'.
+    pub output_count: i32,
+}
+
+/// Wayland (nested) backend options (C load_wayland_backend, 4070).
+#[derive(Debug, Clone, Default)]
+pub struct WaylandOptions {
+    /// C --display: parent compositor socket (None = WAYLAND_DISPLAY).
+    pub display_name: Option<String>,
+    pub fullscreen: bool,
+    /// C --sprawl: one output spanning the parent's outputs; the
+    /// windowed-output API is then absent and nothing is configurable.
+    pub sprawl: bool,
+    pub output_count: i32,
+    /// C `[shell] cursor-theme` / `cursor-size` (default 32).
+    pub cursor_theme: Option<String>,
+    pub cursor_size: i32,
+}
+
+/// PipeWire backend options (C load_pipewire_backend, 3625).
+#[derive(Debug, Clone, Default)]
+pub struct PipewireOptions {
+    /// C `[core] gbm-format` (the backend-wide one).
+    pub gbm_format: Option<String>,
+    /// C `[pipewire] num-outputs`, default 1.
+    pub num_outputs: i32,
 }
 
 /// `[keyboard]` slice of C weston_compositor_init_config, applied
@@ -198,6 +238,21 @@ impl CompositorBuilder {
 
     pub fn add_headless(mut self, opts: HeadlessOptions) -> Self {
         self.backends.push(BackendSpec::Headless(opts));
+        self
+    }
+
+    pub fn add_x11(mut self, opts: X11Options) -> Self {
+        self.backends.push(BackendSpec::X11(opts));
+        self
+    }
+
+    pub fn add_wayland(mut self, opts: WaylandOptions) -> Self {
+        self.backends.push(BackendSpec::Wayland(opts));
+        self
+    }
+
+    pub fn add_pipewire(mut self, opts: PipewireOptions) -> Self {
+        self.backends.push(BackendSpec::Pipewire(opts));
         self
     }
 
@@ -376,6 +431,7 @@ impl CompositorBuilder {
 
         let mut comp = Compositor {
             ctx: ctx.clone(),
+            policy_names: self.policy.rules.iter().map(|r| r.name.clone()).collect(),
             log_ctx,
             heads_changed: None,
             frontend_listeners: Vec::new(),
@@ -471,6 +527,9 @@ impl CompositorBuilder {
             match spec {
                 BackendSpec::Headless(opts) => comp.load_headless(self.renderer, opts)?,
                 BackendSpec::Vnc(opts) => comp.load_vnc(self.renderer, opts)?,
+                BackendSpec::X11(opts) => comp.load_x11(self.renderer, opts)?,
+                BackendSpec::Wayland(opts) => comp.load_wayland(self.renderer, opts)?,
+                BackendSpec::Pipewire(opts) => comp.load_pipewire(self.renderer, opts)?,
             }
         }
 
@@ -564,6 +623,10 @@ impl CompositorBuilder {
 
 pub struct Compositor {
     ctx: Ctx,
+    /// `[[output]]` section names in file order — the windowed loaders
+    /// filter them by prefix to decide which heads to create, as C
+    /// walks the config sections (load_x11_backend / load_wayland_backend).
+    policy_names: Vec<String>,
     log_ctx: *mut weston_sys::weston_log_context,
     heads_changed: Option<Listener>,
     /// Frontend listeners on compositor-embedded signals (mirror L6 +
@@ -724,6 +787,234 @@ impl Compositor {
             .backends
             .borrow_mut()
             .push((backend, BackendKind::Vnc));
+        Ok(())
+    }
+
+    /// Shared tail of the two windowed nested backends (C's
+    /// `weston_windowed_output_get_api` + the create_head loop in
+    /// load_x11_backend / load_wayland_backend): create a head per
+    /// matching `[[output]]` section name, then default-named heads up
+    /// to `count`.  `prefix` is C's name filter ('X' for x11, "WL" for
+    /// wayland); `default_name` builds `screenN` / `waylandN`.
+    fn create_windowed_heads(
+        &mut self,
+        backend: *mut weston_sys::weston_backend,
+        api_name: &std::ffi::CStr,
+        prefix: &str,
+        default_name: &dyn Fn(i32) -> String,
+        count: i32,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+        // SAFETY: compositor live; the API name/version come from the
+        // installed header constants (§3k static-inline pattern).
+        let api = unsafe {
+            weston_sys::weston_plugin_api_get(
+                compositor,
+                api_name.as_ptr(),
+                std::mem::size_of::<weston_sys::weston_windowed_output_api>(),
+            )
+        }
+        .cast::<weston_sys::weston_windowed_output_api>();
+        if api.is_null() {
+            log::log_line("Cannot use weston_windowed_output_api.");
+            return Err(CompositorError::WindowedOutputApi);
+        }
+
+        let mut made = 0;
+        // C walks the config sections in file order and takes those
+        // whose `name` starts with the backend's prefix, up to count.
+        let named: Vec<String> = self
+            .policy_names
+            .iter()
+            .filter(|n| n.starts_with(prefix))
+            .cloned()
+            .collect();
+        for name in named {
+            if made >= count {
+                break;
+            }
+            let cname = CString::new(name.as_str()).map_err(|_| CompositorError::HeadCreate)?;
+            // SAFETY: api non-null; create_head is set by both windowed
+            // backends; the name outlives the call.
+            let r = self.ctx.with_depth(|| unsafe {
+                ((*api).create_head.expect("create_head"))(backend, cname.as_ptr())
+            });
+            if r < 0 {
+                return Err(CompositorError::HeadCreate);
+            }
+            made += 1;
+        }
+        for i in made..count {
+            let cname = CString::new(default_name(i)).map_err(|_| CompositorError::HeadCreate)?;
+            // SAFETY: as above.
+            let r = self.ctx.with_depth(|| unsafe {
+                ((*api).create_head.expect("create_head"))(backend, cname.as_ptr())
+            });
+            if r < 0 {
+                return Err(CompositorError::HeadCreate);
+            }
+        }
+        Ok(())
+    }
+
+    /// C load_x11_backend (main.c:3924): weston runs as an X client and
+    /// each output is an X window.
+    fn load_x11(
+        &mut self,
+        renderer: RendererKind,
+        opts: &X11Options,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+        let mut config: weston_sys::weston_x11_backend_config =
+            // SAFETY: POD config; zeroed then fully initialized.
+            unsafe { std::mem::zeroed() };
+        config.base.struct_version = weston_sys::WESTON_X11_BACKEND_CONFIG_VERSION;
+        config.base.struct_size = std::mem::size_of::<weston_sys::weston_x11_backend_config>();
+        config.renderer = renderer.to_c();
+        config.fullscreen = opts.fullscreen;
+        config.no_input = opts.no_input;
+
+        // SAFETY: compositor live; the backend copies what it keeps.
+        let backend = self.ctx.with_depth(|| unsafe {
+            weston_sys::weston_compositor_load_backend(
+                compositor,
+                weston_sys::weston_compositor_backend::WESTON_BACKEND_X11,
+                &mut config.base,
+            )
+        });
+        if backend.is_null() {
+            return Err(CompositorError::BackendLoad);
+        }
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::X11));
+
+        let count = opts.output_count.max(1);
+        self.create_windowed_heads(
+            backend,
+            c"weston_windowed_output_api_x11_v2",
+            "X",
+            &|i| format!("screen{i}"),
+            count,
+        )
+    }
+
+    /// C load_wayland_backend (main.c:4044): weston nested inside
+    /// another Wayland compositor, one output per parent surface.
+    fn load_wayland(
+        &mut self,
+        renderer: RendererKind,
+        opts: &WaylandOptions,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+        let display = match &opts.display_name {
+            Some(d) => Some(CString::new(d.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+        let theme = match &opts.cursor_theme {
+            Some(t) => Some(CString::new(t.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+
+        let mut config: weston_sys::weston_wayland_backend_config =
+            // SAFETY: POD config; zeroed then fully initialized.
+            unsafe { std::mem::zeroed() };
+        config.base.struct_version = weston_sys::WESTON_WAYLAND_BACKEND_CONFIG_VERSION;
+        config.base.struct_size = std::mem::size_of::<weston_sys::weston_wayland_backend_config>();
+        config.renderer = renderer.to_c();
+        config.sprawl = opts.sprawl;
+        config.fullscreen = opts.fullscreen;
+        config.display_name = display
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.cursor_theme = theme
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.cursor_size = if opts.cursor_size > 0 {
+            opts.cursor_size
+        } else {
+            32
+        };
+
+        // SAFETY: compositor live; C frees its copies of these strings
+        // right after the same call, so temporaries are the contract.
+        let backend = self.ctx.with_depth(|| unsafe {
+            weston_sys::weston_compositor_load_backend(
+                compositor,
+                weston_sys::weston_compositor_backend::WESTON_BACKEND_WAYLAND,
+                &mut config.base,
+            )
+        });
+        if backend.is_null() {
+            return Err(CompositorError::BackendLoad);
+        }
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::Wayland));
+
+        // C: with --sprawl (or a fullscreen-shell parent) the windowed
+        // API is absent and everything is hardcoded — create nothing
+        // and let the backend bring its own output up.
+        if opts.sprawl {
+            return Ok(());
+        }
+        let count = opts.output_count.max(1);
+        self.create_windowed_heads(
+            backend,
+            c"weston_windowed_output_api_wayland_v2",
+            "WL",
+            &|i| format!("wayland{i}"),
+            count,
+        )
+    }
+
+    /// C load_pipewire_backend (main.c:3611): outputs are published as
+    /// PipeWire streams.  The backend creates its own heads from
+    /// `num_outputs`; there is no create_head loop.
+    fn load_pipewire(
+        &mut self,
+        renderer: RendererKind,
+        opts: &PipewireOptions,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+        let fmt = match &opts.gbm_format {
+            Some(f) => Some(CString::new(f.as_str()).map_err(|_| CompositorError::BackendLoad)?),
+            None => None,
+        };
+
+        let mut config: weston_sys::weston_pipewire_backend_config =
+            // SAFETY: POD config; zeroed then fully initialized (C
+            // weston_pipewire_backend_config_init sets the same two
+            // base fields).
+            unsafe { std::mem::zeroed() };
+        config.base.struct_version = weston_sys::WESTON_PIPEWIRE_BACKEND_CONFIG_VERSION;
+        config.base.struct_size = std::mem::size_of::<weston_sys::weston_pipewire_backend_config>();
+        config.renderer = renderer.to_c();
+        config.gbm_format = fmt
+            .as_ref()
+            .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        config.num_outputs = opts.num_outputs.max(1);
+
+        // SAFETY: compositor live; config + strings outlive the call.
+        let backend = self.ctx.with_depth(|| unsafe {
+            weston_sys::weston_compositor_load_backend(
+                compositor,
+                weston_sys::weston_compositor_backend::WESTON_BACKEND_PIPEWIRE,
+                &mut config.base,
+            )
+        });
+        if backend.is_null() {
+            return Err(CompositorError::BackendLoad);
+        }
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::Pipewire));
         Ok(())
     }
 
@@ -1034,10 +1325,7 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
             if kind == BackendKind::Vnc && policy.has_mirror_of(&name) {
                 // deferred to the output-created path
             } else {
-                let setup = match kind {
-                    BackendKind::Headless => policy.decide(&name).map(HeadSetup::Windowed),
-                    BackendKind::Vnc => policy.decide_vnc(&name).map(HeadSetup::Vnc),
-                };
+                let setup = head_setup_for(policy, kind, &name);
                 match setup {
                     Some(setup) => enable_head(ctx, head, setup, None),
                     None => {
@@ -1137,10 +1425,7 @@ fn mirror_on_output_created(
     let Some(kind) = backend_kind(ctx, head_backend) else {
         return;
     };
-    let setup = match kind {
-        BackendKind::Headless => policy.decide(&rule.name).map(HeadSetup::Windowed),
-        BackendKind::Vnc => policy.decide_vnc(&rule.name).map(HeadSetup::Vnc),
-    };
+    let setup = head_setup_for(policy, kind, &rule.name);
     let Some(setup) = setup else {
         return; // off = true wins over mirror-of
     };
@@ -1268,14 +1553,59 @@ fn c_strdup_opt(s: Option<&str>) -> *const libc::c_char {
 
 /// The per-backend configure decision (C `wb->simple_output_configure`).
 enum HeadSetup {
-    Windowed(OutputSetup),
+    /// Every windowed backend shares C's
+    /// `wet_configure_windowed_output_from_config`; only the plugin API
+    /// it drives differs per backend.
+    Windowed(OutputSetup, WindowedApi),
     Vnc(crate::output_policy::VncOutputSetup),
+    Pipewire(crate::output_policy::PipewireOutputSetup),
+}
+
+/// Which `weston_windowed_output_api` instance a windowed head uses
+/// (the names are per-backend; C picks with WESTON_WINDOWED_OUTPUT_*).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum WindowedApi {
+    Headless,
+    X11,
+    Wayland,
+}
+
+impl WindowedApi {
+    fn name(self) -> &'static std::ffi::CStr {
+        match self {
+            WindowedApi::Headless => c"weston_windowed_output_api_headless_v2",
+            WindowedApi::X11 => c"weston_windowed_output_api_x11_v2",
+            WindowedApi::Wayland => c"weston_windowed_output_api_wayland_v2",
+        }
+    }
 }
 
 /// `mirror_of`: the source output when this head mirrors one (C
 /// simple_head_enable's `head_to_mirror` +
 /// wet_output_overlap_pre/post_enable pair) — placement and the final
 /// modeline then come from the source instead of lazy_align.
+/// The per-backend configurator choice (C's `wb->simple_output_configure`
+/// slot): which flavor of output setup this backend's heads take, and
+/// with which defaults.  `None` means the policy disabled the head.
+fn head_setup_for(policy: &OutputPolicy, kind: BackendKind, name: &str) -> Option<HeadSetup> {
+    match kind {
+        // headless_backend_output_configure, defaults 1024x640.
+        BackendKind::Headless => policy
+            .decide(name)
+            .map(|s| HeadSetup::Windowed(s, WindowedApi::Headless)),
+        // x11_backend_output_configure, defaults 1024x600 (main.c:3910).
+        BackendKind::X11 => policy
+            .decide_sized(name, (1024, 600))
+            .map(|s| HeadSetup::Windowed(s, WindowedApi::X11)),
+        // wayland_backend_output_configure, defaults 1024x640 (4030).
+        BackendKind::Wayland => policy
+            .decide_sized(name, (1024, 640))
+            .map(|s| HeadSetup::Windowed(s, WindowedApi::Wayland)),
+        BackendKind::Vnc => policy.decide_vnc(name).map(HeadSetup::Vnc),
+        BackendKind::Pipewire => policy.decide_pipewire(name).map(HeadSetup::Pipewire),
+    }
+}
+
 fn enable_head(
     ctx: &Ctx,
     head: NonNull<weston_sys::weston_head>,
@@ -1322,12 +1652,12 @@ fn enable_head(
     let configured = unsafe {
         match &setup {
             // wet_configure_windowed_output_from_config.
-            HeadSetup::Windowed(s) => {
+            HeadSetup::Windowed(s, which) => {
                 weston_sys::weston_output_set_scale(output.as_ptr(), s.scale);
                 weston_sys::weston_output_set_transform(output.as_ptr(), s.transform.to_c());
                 let api = weston_sys::weston_plugin_api_get(
                     compositor,
-                    c"weston_windowed_output_api_headless_v2".as_ptr(),
+                    which.name().as_ptr(),
                     std::mem::size_of::<weston_sys::weston_windowed_output_api>(),
                 )
                 .cast::<weston_sys::weston_windowed_output_api>();
@@ -1368,6 +1698,41 @@ fn enable_head(
                         s.height,
                         resizeable,
                     ) >= 0
+            }
+            // C pipewire_backend_output_configure (main.c:3558):
+            // section scale, transform forced NORMAL, the per-output
+            // gbm-format, then output_set_size.
+            HeadSetup::Pipewire(s) => {
+                weston_sys::weston_output_set_scale(output.as_ptr(), s.scale);
+                weston_sys::weston_output_set_transform(
+                    output.as_ptr(),
+                    weston_sys::wl_output_transform::WL_OUTPUT_TRANSFORM_NORMAL,
+                );
+                let api = weston_sys::weston_plugin_api_get(
+                    compositor,
+                    weston_sys::WESTON_PIPEWIRE_OUTPUT_API_NAME.as_ptr().cast(),
+                    std::mem::size_of::<weston_sys::weston_pipewire_output_api>(),
+                )
+                .cast::<weston_sys::weston_pipewire_output_api>();
+                if api.is_null() {
+                    crate::log::log_line("Cannot use weston_pipewire_output_api.");
+                    false
+                } else {
+                    // C passes NULL when the section has no gbm-format.
+                    let fmt = s
+                        .gbm_format
+                        .as_ref()
+                        .and_then(|f| CString::new(f.as_str()).ok());
+                    ((*api).set_gbm_format.expect("set_gbm_format"))(
+                        output.as_ptr(),
+                        fmt.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+                    );
+                    ((*api).output_set_size.expect("pipewire output_set_size"))(
+                        output.as_ptr(),
+                        s.width,
+                        s.height,
+                    ) >= 0
+                }
             }
         }
     };

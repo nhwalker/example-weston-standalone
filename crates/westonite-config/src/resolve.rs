@@ -122,6 +122,14 @@ pub struct Settings {
     pub output_count: Option<u32>,
     pub no_input: bool,
     pub sprawl: bool,
+    /// `--display`: the parent compositor socket for the nested
+    /// wayland backend (None = the child's own WAYLAND_DISPLAY).
+    pub wayland_display: Option<String>,
+    /// `[shell] cursor-theme` / `cursor-size` (wayland backend).
+    pub cursor_theme: Option<String>,
+    pub cursor_size: i32,
+    /// `[pipewire] num-outputs`, C default 1.
+    pub pipewire_num_outputs: Option<u32>,
     pub parent_display: Option<String>,
     pub no_outputs: bool,
     pub refresh_rate: Option<i32>,
@@ -434,6 +442,10 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         output_count: cli.output_count,
         no_input: cli.no_input,
         sprawl: cli.sprawl,
+        wayland_display: cli.display.clone(),
+        cursor_theme: config.shell.cursor_theme.clone(),
+        cursor_size: config.shell.cursor_size.unwrap_or(32),
+        pipewire_num_outputs: config.pipewire.num_outputs,
         parent_display: cli.display.clone(),
         no_outputs: cli.no_outputs,
         transform: cli.transform.clone(),

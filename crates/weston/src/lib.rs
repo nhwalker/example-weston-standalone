@@ -63,7 +63,7 @@ pub mod shell_init;
 
 pub use compositor::{
     BackendKind, Compositor, CompositorBuilder, CompositorError, HeadlessOptions, KeyboardConfig,
-    RendererKind, VncOptions,
+    PipewireOptions, RendererKind, VncOptions, WaylandOptions, X11Options,
 };
 pub use ctx::{Ctx, ShellApp};
 pub use events::{ActivateVia, Event};
