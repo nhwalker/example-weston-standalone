@@ -36,6 +36,31 @@ jobs:
           echo "== modules-extra installed?"
           dpkg -l | grep -c linux-modules-extra || true
 
+      # Round 1 (2026-07-29) said: no vkms in the Azure kernel, /dev/kvm
+      # present -- and, unexpectedly, a /dev/dri/card1 already there.
+      # Whether that device is usable decides everything: a real KMS
+      # device on the runner beats both planned routes.
+      - name: Identify the DRM device the runner already has
+        run: |
+          echo "== drm class entries (card*, and card*-<connector> iff KMS):"
+          ls -l /sys/class/drm/ 2>&1 || echo "no /sys/class/drm"
+          for c in /sys/class/drm/card*; do
+            [ -e "$c" ] || continue
+            echo "-- $c"
+            drv=$(readlink -f "$c/device/driver" 2>/dev/null)
+            echo "   driver: ${drv##*/}"
+            grep -h . "$c/device/uevent" 2>/dev/null | head -4 || true
+          done
+          echo "== connectors and their status (empty list => render-only, no KMS):"
+          for con in /sys/class/drm/card*-*; do
+            [ -e "$con" ] || continue
+            echo "   $(basename "$con"): $(cat "$con/status" 2>/dev/null)"
+          done
+          echo "== can vkms be ADDED for this kernel?"
+          sudo apt-get update -qq 2>/dev/null || true
+          apt-cache search linux-modules-extra 2>/dev/null | head -5 || true
+          apt-get install -s -qq "linux-modules-extra-$(uname -r)" 2>&1 | tail -3 || true
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:
