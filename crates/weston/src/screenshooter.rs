@@ -42,11 +42,13 @@ pub(crate) struct ScreenshooterState {
     /// exactly as C reuses the listener embedded in `struct
     /// screenshooter`.  Oneshot, so the firing takes the node off the
     /// dying client's list and leaves it ready for the next Super+S.
-    /// Deliberately not a box-per-spawn retired through `defer_drop`:
-    /// the pending-drop list only drains at dispatch depth zero, which
-    /// `run()` never reaches inside the loop (§3e, and the R2d note on
-    /// deferred-drain timing), so a repeatable user action must not
-    /// mint a box per press.
+    /// Deliberately not a box-per-spawn retired through `defer_drop`.
+    /// That mattered acutely when this was written — the pending-drop
+    /// list then only drained after the event loop exited, so a box
+    /// per press was a per-press leak — and the drain gap has since
+    /// been fixed (§3e/A4).  The reuse stands on its own regardless:
+    /// it is what C does, and one node per subsystem beats one per
+    /// user action even when the list does drain.
     client_destroy: Listener,
     /// C `shooter->recorder`: the active wcap recorder, if any.
     recorder: Cell<*mut weston_sys::weston_recorder>,

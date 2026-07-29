@@ -6,6 +6,14 @@
 # and cannot instrument the C half of the hybrid; valgrind memchecks
 # the whole process instead.  The pure-Rust ASAN leg lives in
 # rust-asan-smoke.sh.)
+#
+# WESTONITE_BIN points the storms at a different compositor — set it to
+# target/release/westonite-rs to stress the pure-Rust frontend.  Both
+# targets matter and neither subsumes the other: the hybrid has always
+# dispatched our trampolines from C's own wl_display_run (base depth
+# zero, so §3f frees happen at trampoline edges), while the Rust
+# frontend only started doing that when `Compositor::run` stopped
+# holding the depth counter open for the loop's lifetime.
 # Runs inside the build container after the meson+rust install
 # (smoke-test.sh or: ninja install && rust-shell-install.sh, plus
 # -De2e-test-client=true for wtest-client).
@@ -13,7 +21,12 @@ set -euo pipefail
 
 cd /src
 WTEST=${WTEST_CLIENT:-/src/build/tests/e2e/clients/wtest-client}
+BIN=${WESTONITE_BIN:-westonite}
 [ -x "$WTEST" ] || { echo "wtest-client missing (build with -De2e-test-client=true)"; exit 1; }
+# Check the compositor up front: a bad WESTONITE_BIN would otherwise
+# surface 20s later as "compositor socket never appeared" with a
+# valgrind log that only says the exec failed.
+command -v "$BIN" >/dev/null 2>&1 || { echo "compositor '$BIN' not found (WESTONITE_BIN)"; exit 1; }
 
 export XDG_RUNTIME_DIR=/tmp/xdg-stress
 mkdir -p -m 0700 "$XDG_RUNTIME_DIR"
@@ -25,7 +38,7 @@ CLIENTS=/tmp/stress-clients.log
 
 valgrind --error-exitcode=42 --leak-check=full \
 	--errors-for-leak-kinds=definite --log-file="$VG" \
-	westonite --backend=headless --socket="$SOCKET" --log="$LOG" &
+	"$BIN" --backend=headless --socket="$SOCKET" --log="$LOG" &
 WPID=$!
 
 for i in $(seq 1 40); do

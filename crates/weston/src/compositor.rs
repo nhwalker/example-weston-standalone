@@ -806,11 +806,41 @@ impl Compositor {
     /// code (0 on clean signal-driven shutdown — the Phase-1 contract).
     pub fn run(&mut self) -> i32 {
         let display = self.ctx.inner.display.get();
-        self.ctx.with_depth(|| {
-            // SAFETY: the run loop dispatches into our trampolines; every
-            // one re-enters through Ctx::current + with_depth.
-            unsafe { weston_sys::wl_display_run(display) };
-        });
+        // Deliberately NOT wrapped in `with_depth`, unlike every other
+        // outbound call: this one *is* the event loop, so holding the
+        // counter at 1 for its whole lifetime would mean the counter
+        // never returns to zero while the compositor runs, and A4's
+        // drain-at-the-edge could only fire after the loop exits.  That
+        // was the R0 shape, and it made every deferred-tier event
+        // (focus-after-close, busy-cursor end, GrabEnded, the Gone
+        // policies) land in one batch at shutdown, while retired boxes
+        // piled up in the pending-drop list for the whole session.
+        // With the base depth at zero, each trampoline's own wrap goes
+        // 0→1→0 and drains at its edge — which is exactly where the C
+        // code ran the same handler.
+        //
+        // SAFETY: the run loop dispatches into our trampolines; every
+        // one re-enters through Ctx::current + with_depth.  Full audit
+        // of the entry points that deliberately do NOT wrap:
+        //   - the two event-loop signal callbacks below — they wrap
+        //     their own bodies instead, so one handler is one drain;
+        //   - the label / no-op vtable entries (curtain_get_label,
+        //     curtain_committed, and the empty grab entries — the
+        //     noop_* set plus touch_down/touch_frame) and the
+        //     weston_log sink, which must stay unwrapped: draining from
+        //     inside the log sink would run app handlers on a log call;
+        //   - desktop::tramp_get_position, which answers from
+        //     wrapper-held view state into out-params and makes no
+        //     outbound call at all, so it has nothing to drain;
+        //   - desktop::client_surfaces' nested `collect`, which is not
+        //     an entry point on C's schedule at all: we hand it to
+        //     weston_desktop_client_for_each_surface from inside an
+        //     already-wrapped trampoline, and it only appends to a
+        //     caller-owned Vec.
+        // (Re-derive with a body-scoped scan for extern "C" fns whose
+        // bodies contain no with_depth/with_ctx/guard_ctx, not a
+        // fixed-size window — the window version missed two of these.)
+        unsafe { weston_sys::wl_display_run(display) };
         self.exit_code
     }
 }
@@ -865,35 +895,57 @@ impl Drop for Compositor {
 
 extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
     crate::panic_barrier::guard("on_sigchld", || {
+        // Event-loop callbacks run at the loop's base depth, which is
+        // zero (see `run`), so the whole body takes the +1 itself: the
+        // outbound calls below (xserver_exited, weston_log,
+        // wl_display_terminate) would otherwise each return the counter
+        // to zero and drain mid-reap, running shell handlers between
+        // two waitpid iterations.  One wrap ⇒ one drain, at the edge.
+        //
+        // Resolved once, up front — but the reap must NOT depend on it.
+        // A missing Ctx here would be a teardown-ordering bug (§3j; not
+        // reachable today, since Drop removes the signal sources before
+        // Ctx::teardown), and the one thing a SIGCHLD handler may never
+        // skip is waitpid: bailing out would leave real zombies behind
+        // for a wrapper-state problem.  Reap either way; only the
+        // frontend bookkeeping and the depth wrap need the Ctx.
+        let ctx = Ctx::current();
+        debug_assert!(ctx.is_some(), "on_sigchld with no live Ctx");
         // Reap every exited child (C sigchld_handler's waitpid loop).
-        loop {
-            let mut status: c_int = 0;
-            // SAFETY: plain waitpid; WNOHANG never blocks the loop.
-            let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
-            if pid <= 0 {
-                break;
-            }
-            let Some(ctx) = Ctx::current() else { continue };
-            if let Some((watched, watch)) = ctx.inner.autolaunch.get()
-                && pid == watched
-            {
-                ctx.inner.autolaunch.set(None);
-                if watch {
-                    crate::log::log_line("westonite: autolaunched client exited, terminating");
-                    // SAFETY: data is the live wl_display registered
-                    // with this source.
-                    unsafe { weston_sys::wl_display_terminate(data.cast()) };
+        let reap = || {
+            loop {
+                let mut status: c_int = 0;
+                // SAFETY: plain waitpid; WNOHANG never blocks the loop.
+                let pid = unsafe { libc::waitpid(-1, &mut status, libc::WNOHANG) };
+                if pid <= 0 {
+                    break;
                 }
-                continue;
+                let Some(ctx) = ctx.as_ref() else { continue };
+                if let Some((watched, watch)) = ctx.inner.autolaunch.get()
+                    && pid == watched
+                {
+                    ctx.inner.autolaunch.set(None);
+                    if watch {
+                        crate::log::log_line("westonite: autolaunched client exited, terminating");
+                        // SAFETY: data is the live wl_display registered
+                        // with this source.
+                        unsafe { weston_sys::wl_display_terminate(data.cast()) };
+                    }
+                    continue;
+                }
+                // Frontend-tracked children (C sigchld_handler's
+                // wet_process walk): the Xwayland server (logged + relayed
+                // to the module, which respawns on the next X connection)
+                // and the screenshooter client (logged only).
+                if crate::xwayland::handle_child_exit(ctx, pid, status) {
+                    continue;
+                }
+                crate::screenshooter::handle_child_exit(ctx, pid, status);
             }
-            // Frontend-tracked children (C sigchld_handler's
-            // wet_process walk): the Xwayland server (logged + relayed
-            // to the module, which respawns on the next X connection)
-            // and the screenshooter client (logged only).
-            if crate::xwayland::handle_child_exit(&ctx, pid, status) {
-                continue;
-            }
-            crate::screenshooter::handle_child_exit(&ctx, pid, status);
+        };
+        match ctx.as_ref() {
+            Some(c) => c.with_depth(reap),
+            None => reap(),
         }
     });
     1
@@ -902,8 +954,23 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
 extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
     // Async-safe enough: wl_event_loop signal sources deliver via
     // signalfd on the main loop, not in async signal context.
-    // SAFETY: data is the live wl_display registered above.
-    unsafe { weston_sys::wl_display_terminate(data.cast()) };
+    //
+    // Wrapped like on_sigchld now that the loop's base depth is zero
+    // (see `run`).  wl_display_terminate only clears the loop's run
+    // flag — it emits nothing and cannot re-enter us — so this is A4
+    // hygiene rather than a live hazard.  A Ctx-less late signal still
+    // terminates, just unwrapped: the display outlives the Ctx in
+    // Compositor::drop, and dropping a SIGTERM on the floor would be a
+    // worse failure than skipping a drain with nothing to drain.
+    let Some(ctx) = Ctx::current() else {
+        // SAFETY: as below; without a Ctx there is nothing to drain.
+        unsafe { weston_sys::wl_display_terminate(data.cast()) };
+        return 1;
+    };
+    ctx.with_depth(|| {
+        // SAFETY: data is the live wl_display registered above.
+        unsafe { weston_sys::wl_display_terminate(data.cast()) };
+    });
     1
 }
 

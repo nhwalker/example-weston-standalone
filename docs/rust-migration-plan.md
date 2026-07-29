@@ -486,40 +486,50 @@ discipline in application code, converts missed cases into
     reactions are moot; the sync invalidation half already ran.
 - Any behavior difference caused by deferral that the e2e suite can
   observe is a **parity bug**, not an accepted divergence under D6.
-- **Known gap (found at the R2d review round, 2026-07-27):**
-  `Compositor::run` wraps `wl_display_run` in `with_depth`, so the
-  counter never returns to zero *inside* the event loop — trampolines
-  bottom out at depth 1 and the "common case" above does not
-  currently fire; deferred-tier events enqueued mid-run (busy-cursor
-  PingTimeout/Pong, GrabEnded, the destroy-policy Gone events) are
-  drained only when the loop exits.  Verified empirically with drain
-  probes (client connect/map/kill produced zero mid-run drains).  No
-  e2e test can observe the delay today — the visible halves of those
-  behaviors are wrapper-side and synchronous — which is why it sat
-  unnoticed since R0.
+- **Was a known gap (R2d/R2e review rounds), FIXED 2026-07-28.**
+  `Compositor::run` used to wrap `wl_display_run` in `with_depth`, so
+  the counter never returned to zero *inside* the event loop:
+  trampolines bottomed out at depth 1 and the "common case" above
+  never fired.  Two consequences, both measured before the fix:
+  - **Ordering.** Every deferred-tier event (busy-cursor
+    PingTimeout/Pong, GrabEnded, the destroy-policy Gone events) was
+    held until the loop exited and then delivered in one batch.  The
+    user-visible half was focus-after-close: `TrackedSurfaceGone`
+    drives `focus_surface_gone` (C `focus_state_surface_destroy`), so
+    closing the focused window left the survivor unfocused for the
+    rest of the session.  `test_focus_moves_to_survivor_when_
+    focused_window_closes` was written against the *unfixed* build to
+    pin this down — it passed on the C oracle and failed on the Rust
+    frontend, i.e. a genuine parity bug, not a re-spec.
+  - **Memory.** The same condition gates the *pending-drop* list
+    (§3f), so every box retired through `defer_drop` — ended grabs,
+    retired registry listeners — was held for the compositor's whole
+    lifetime.  Instrumenting `defer_drop` showed the list growing
+    monotonically (`len=1,2,3` at `depth=2`) across a single
+    move-grab test, i.e. growth per ordinary window drag.  (Nothing
+    was unsound: the boxes stayed owned and reachable.)
 
-  **Second dimension, measured at the R2e review round
-  (2026-07-27): it is also a memory leak, not only an ordering
-  delay.** The same depth-zero condition gates the *pending-drop*
-  list (§3f), so every box retired through `defer_drop` — ended
-  grabs (`grab.rs`, three sites), retired registry listeners
-  (`retire_listener`) — is held for the compositor's whole lifetime
-  instead of being freed at the next edge. Instrumenting
-  `defer_drop` showed the list growing monotonically (`len=1,2,3`,
-  all at `depth=2`) across a *single* move-grab e2e test, i.e. it
-  grows with ordinary user actions like dragging a window. Nothing
-  is unsound (the boxes stay owned and reachable; this is growth,
-  not a dangling free), and no e2e test observes it, but it turns
-  the fix from cosmetic into load-bearing for long-lived sessions.
+  The fix is to *not* wrap the one outbound call that is itself the
+  loop, so the loop's base depth is zero and each trampoline's own
+  wrap goes 0→1→0, draining at its edge — where the C code ran the
+  same handler.  Audit performed with it: the only bare-bodied entry
+  points were the two event-loop signal callbacks (`on_sigchld`,
+  `on_term_signal`), which now wrap their own bodies so one handler
+  means one drain (otherwise `on_sigchld`'s inner outbound calls
+  would drain between two `waitpid` iterations); everything else
+  reaches Rust through `Listener::trampoline`, `with_ctx`,
+  `guard_ctx` or the binding/xwayland/screenshooter wrappers, all of
+  which already wrap, plus label/log/no-op vtable entries that touch
+  no `Ctx` state and must stay unwrapped (the log sink especially —
+  draining from inside it would run app handlers on a log call).
 
-  Fix (own slice, needs its own A3/A4 audit + full battery, not a
-  drive-by): drop the `run()` wrap so the loop's base depth is zero,
-  after auditing every bare-bodied event-source callback
-  (`on_term_signal`, `on_sigchld`) for A4 — the xwayland
-  `xserver_exited` relay is already wrapped in anticipation. Until
-  it lands, code on a **repeatable** path must not mint a box per
-  action (R2e's client-destroy listener is one reused node for
-  exactly this reason).
+  Risk was lower than it looks: the **hybrid** configuration has
+  dispatched our trampolines from C's own `wl_display_run` since R1,
+  i.e. at base depth zero, so drain-at-the-edge and §3f
+  free-at-the-edge have been under destroy-storm stress all along —
+  the fix makes the pure-Rust frontend behave the way the hybrid
+  already did.  `rust-stress-test.sh` now takes `WESTONITE_BIN` so
+  the storms run against both.
 
 **The `ShellHost` trait (D20).** The shell reaches the wrapper only
 through a trait implemented by `weston` (queries returning
