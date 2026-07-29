@@ -67,7 +67,21 @@ Rebase procedure on an EPEL weston bump: plan §8.
     (no outbound call, so nothing to drain).  Both rewritten.
     (4) `rust-stress-test.sh` now checks `WESTONITE_BIN` resolves
     before launching valgrind, so a typo fails immediately instead of
-    at the 20s socket timeout.
+    at the 20s socket timeout.  All four verified and kept; (1) is a
+    regression the wrap introduced (the pre-existing code reaped
+    unconditionally and only skipped the *bookkeeping* without a Ctx),
+    though unreachable today — `Drop` drains `signal_sources` before
+    `Ctx::teardown`, checked.
+  - Re-ran the entry-point audit body-scoped (walk each `extern "C"`
+    fn to its closing brace) rather than with a fixed-size window,
+    since the window version is what missed `tramp_get_position`.
+    Two more unwrapped entries turned up, both correct as-is and now
+    named in the `run()` comment: the empty grab vtable entries
+    `touch_down`/`touch_frame` (no-ops, just not spelled `noop_*`),
+    and `desktop::client_surfaces`' nested `collect` — not an entry
+    point on C's schedule at all, but an iteration callback we hand
+    to `weston_desktop_client_for_each_surface` from inside an
+    already-wrapped trampoline.
   - De-risking argument, and why this was safe to take now: the
     **hybrid** build has dispatched our trampolines from C's own
     `wl_display_run` since R1 — base depth zero — so drain- and

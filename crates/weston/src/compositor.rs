@@ -825,12 +825,21 @@ impl Compositor {
         //   - the two event-loop signal callbacks below — they wrap
         //     their own bodies instead, so one handler is one drain;
         //   - the label / no-op vtable entries (curtain_get_label,
-        //     curtain_committed, the grab noops) and the weston_log
-        //     sink, which must stay unwrapped: draining from inside the
-        //     log sink would run app handlers on a log call;
+        //     curtain_committed, and the empty grab entries — the
+        //     noop_* set plus touch_down/touch_frame) and the
+        //     weston_log sink, which must stay unwrapped: draining from
+        //     inside the log sink would run app handlers on a log call;
         //   - desktop::tramp_get_position, which answers from
         //     wrapper-held view state into out-params and makes no
-        //     outbound call at all, so it has nothing to drain.
+        //     outbound call at all, so it has nothing to drain;
+        //   - desktop::client_surfaces' nested `collect`, which is not
+        //     an entry point on C's schedule at all: we hand it to
+        //     weston_desktop_client_for_each_surface from inside an
+        //     already-wrapped trampoline, and it only appends to a
+        //     caller-owned Vec.
+        // (Re-derive with a body-scoped scan for extern "C" fns whose
+        // bodies contain no with_depth/with_ctx/guard_ctx, not a
+        // fixed-size window — the window version missed two of these.)
         unsafe { weston_sys::wl_display_run(display) };
         self.exit_code
     }
