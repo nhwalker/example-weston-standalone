@@ -280,6 +280,34 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
              use the vnc backend for remote access",
         ));
     }
+    // [remote-output] — the remoting plugin — is dropped by the same
+    // kind of product decision (2026-07-31).  Not deprecated upstream
+    // (weston 15.0.90 still builds it by default), just not something
+    // westonite ships: it streams an output over GStreamer/RTP, works
+    // only on the DRM backend, and westonite's remote story is VNC.
+    //
+    // Note this was a SILENT no-op before this refusal existed: the
+    // section parsed into the config model and nothing ever read it,
+    // which is exactly the failure mode the fail-loud rule exists to
+    // prevent.
+    if !settings.config.remote_output.is_empty() {
+        return Some(fatal(
+            "[[remote-output]] is not supported by westonite (the remoting plugin is \
+             deliberately dropped); use the vnc backend for remote access",
+        ));
+    }
+    // [pipewire-output] — the pipewire *plugin*, distinct from the
+    // pipewire backend, which IS ported.  Also silently ignored until
+    // now.  Unported rather than dropped: its fate is still open, and
+    // the environment for testing it is not there either (the guest
+    // rootfs has no pipewire daemon, and the plugin segfaults without
+    // one — e2e plan §6).
+    if !settings.config.pipewire_output.is_empty() {
+        return Some(fatal(
+            "[[pipewire-output]] is not yet ported to the Rust frontend (the pipewire \
+             plugin, not the pipewire backend); use the C westonite",
+        ));
+    }
     let unported: Vec<&str> = settings
         .backends
         .iter()

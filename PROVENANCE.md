@@ -20,6 +20,27 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **Remoting dropped (2026-07-31)** — `[[remote-output]]`, the remoting
+  plugin, is a product decision the same way RDP was: westonite does
+  not ship GStreamer/RTP output streaming, and VNC is its remote path.
+  - It is **not** deprecated upstream, and the question was worth
+    asking: weston 15.0.90 still builds `remoting` by default and the
+    man page still documents `remoting=`.  What *is* deprecated there
+    is `screen-share` ("pending removal"), which westonite never
+    shipped (`VENDOR.md`; it needed a libweston *private* API) — and
+    whose upstream replacement is the mirroring functionality already
+    ported at R2c-mirror.
+  - The probe that preceded this (see the plan §7 note) had shown
+    remoting *working* in the VM harness, so this is a decision not to
+    ship a working feature, not an inability to port one.
+  - **It was a silent no-op until now.** `[[remote-output]]` and
+    `[[pipewire-output]]` both parsed into the config model and nothing
+    ever read them: a user asking for a remote output got silence and
+    no output.  That is the exact failure the fail-loud rule exists to
+    prevent, so both are now startup errors — remoting naming the
+    product decision, pipewire-output naming the missing port — each
+    with an e2e test, because a refusal without a test is how this
+    recurs.
 - **R2c-drm (2026-07-31)** — the DRM backend, branch
   `claude/rust-migration-j84b2p`.  The last backend, and the only one
   that needed an environment built for it first (R2c-drm-harness,

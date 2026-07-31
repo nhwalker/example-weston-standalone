@@ -128,3 +128,37 @@ def test_rdp_backend_is_refused_by_design(westonite):
     w = westonite(backend="rdp", wait=False)
     w.wait_for_log(r"rdp backend is not supported by westonite")
     assert w.wait_exit() != 0
+
+
+@toml_only
+def test_remote_output_is_refused_by_design(westonite):
+    """The remoting plugin is dropped the same way RDP is (2026-07-31).
+
+    Both this and the pipewire-output test below guard against a
+    regression that actually happened: the sections parsed into the
+    config model and *nothing read them*, so a user asking for a
+    remote output got silence and no output.  Fail-loud is the rule;
+    these two are its enforcement.
+    """
+    w = westonite(config="""
+[remote-output]
+name=remote1
+mode=640x480@30
+host=127.0.0.1
+port=5000
+""", wait=False)
+    w.wait_for_log(r"remote-output\]\] is not supported by westonite")
+    assert w.wait_exit() != 0
+
+
+@toml_only
+def test_pipewire_output_is_refused_until_ported(westonite):
+    """The pipewire *plugin* (distinct from the pipewire backend, which
+    is ported) is unported, so asking for it is a startup error."""
+    w = westonite(config="""
+[pipewire-output]
+name=pwout1
+mode=640x480@30
+""", wait=False)
+    w.wait_for_log(r"pipewire-output\]\] is not yet ported")
+    assert w.wait_exit() != 0
