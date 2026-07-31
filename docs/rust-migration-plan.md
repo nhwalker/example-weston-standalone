@@ -969,7 +969,18 @@ halves can be mixed and smoke-tested at every phase boundary.
   output* plugins, the deferred colour-management output attributes,
   and `configure_input_device` — the `[libinput]` hook, which needs
   libinput bindings weston-sys does not have and is refused fail-loud
-  meanwhile. R2d xwayland ✅ *(done — see PROVENANCE.md
+  meanwhile.  **Virtual-output probe (2026-07-31)**, run with the C
+  oracle before porting as usual: both plugins are gated on the DRM
+  backend (`load_additional_modules`, main.c:1066), so the VM harness
+  is the only place they can run at all.  Remoting *works there today*
+  — a `[remote-output]` with `gst-pipeline=` creates, enables and
+  advertises a `remoting-<name>` output using only the gstreamer
+  elements the guest already has (the sink element must be named
+  `sink`; that is how the plugin finds it).  The default `host=`/`port=`
+  pipeline needs `rtpbin`/`jpegenc`/`rtpjpegpay`/`udpsink`, which the
+  guest lacks.  `[pipewire-output]` **segfaults the compositor** with no
+  daemon running (e2e plan §6) and needs `pipewire` in the guest rootfs
+  before it can be tested at all. R2d xwayland ✅ *(done — see PROVENANCE.md
   log)*: the `frontend/xwayland.c` glue (module load + plugin API,
   lazy `spawn_xserver` through `westonite-spawn`, `-displayfd`
   readiness watch, SIGCHLD-driven `xserver_exited` respawn,

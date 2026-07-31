@@ -435,6 +435,23 @@ Each phase lands as an independently green PR; the suite is additive.
   skip with this reason (the RFB client retains its
   `set_desktop_size()` support for when EPEL ships a fix), and S2
   cannot use VNC resize as its trigger.
+- **Found during the R2c-virtualout probe — `pipewire-plugin.so`
+  segfaults when no PipeWire daemon is running.** A `[pipewire-output]`
+  section with the DRM backend loaded takes the compositor down with
+  SIGSEGV inside the plugin (`segfault at 10 ... in
+  pipewire-plugin.so`) rather than reporting a connection failure.
+  Reproduced with the **C** frontend, so it is an RPM-side bug, not a
+  port defect. Consequence for the suite: `[pipewire-output]` cannot be
+  exercised until the guest rootfs ships the `pipewire` daemon, and
+  even then the no-daemon path is a crash rather than an error to
+  assert.
+- **Found by reading during the same probe — upstream NULL-deref in
+  `remoted_output_init` (main.c:3120).** When a `[remote-output]`
+  section has no `mode=` (or `mode=off`), C logs
+  `"Would not create a remoted output \"%s\""` passing `output->name`
+  while `output` is still NULL. Any config that hits that branch
+  crashes weston. The Rust port must use the section's own name there
+  — a divergence from C that is a bug fix, and one to record as such.
 - **Found during R2e — any weston-output-capture attempt aborts the
   compositor once a VNC peer is connected.** The vnc backend's
   repaint (`vnc_output_repaint`) reaches the renderer only indirectly
