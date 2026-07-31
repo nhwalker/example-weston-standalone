@@ -201,11 +201,33 @@ def test_unknown_config_key_is_fatal(tmp_path):
 
 
 @toml_only
-def test_unported_backend_fails_loudly(tmp_path):
-    # R2a gate: requesting a not-yet-ported backend is a startup error,
-    # never a silent headless fallback
+def test_unported_feature_fails_loudly(tmp_path):
+    """R2a gate: a requested-but-unported feature is a startup error,
+    never a silent no-op.
+
+    This used to point at `--backend=drm`; DRM is ported now (R2c-drm),
+    so it points at the one hook that slice deliberately left behind —
+    `[libinput]`, which reaches libinput only through the DRM backend's
+    configure_device and needs libinput bindings weston-sys has not
+    got.  Note the gate is *conditional on DRM being loaded*: without
+    it the section does nothing in C either, so refusing it everywhere
+    would be inventing an error C does not have.
+    """
+    cfg = tmp_path / "westonite.toml"
+    cfg.write_text("[libinput]\nenable-tap = true\n")
     log = tmp_path / "log"
-    r = run([WESTONITE, "--backend=drm", f"--log={log}", "--no-config"],
+    r = run([WESTONITE, "--backend=drm", f"--log={log}", f"--config={cfg}"],
             env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
     assert r.returncode != 0
     assert "not yet ported" in log.read_text()
+
+
+@toml_only
+def test_libinput_without_drm_is_not_refused(westonite):
+    """The other half of that conditional: with no DRM backend the
+    section is inert in C too, so it must NOT be a startup error.
+
+    The fixture asserts both halves for us — it waits for the socket
+    (so startup succeeded) and requires exit 0 at teardown."""
+    w = westonite(config="[libinput]\nenable-tap=true\n")
+    assert "not yet ported" not in w.log(), w.log()

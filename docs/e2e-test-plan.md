@@ -261,6 +261,13 @@ own kernel and loads `vkms` inside it — see **docs/drm-testing.md** for
 the route, the on-the-runner approach it replaced, and what vkms does
 not prove.
 
+Since R2c-drm the harness runs them against **both** frontends —
+`drm-vm-test.sh /results rust` then `... c` — and the CI job is a gate.
+The Rust leg is self-proving about which binary ran: the harness feeds
+it TOML, which the C frontend cannot parse, so the modeline test
+landing on 1280x720 instead of the preferred 1024x768 could only have
+come from the Rust port.
+
 These tests are gated on `WESTONITE_DRM_VM=1`, deliberately **not** on
 the presence of `/dev/dri`: a developer's machine has one, and taking
 DRM master on it would black out their display.  So they are skipped

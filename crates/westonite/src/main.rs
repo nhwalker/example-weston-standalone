@@ -115,6 +115,16 @@ fn main() -> ExitCode {
     if let Some(msec) = settings.config.core.repaint_window {
         builder = builder.with_repaint_window_msec(msec);
     }
+    if let Some(r) = &settings.config.core.require_outputs {
+        match weston::RequireOutputs::parse(r) {
+            Some(r) => builder = builder.require_outputs(r),
+            None => {
+                return fatal(&format!(
+                    "[core] require-outputs: unknown value \"{r}\" (any|all|none)"
+                ));
+            }
+        }
+    }
     // C load_backends: comma-list order, primary first.
     for b in &settings.backends {
         builder = match b {
@@ -158,8 +168,18 @@ fn main() -> ExitCode {
                     .and_then(|v| i32::try_from(v).ok())
                     .unwrap_or(1),
             }),
-            // reject_unported() has already refused everything else
-            // (drm; rdp is a permanent product decision — see there).
+            Backend::Drm => builder.add_drm(weston::DrmOptions {
+                seat_id: settings.drm_seat.clone(),
+                specific_device: settings.drm_device.clone(),
+                additional_devices: settings.drm_additional_devices.clone(),
+                gbm_format: settings.gbm_format.clone(),
+                pageflip_timeout: settings.config.core.pageflip_timeout.unwrap_or(0),
+                use_pixman_shadow: settings.config.core.pixman_shadow.unwrap_or(true),
+                current_mode: settings.drm_current_mode,
+                continue_without_input: settings.continue_without_input,
+            }),
+            // reject_unported() has already refused rdp, a permanent
+            // product decision — see there.
             _ => builder,
         };
     }
@@ -271,6 +291,7 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
                     | Backend::X11
                     | Backend::Wayland
                     | Backend::Pipewire
+                    | Backend::Drm
             )
         })
         .map(|b| b.name())
@@ -292,12 +313,26 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     let has_x11 = settings.backends.contains(&Backend::X11);
     let has_wayland = settings.backends.contains(&Backend::Wayland);
     let has_pipewire = settings.backends.contains(&Backend::Pipewire);
+    let has_drm = settings.backends.contains(&Backend::Drm);
     // One row per flag, with the set of loaded backends that would
     // consume it — transcribed from the C `weston_option` tables:
     // headless main.c:3497, x11 3947, wayland 4070, vnc 3707,
     // pipewire 3625.  (--width/--height are in every table, so they
     // never appear here.)
     let per_backend_flags = [
+        (cli.seat.is_some(), "--seat", has_drm),
+        (cli.drm_device.is_some(), "--drm-device", has_drm),
+        (
+            cli.additional_devices.is_some(),
+            "--additional-devices",
+            has_drm,
+        ),
+        (cli.current_mode, "--current-mode", has_drm),
+        (
+            cli.continue_without_input,
+            "--continue-without-input",
+            has_drm,
+        ),
         (
             settings.scale.is_some(),
             "--scale",
@@ -348,11 +383,6 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     // Reaching here means the flag is left over unconditionally — C's
     // `unhandled option`.
     let unconsumed_flags = [
-        (cli.seat.is_some(), "--seat"),
-        (cli.drm_device.is_some(), "--drm-device"),
-        (cli.additional_devices.is_some(), "--additional-devices"),
-        (cli.current_mode, "--current-mode"),
-        (cli.continue_without_input, "--continue-without-input"),
         (cli.rdp_tls_cert.is_some(), "--rdp-tls-cert"),
         (cli.rdp_tls_key.is_some(), "--rdp-tls-key"),
         (cli.external_listener_fd.is_some(), "--external-listener-fd"),
@@ -366,6 +396,21 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         if set {
             return Some(unhandled_option(flag));
         }
+    }
+    // [libinput] reaches libinput through the DRM backend's
+    // `configure_device` hook and nowhere else — C's
+    // configure_input_device is wired only into
+    // weston_drm_backend_config (main.c:3425).  That hook is not ported
+    // (weston-sys has no libinput bindings; binding libinput's
+    // device-config API is its own slice), so with DRM loaded these
+    // keys would silently do nothing.  Without DRM they do nothing in
+    // C either, which is why the refusal is conditional.
+    if has_drm && settings.config.libinput != Default::default() {
+        return Some(fatal(
+            "[libinput] is not yet ported to the Rust frontend (it applies to the drm \
+             backend only, through a hook that needs libinput bindings); use the C \
+             westonite, or remove the section",
+        ));
     }
     if !settings.modules.is_empty() {
         return Some(fatal(
@@ -382,10 +427,12 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
     // fail-loud so a request for them never silently degrades.
     for out in &settings.config.output {
         let name = out.name.as_deref().unwrap_or("<unnamed>");
-        if out.clone_of.is_some() {
+        // clone-of is a DRM concept: C only resolves it in
+        // drm_config_find_controlling_output_section.  On any other
+        // backend the key would be silently inert, so say so.
+        if out.clone_of.is_some() && !has_drm {
             return Some(fatal(&format!(
-                "[[output]] '{name}': clone-of is not yet ported to the Rust frontend \
-                 (same-CRTC clones land with the DRM slice)"
+                "[[output]] '{name}': clone-of applies to the drm backend only"
             )));
         }
         // mirror-of (R2c-mirror): valid only on a remote head's section

@@ -52,6 +52,7 @@ pub(crate) mod desktop;
 pub(crate) mod grab;
 pub(crate) mod input_bindings;
 pub(crate) mod layer;
+pub(crate) mod layoutput;
 pub(crate) mod listener;
 pub(crate) mod panic_barrier;
 pub(crate) mod registry;
@@ -62,13 +63,14 @@ pub(crate) mod xwayland;
 pub mod shell_init;
 
 pub use compositor::{
-    BackendKind, Compositor, CompositorBuilder, CompositorError, HeadlessOptions, KeyboardConfig,
-    PipewireOptions, RendererKind, VncOptions, WaylandOptions, X11Options,
+    BackendKind, Compositor, CompositorBuilder, CompositorError, DrmOptions, HeadlessOptions,
+    KeyboardConfig, PipewireOptions, RendererKind, VncOptions, WaylandOptions, X11Options,
 };
 pub use ctx::{Ctx, ShellApp};
 pub use events::{ActivateVia, Event};
 pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
+pub use layoutput::RequireOutputs;
 pub use output_policy::{
     OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform, VncOutputSetup,
 };

@@ -471,6 +471,13 @@ impl OutputPolicy {
         }
     }
 
+    /// The setup a DRM output gets with no controlling section at all —
+    /// every C default.  Used when a layoutput outlives the head that
+    /// named it, so there is no rule left to consult.
+    pub fn drm_defaults(&self, current_mode_cli: bool) -> DrmOutputSetup {
+        self.drm_setup(None, current_mode_cli)
+    }
+
     /// C `drm_head_should_force_enable` (main.c:2799): `force-on=true`
     /// enables a head even when the connector reads disconnected.
     /// Read from the *controlling* section, as C does.
