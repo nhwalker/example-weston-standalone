@@ -70,9 +70,27 @@ pub struct OutputRule {
     pub transform: Option<OutputTransform>,
     /// `[output] resizeable=` (vnc/rdp only; C default true).
     pub resizeable: Option<bool>,
-    /// `[output] gbm-format=` (pipewire configure reads it per output;
-    /// the DRM one is not ported).
+    /// `[output] gbm-format=` — read per output by both the pipewire
+    /// and the DRM configure.
     pub gbm_format: Option<String>,
+    /// The raw `mode =` string, kept alongside the parsed `size` for
+    /// the DRM path: there, "preferred" / "current" / a modeline are
+    /// all meaningful and only the backend can resolve a modeline, so
+    /// the frontend must not reduce it to a WxH pair.
+    pub mode_string: Option<String>,
+    /// `[output] max-bpc=` (DRM only, C default 16 — see
+    /// [`OutputPolicy::decide_drm`] for the mode=current interaction).
+    pub max_bpc: Option<u32>,
+    /// `[output] content-type=` (DRM only).
+    pub content_type: Option<String>,
+    /// `[output] seat=` (DRM only; C default "").
+    pub seat: Option<String>,
+    /// `[output] force-on=` (DRM only): enable the head even when the
+    /// connector reads disconnected.
+    pub force_on: bool,
+    /// `[output] clone-of=` (DRM only): this section contributes
+    /// nothing itself — the named section controls the head instead.
+    pub clone_of: Option<String>,
     /// `[output] mirror-of=` — the *source* output this (remote) head
     /// mirrors (C wet_config_find_output_mirror family).  The rule's
     /// `name` is the remote head; `mirror_of` names the native output
@@ -294,6 +312,173 @@ pub struct VncOutputSetup {
     pub resizeable: bool,
 }
 
+/// How a DRM output picks its video mode (C
+/// `weston_drm_backend_output_mode` plus the modeline string that goes
+/// with it, main.c:2356-2378).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum DrmMode {
+    /// `mode=preferred`, and the default when the key is absent.
+    #[default]
+    Preferred,
+    /// `mode=current`, or `--current-mode` for every output.
+    Current,
+    /// Anything else is handed to the backend verbatim as a modeline —
+    /// "1280x720", "1280x720@60", or a full modeline.  C does no
+    /// validation of its own here; the backend reports the failure.
+    Modeline(String),
+}
+
+/// The resolved per-head decision for a DRM output — C
+/// `drm_backend_output_configure` (main.c:2333), which reads a wider
+/// slice of the section than any other backend's configure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DrmOutputSetup {
+    pub mode: DrmMode,
+    /// `max-bpc=`, C default 16.  Note the interaction: with
+    /// `mode=current` and no explicit `max-bpc`, C passes 0 instead, so
+    /// that reusing the current mode does not force a full modeset.
+    pub max_bpc: u32,
+    pub scale: i32,
+    /// `transform=`.  `None` means "no section value" — the caller
+    /// substitutes the *head's* own transform, which C reads at
+    /// configure time and this layer cannot see.
+    pub transform: Option<OutputTransform>,
+    pub gbm_format: Option<String>,
+    pub content_type: Option<String>,
+    /// `seat=`, C default the empty string (not absent — C always calls
+    /// set_seat, with "" when the key is missing).
+    pub seat: String,
+}
+
+/// Why a DRM head is not getting an output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DrmHeadPlan {
+    /// Enable it, on the layoutput named by the section's `name=` (or
+    /// by the head itself when no section matches).
+    Enable {
+        output_name: String,
+        setup: DrmOutputSetup,
+    },
+    /// `mode=off`: pruned before it ever reaches a layoutput
+    /// (drm_head_prepare_enable, main.c:2777).
+    Off,
+    /// A non-desktop head with no section at all — C skips it and lets
+    /// the backend turn it off (main.c:2780).
+    NonDesktop,
+    /// `clone-of` pointed at a missing section, or nested too deep.
+    /// C logs and returns NULL, which lands the head in the
+    /// no-section branch; we keep it distinct so the frontend can log
+    /// C's exact message once and then treat it as no-section.
+    BadCloneOf(String),
+}
+
+impl OutputPolicy {
+    /// Resolve the section that *controls* a head, following `clone-of`
+    /// (C `drm_config_find_controlling_output_section`, main.c:2436).
+    ///
+    /// A section carrying `clone-of=X` contributes nothing of its own:
+    /// every setting comes from X's section instead, recursively.  C
+    /// bounds the recursion at depth 10 and logs two distinct
+    /// configuration errors; both are reproduced.
+    fn drm_controlling_rule(&self, head_name: &str) -> Result<Option<&OutputRule>, String> {
+        let mut want = head_name.to_string();
+        let mut depth = 0;
+        loop {
+            let Some(rule) = self.rules.iter().find(|r| r.name == want) else {
+                if depth > 0 {
+                    return Err(format!(
+                        "Configuration error: output section referred to with \
+                         'clone-of={want}' not found."
+                    ));
+                }
+                return Ok(None);
+            };
+            depth += 1;
+            if depth > 10 {
+                return Err(format!(
+                    "Configuration error: 'clone-of' nested too deep for output '{head_name}'."
+                ));
+            }
+            match &rule.clone_of {
+                Some(next) => want = next.clone(),
+                None => return Ok(Some(rule)),
+            }
+        }
+    }
+
+    /// C `drm_head_prepare_enable` + `drm_backend_output_configure`, as
+    /// one decision.  `current_mode_cli` is `--current-mode`, which
+    /// forces every output to `mode=current` regardless of its section.
+    pub fn decide_drm(
+        &self,
+        head_name: &str,
+        non_desktop: bool,
+        current_mode_cli: bool,
+    ) -> DrmHeadPlan {
+        let rule = match self.drm_controlling_rule(head_name) {
+            Ok(r) => r,
+            Err(message) => return DrmHeadPlan::BadCloneOf(message),
+        };
+        let Some(rule) = rule else {
+            // No section: C enables the head under its own name, with
+            // every default.  A non-desktop head is skipped instead —
+            // the backend turns it off (main.c:2780).
+            if non_desktop {
+                return DrmHeadPlan::NonDesktop;
+            }
+            return DrmHeadPlan::Enable {
+                output_name: head_name.to_string(),
+                setup: self.drm_setup(None, current_mode_cli),
+            };
+        };
+        if rule.off {
+            return DrmHeadPlan::Off;
+        }
+        // C keys the layoutput on the *section's* name=, which is how
+        // several heads land on one output (clone mode).
+        DrmHeadPlan::Enable {
+            output_name: rule.name.clone(),
+            setup: self.drm_setup(Some(rule), current_mode_cli),
+        }
+    }
+
+    fn drm_setup(&self, rule: Option<&OutputRule>, current_mode_cli: bool) -> DrmOutputSetup {
+        let mode = match rule.and_then(|r| r.mode_string.as_deref()) {
+            _ if current_mode_cli => DrmMode::Current,
+            None | Some("preferred") => DrmMode::Preferred,
+            Some("current") => DrmMode::Current,
+            Some(other) => DrmMode::Modeline(other.to_string()),
+        };
+        // C: max-bpc defaults to 16, EXCEPT that mode=current with no
+        // explicit max-bpc passes 0 so no full modeset is done
+        // (main.c:2364).
+        let max_bpc = match rule.and_then(|r| r.max_bpc) {
+            Some(v) => v,
+            None if mode == DrmMode::Current => 0,
+            None => 16,
+        };
+        DrmOutputSetup {
+            mode,
+            max_bpc,
+            // C wet_output_set_scale(output, section, 1, 0): default 1,
+            // and `0` for the CLI value means --scale never reaches a
+            // DRM output.
+            scale: rule.and_then(|r| r.scale).unwrap_or(1),
+            transform: rule.and_then(|r| r.transform),
+            gbm_format: rule.and_then(|r| r.gbm_format.clone()),
+            content_type: rule.and_then(|r| r.content_type.clone()),
+            seat: rule.and_then(|r| r.seat.clone()).unwrap_or_default(),
+        }
+    }
+
+    /// C `drm_head_should_force_enable` (main.c:2799): `force-on=true`
+    /// enables a head even when the connector reads disconnected.
+    /// Read from the *controlling* section, as C does.
+    pub fn drm_force_on(&self, head_name: &str) -> bool {
+        matches!(self.drm_controlling_rule(head_name), Ok(Some(r)) if r.force_on)
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {
@@ -320,6 +505,7 @@ mod tests {
             resizeable: None,
             gbm_format: None,
             mirror_of: None,
+            ..Default::default()
         });
         assert_eq!(
             p.decide("headless").unwrap(),

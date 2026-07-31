@@ -296,6 +296,11 @@ pub struct Output {
     pub color_characteristics: Option<String>,
     pub max_bpc: Option<u32>,
     pub vrr_mode: Option<String>,
+    /// `[output] content-type=` (DRM): the HDMI content-type hint.
+    pub content_type: Option<String>,
+    /// `[output] force-on=` (DRM): enable the head even when the
+    /// connector reads disconnected (C drm_head_should_force_enable).
+    pub force_on: Option<bool>,
     /// `[output] resizeable=` (vnc/rdp: client-driven desktop resize;
     /// C default true).
     pub resizeable: Option<bool>,

@@ -26,6 +26,7 @@ pub enum BackendKind {
     X11,
     Wayland,
     Pipewire,
+    Drm,
 }
 
 /// Headless backend options (C load_headless_backend's CLI slice).
@@ -59,6 +60,35 @@ enum BackendSpec {
     X11(X11Options),
     Wayland(WaylandOptions),
     Pipewire(PipewireOptions),
+    Drm(DrmOptions),
+}
+
+/// DRM/KMS backend options (C load_drm_backend, main.c:3375).
+///
+/// Unlike every other backend this one creates no heads of its own on
+/// load: the backend discovers connectors and the heads-changed
+/// listener does the work, through the layoutput machinery rather than
+/// `simple_heads_changed` (see [`crate::layoutput`]).
+#[derive(Debug, Clone, Default)]
+pub struct DrmOptions {
+    /// C --seat / the libinput seat id; backend default "seat0".
+    pub seat_id: Option<String>,
+    /// C --drm-device, e.g. "card0"; backend default: pick one.
+    pub specific_device: Option<String>,
+    /// C --additional-devices.
+    pub additional_devices: Option<String>,
+    /// C `[core] gbm-format` — the backend-wide default, distinct from
+    /// the per-output `gbm-format=`.
+    pub gbm_format: Option<String>,
+    /// C `[core] pageflip-timeout`, ms; 0 disables.
+    pub pageflip_timeout: u32,
+    /// C `[core] pixman-shadow`, default true.
+    pub use_pixman_shadow: bool,
+    /// C --current-mode: force every output to its current mode.
+    pub current_mode: bool,
+    /// C --continue-without-input: clears compositor->require_input, so
+    /// a machine with no keyboard or mouse still starts.
+    pub continue_without_input: bool,
 }
 
 /// X11 backend options (C load_x11_backend's CLI slice, main.c:3947).
@@ -258,6 +288,11 @@ impl CompositorBuilder {
 
     pub fn add_vnc(mut self, opts: VncOptions) -> Self {
         self.backends.push(BackendSpec::Vnc(opts));
+        self
+    }
+
+    pub fn add_drm(mut self, opts: DrmOptions) -> Self {
+        self.backends.push(BackendSpec::Drm(opts));
         self
     }
 
@@ -530,6 +565,7 @@ impl CompositorBuilder {
                 BackendSpec::X11(opts) => comp.load_x11(self.renderer, opts)?,
                 BackendSpec::Wayland(opts) => comp.load_wayland(self.renderer, opts)?,
                 BackendSpec::Pipewire(opts) => comp.load_pipewire(self.renderer, opts)?,
+                BackendSpec::Drm(opts) => comp.load_drm(self.renderer, opts)?,
             }
         }
 
@@ -1015,6 +1051,90 @@ impl Compositor {
             .backends
             .borrow_mut()
             .push((backend, BackendKind::Pipewire));
+        Ok(())
+    }
+
+    /// C load_drm_backend (main.c:3375).  The DRM backend creates no
+    /// head on load: it discovers connectors itself and the
+    /// heads-changed listener does the rest, via the layoutput
+    /// machinery rather than the simple path (see [`crate::layoutput`]).
+    ///
+    /// `config.configure_device` is deliberately left null — see the
+    /// `[libinput]` refusal in the frontend.  C points it at
+    /// `configure_input_device`, which needs libinput's own device API;
+    /// binding that is its own slice, so rather than silently ignore
+    /// `[libinput]` we refuse it at startup while DRM is loaded.
+    fn load_drm(
+        &mut self,
+        renderer: RendererKind,
+        opts: &DrmOptions,
+    ) -> Result<(), CompositorError> {
+        let compositor = self.ctx.inner.compositor.get();
+
+        let cstr = |s: &Option<String>| -> Result<Option<CString>, CompositorError> {
+            match s {
+                Some(v) => Ok(Some(
+                    CString::new(v.as_str()).map_err(|_| CompositorError::BackendLoad)?,
+                )),
+                None => Ok(None),
+            }
+        };
+        let seat = cstr(&opts.seat_id)?;
+        let device = cstr(&opts.specific_device)?;
+        let additional = cstr(&opts.additional_devices)?;
+        let gbm = cstr(&opts.gbm_format)?;
+
+        let mut config: weston_sys::weston_drm_backend_config =
+            // SAFETY: POD config struct; zeroed then fully initialized.
+            unsafe { std::mem::zeroed() };
+        config.base.struct_version = weston_sys::WESTON_DRM_BACKEND_CONFIG_VERSION;
+        config.base.struct_size = std::mem::size_of::<weston_sys::weston_drm_backend_config>();
+        config.renderer = renderer.to_c();
+        let ptr = |c: &Option<CString>| {
+            c.as_ref()
+                .map_or(std::ptr::null_mut(), |v| v.as_ptr().cast_mut())
+        };
+        config.seat_id = ptr(&seat);
+        config.specific_device = ptr(&device);
+        config.additional_devices = ptr(&additional);
+        config.gbm_format = ptr(&gbm);
+        config.pageflip_timeout = opts.pageflip_timeout;
+        config.use_pixman_shadow = opts.use_pixman_shadow;
+
+        // C: `if (without_input) c->require_input = !without_input;` --
+        // only ever clears the flag, never sets it (main.c:3419).
+        if opts.continue_without_input {
+            // SAFETY: compositor live; require_input is a bound POD
+            // field the backend reads during load.
+            unsafe { (*compositor).require_input = false };
+        }
+
+        // C warn_possible_tty(): a DRM compositor started from inside
+        // another compositor's terminal is a common mistake and the
+        // failure mode is opaque, so C says so first.
+        if std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some() {
+            log::log_line(
+                "Warning: loading the DRM backend from inside a graphical session; \
+                 this usually fails to take DRM master.",
+            );
+        }
+
+        // SAFETY: compositor live; config + strings outlive the call.
+        let backend = self.ctx.with_depth(|| unsafe {
+            weston_sys::weston_compositor_load_backend(
+                compositor,
+                weston_sys::weston_compositor_backend::WESTON_BACKEND_DRM,
+                &mut config.base,
+            )
+        });
+        if backend.is_null() {
+            return Err(CompositorError::BackendLoad);
+        }
+        self.ctx
+            .inner
+            .backends
+            .borrow_mut()
+            .push((backend, BackendKind::Drm));
         Ok(())
     }
 
@@ -1603,6 +1723,17 @@ fn head_setup_for(policy: &OutputPolicy, kind: BackendKind, name: &str) -> Optio
             .map(|s| HeadSetup::Windowed(s, WindowedApi::Wayland)),
         BackendKind::Vnc => policy.decide_vnc(name).map(HeadSetup::Vnc),
         BackendKind::Pipewire => policy.decide_pipewire(name).map(HeadSetup::Pipewire),
+        // DRM has no `simple_output_configure` at all: C gives it its
+        // own heads-changed handler and the layoutput machinery, and
+        // `heads_changed` below routes it there before ever reaching
+        // this table.  Returning None here would silently leave every
+        // DRM head unenabled, so assert the routing instead of relying
+        // on it (debug_assert: the release path still degrades to the
+        // visible "disabled by config" log rather than to UB).
+        BackendKind::Drm => {
+            debug_assert!(false, "DRM heads go through the layoutput path");
+            None
+        }
     }
 }
 
