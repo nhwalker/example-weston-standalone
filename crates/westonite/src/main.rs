@@ -296,16 +296,21 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
              deliberately dropped); use the vnc backend for remote access",
         ));
     }
-    // [pipewire-output] — the pipewire *plugin*, distinct from the
-    // pipewire backend, which IS ported.  Also silently ignored until
-    // now.  Unported rather than dropped: its fate is still open, and
-    // the environment for testing it is not there either (the guest
-    // rootfs has no pipewire daemon, and the plugin segfaults without
-    // one — e2e plan §6).
+    // [pipewire-output] — the pipewire *plugin* — is dropped alongside
+    // remoting (2026-07-31).  Weston keeps these as two independent
+    // build options and they are genuinely different features:
+    //   backend-pipewire  "PipeWire backend: screencasting via PipeWire"
+    //   pipewire          "Virtual remote output with Pipewire on DRM backend"
+    // The BACKEND is ported (--backend=pipewire, R2c-nested); it is
+    // only this DRM-grafted virtual output that westonite does not
+    // ship.  Neither is deprecated upstream — both are still default-on
+    // in weston 15.0.90 — so this is a product decision, like RDP and
+    // remoting, not a reaction to upstream removing anything.
     if !settings.config.pipewire_output.is_empty() {
         return Some(fatal(
-            "[[pipewire-output]] is not yet ported to the Rust frontend (the pipewire \
-             plugin, not the pipewire backend); use the C westonite",
+            "[[pipewire-output]] is not supported by westonite (the pipewire virtual-output \
+             plugin is deliberately dropped); the pipewire *backend* (--backend=pipewire) \
+             is supported",
         ));
     }
     let unported: Vec<&str> = settings

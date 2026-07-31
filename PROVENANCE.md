@@ -20,6 +20,19 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **Pipewire virtual-output plugin dropped (2026-07-31)** —
+  `[[pipewire-output]]`, decided right after remoting and on the same
+  grounds.  The distinction that makes this safe to drop is worth
+  stating, because the names invite confusion: weston has **two
+  independent** build options here, and they are different features —
+  `backend-pipewire` ("PipeWire backend: screencasting via PipeWire"),
+  which westonite **ports** and ships as `--backend=pipewire`, versus
+  `pipewire` ("Virtual remote output with Pipewire on DRM backend"),
+  the plugin, which it does not.  Neither is deprecated upstream (both
+  default-on in 15.0.90), so this is a product decision like RDP and
+  remoting.  `test_pipewire_backend_is_still_supported` asserts the
+  other side of the line, so the drop cannot quietly widen into the
+  backend.
 - **Remoting dropped (2026-07-31)** — `[[remote-output]]`, the remoting
   plugin, is a product decision the same way RDP was: westonite does
   not ship GStreamer/RTP output streaming, and VNC is its remote path.
@@ -37,10 +50,10 @@ Rebase procedure on an EPEL weston bump: plan §8.
     `[[pipewire-output]]` both parsed into the config model and nothing
     ever read them: a user asking for a remote output got silence and
     no output.  That is the exact failure the fail-loud rule exists to
-    prevent, so both are now startup errors — remoting naming the
-    product decision, pipewire-output naming the missing port — each
-    with an e2e test, because a refusal without a test is how this
-    recurs.
+    prevent, so both are now startup errors, each with an e2e test,
+    because a refusal without a test is how this recurs.  (Both name a
+    product decision; pipewire-output briefly said "not yet ported"
+    before it was dropped an hour later.)
 - **R2c-drm (2026-07-31)** — the DRM backend, branch
   `claude/rust-migration-j84b2p`.  The last backend, and the only one
   that needed an environment built for it first (R2c-drm-harness,

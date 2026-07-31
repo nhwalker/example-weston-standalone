@@ -972,8 +972,14 @@ halves can be mixed and smoke-tested at every phase boundary.
   thing that IS deprecated, pending removal — westonite never shipped,
   its replacement being the `mirror-of` machinery ported at
   R2c-mirror); westonite simply does not ship GStreamer/RTP output
-  streaming, and VNC is its remote path.  Remaining in R2c: the
-  *pipewire* virtual-output plugin, the deferred colour-management
+  streaming, and VNC is its remote path.  **The pipewire virtual-output plugin
+  is dropped too** (2026-07-31), on the same grounds.  Weston keeps
+  these as two independent build options and they are different
+  features — `backend-pipewire` ("PipeWire backend: screencasting via
+  PipeWire", **ported** at R2c-nested) versus `pipewire` ("Virtual
+  remote output with Pipewire on DRM backend", dropped).  Neither is
+  deprecated upstream; both are still default-on in 15.0.90.
+  Remaining in R2c: the deferred colour-management
   output attributes, and `configure_input_device` — the `[libinput]` hook, which needs
   libinput bindings weston-sys does not have and is refused fail-loud
   meanwhile.  **Virtual-output probe (2026-07-31)**, run with the C
