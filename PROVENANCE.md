@@ -20,6 +20,87 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-drm-harness (2026-07-31)** — a test environment for the DRM
+  backend, before any DRM porting.  Branch
+  `claude/rust-migration-j84b2p`.  No Rust changed in this slice; it is
+  entirely test infrastructure, and it follows the same discipline as
+  R2c-nested: *prove the environment with the C oracle first, port
+  second.*
+  - **What was tried and dropped.** Four throwaway CI probes asked
+    whether the GitHub runner could host a `vkms` device directly.  It
+    can — `linux-modules-extra-$(uname -r)` provides the module — but
+    the shape was wrong: `apt` on the runner, a module load into the
+    *host* kernel, a device passed into a container and a seat daemon,
+    each observable only one CI round at a time and none of it
+    reproducible locally.  Dropped on user direction after round 4.
+    The facts the probes bought are kept in `docs/drm-testing.md` §1 so
+    nobody re-derives them; the probe step is deleted from CI.
+  - Two of those facts were mistakes worth recording.  Round 3
+    concluded "no vkms card" while its own log showed vkms loaded:
+    since ~6.14 vkms registers on the **faux bus**, so
+    `/sys/class/drm/cardN/device/driver` reads `faux_driver` and a
+    driver-name match finds nothing.  Round 4 died on
+    `LIBSEAT_BACKEND=builtin`, which is not a value EL10's libseat
+    knows — it is compiled with the `logind` and `seatd` backends only.
+  - **The route taken**: a VM carrying its own kernel inside our image
+    (`containers/Containerfile.drm-vm`), so the only runner dependency
+    is `/dev/kvm` — and its absence merely falls back to TCG (~35 s to
+    boot, measured).  CentOS Stream 10's `kernel-modules-core` ships
+    `vkms.ko` and `qemu-kvm` is in AppStream, so the guest is built
+    from the same repos as everything else and the libweston under test
+    in the VM is the libweston the rest of the suite tests.
+  - No privileges anywhere: `mkfs.ext4 -d` builds the guest root *from
+    a directory* without mounting it, and `debugfs -R dump` reads the
+    JUnit XML back out of the results disk the same way.  No loop
+    device, no `CAP_SYS_ADMIN`, no privileged container.
+  - `containers/drm-vm-init.sh` is PID 1 — no systemd, no udev
+    (devtmpfs is what creates `/dev/dri/cardN` when vkms registers).
+    It loads vkms, starts `seatd`, runs the payload and prints a
+    `DRMVM-EXIT=<n>` sentinel.  `scripts/drm-vm-test.sh` treats *the
+    sentinel*, not qemu's exit status, as the verdict: qemu exits 0 for
+    a guest that panicked, hung to the timeout, or never ran the tests,
+    so a missing sentinel is always a failure.
+  - The sentinel goes out through `/dev/kmsg`, and that is load-bearing.
+    The first KVM-accelerated CI run reported "no sentinel" for a run
+    whose seven tests had all passed: a userspace write to
+    `/dev/console` is buffered by the tty layer and flushed
+    asynchronously, so the sysrq power-off printk was emitted into the
+    middle of it — `DRMVM: DRMVM-EXI[ 6.082274] sysrq: Power Off` /
+    `T=0`.  Only KVM was fast enough for the race to land; every TCG run
+    had been clean.  printk emits records whole, so a kmsg write cannot
+    be split that way.
+  - **The checkpoint that justified the whole route**: the C frontend
+    on vkms reaches `Output 'Virtual-1' enabled with head(s) Virtual-1`
+    — atomic modesetting, GBM modifiers, a 34-entry mode list
+    (1024x768 preferred), the GL renderer via llvmpipe, and
+    `desktop-shell.so` loaded.  Richer than expected; pixman is not
+    needed here.
+  - Bring-up findings: PID 1 inherits *no* environment, so `PATH` must
+    be set before the first `modprobe`; `virtio_blk` and `ext4` are
+    modules in the EL10 kernel, so the distro initramfs is required
+    (the generic one `kernel-install` generates in the installroot
+    works, with `init=` honoured across switch-root); and the results
+    disk is mounted by **label**, since with no udev there is no
+    `/dev/disk/by-label`.
+  - Two findings came from red tests rather than from reading.  A DRM
+    output advertises **every** connector mode over `wl_output` (34 for
+    vkms) where headless and vnc advertise one, so a test reading "the
+    first `width:` line" reads the *preferred* mode, not the active one
+    — the mode in use is the one whose `flags:` say `current`.  And
+    under TCG the *first* compositor start in the VM takes ~22 s (cold
+    page cache plus llvmpipe EGL init; later starts in the same run are
+    1.3–2 s), which blows the suite's 10 s deadline; the fix is
+    `WESTONITE_E2E_TIMEOUT_SCALE`, set to 4 by the harness when it falls
+    back to TCG, rather than loosening the deadlines for everyone and
+    hiding real startup regressions on the fast path.
+  - `tests/e2e/test_backend_drm.py` (7 tests) is gated on
+    `WESTONITE_DRM_VM=1` and **not** on the presence of `/dev/dri`: a
+    developer's workstation has one, and taking DRM master on it would
+    black out their display.
+  - Explicitly *not* proven: vkms is a virtual device with no real
+    modes, timings, driver quirks or physical vblank.  A one-time
+    real-hardware validation remains an R3 gate (`docs/drm-testing.md`
+    §3).
 - **R2c-nested (2026-07-29)** — the x11, wayland and pipewire backends,
   branch `claude/rust-migration-j84b2p`.
   - **The premise changed before the code did.** These three were

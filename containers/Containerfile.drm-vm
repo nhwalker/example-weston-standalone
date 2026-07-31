@@ -1,0 +1,78 @@
+# DRM test VM image (docs/drm-testing.md).
+#
+# Derived from the build image rather than folded into it: three CI jobs
+# use westonite-build, and none of them wants an extra kernel, an
+# initramfs and a second root filesystem in their layer cache.
+#
+#   docker build -f containers/Containerfile.build   -t westonite-build .
+#   docker build -f containers/Containerfile.drm-vm  -t westonite-drm-vm .
+#   docker run --rm --device /dev/kvm \
+#       -v "$PWD":/src -v "$PWD/test-results":/results \
+#       westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+#
+# --device /dev/kvm is an optimization, not a requirement: without it
+# qemu falls back to TCG emulation, which boots this VM in about 35s.
+#
+# The guest kernel ships INSIDE this image on purpose. CentOS Stream
+# 10's kernel-modules-core has vkms, so the only thing the harness needs
+# from whatever machine runs it is (optionally) /dev/kvm -- no module
+# loading on the host, no host kernel version dependency, nothing to
+# install on the runner. See docs/drm-testing.md §1 for the on-the-runner
+# approach this replaced.
+
+ARG BUILD_IMAGE=westonite-build
+FROM ${BUILD_IMAGE}
+
+# qemu-kvm: the VMM (EL10 installs it as /usr/libexec/qemu-kvm; it is a
+#   full qemu-system-x86_64 and honours -accel tcg).
+# e2fsprogs: mkfs.ext4 -d builds the root image FROM A DIRECTORY without
+#   mounting it, and debugfs reads the results disk back out the same
+#   way -- together they are why this needs no privileges at all.
+RUN dnf -y install qemu-kvm e2fsprogs \
+    && dnf clean all
+
+# The guest root filesystem, built with the same repos as this image, so
+# the libweston the VM tests is the libweston everything else tests.
+#   kernel-core        -- /usr/lib/modules/$kver/vmlinuz
+#   kernel-modules-core-- vkms.ko  (the entire point)
+#   weston-libs        -- libweston 14 + drm-backend.so + gl-renderer.so
+#   seatd              -- EL10 libseat has only logind and seatd backends,
+#                         and logind needs a session bus we have not got
+#   python3-pytest     -- the e2e suite runs INSIDE the guest
+#   wayland-utils      -- wayland-info, the suite's do-you-really-work probe
+# install_weak_deps=False keeps this near 900 MB instead of several GB.
+RUN mkdir -p /vm/rootfs \
+    && dnf -y --installroot=/vm/rootfs --releasever=10 --enablerepo=crb \
+        --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+        install \
+            kernel-core \
+            kernel-modules-core \
+            bash \
+            coreutils \
+            util-linux \
+            procps-ng \
+            kmod \
+            e2fsprogs \
+            weston-libs \
+            seatd \
+            wayland-utils \
+            python3-pytest \
+    && rm -rf /vm/rootfs/var/cache/dnf/* /vm/rootfs/var/lib/dnf/history* \
+    && dnf clean all
+
+# Lift the kernel and the (generic, non-hostonly) initramfs that
+# kernel-install generated in the installroot out to a fixed path, so
+# the harness never has to know the kernel version.  Assert exactly one
+# kernel: a silently-two-kernels installroot would pick one at random.
+RUN set -eu; \
+    kver=$(ls /vm/rootfs/lib/modules); \
+    test "$(echo "$kver" | wc -l)" -eq 1; \
+    cp "/vm/rootfs/lib/modules/$kver/vmlinuz" /vm/vmlinuz; \
+    cp "/vm/rootfs/boot/initramfs-$kver.img" /vm/initramfs.img; \
+    test -e "/vm/rootfs/lib/modules/$kver/kernel/drivers/gpu/drm/vkms/vkms.ko.xz"; \
+    echo "$kver" > /vm/kver
+
+COPY containers/drm-vm-init.sh /vm/rootfs/init.sh
+RUN chmod +x /vm/rootfs/init.sh && mkdir -p /vm/rootfs/opt /vm/rootfs/results
+
+WORKDIR /src

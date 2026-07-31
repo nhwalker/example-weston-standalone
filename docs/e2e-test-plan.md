@@ -253,6 +253,46 @@ fixture now tears instances down in **reverse** creation order, since a
 nested child dies non-zero if its host (and with it the parent display
 or X server) is killed first.
 
+### 2.9 DRM backend, in a VM *(added at R2c-drm-harness)*
+
+The one backend that needs a kernel mode-setting device.  It gets one
+from `scripts/drm-vm-test.sh`, which boots a throwaway VM carrying its
+own kernel and loads `vkms` inside it — see **docs/drm-testing.md** for
+the route, the on-the-runner approach it replaced, and what vkms does
+not prove.
+
+These tests are gated on `WESTONITE_DRM_VM=1`, deliberately **not** on
+the presence of `/dev/dri`: a developer's machine has one, and taking
+DRM master on it would black out their display.  So they are skipped
+everywhere except inside the harness — the one place in this suite
+where "skipped" is the normal outcome.
+
+vkms presents a single connected connector, `Virtual-1`, preferred mode
+1024x768@60.  Every expectation is anchored to that.
+
+| Test | Asserts |
+|---|---|
+| head-enabled | `drm_heads_changed` enables the connected head and names the output after the connector |
+| preferred-mode | the default `mode=preferred` picks 1024x768 |
+| modeline | `[output] mode=1280x720` is passed through as a modeline and wins over the preferred mode |
+| scale | `[output] scale=2` reaches the output through the DRM configure path |
+| mode-off | `mode=off` prunes the head — it never appears to clients, and the "supposed to be pruned" assert is never reached |
+| drm-device | `--drm-device=card0` selects the card |
+| bad-drm-device | a device that does not exist is a startup error, not a silent fallback to the first card |
+
+The verdict comes from a `DRMVM-EXIT=<n>` sentinel on the guest
+console, never from qemu's exit status: qemu exits 0 for a guest that
+panicked, hung to the timeout, or never ran the tests at all.  JUnit XML
+and the failure artifacts come back out of a second disk via `debugfs
+dump`/`rdump`, so nothing on the host side needs to mount anything.
+
+Harness note, found by a red test rather than by reading: a DRM output
+advertises **every** mode the connector supports over `wl_output` (34
+of them for vkms), where headless and vnc advertise one.  So "the first
+`width:` line wayland-info prints" is the *preferred* mode, not the
+active one — reading a DRM output's mode means finding the one whose
+`flags:` say `current`.
+
 ---
 
 ## 3. Pixel determinism *(as implemented)*
@@ -283,6 +323,13 @@ or X server) is killed first.
 5. pristine install test incl. the **installed subset**
    (`rpm-install-test.sh /rpms /src /results`)
 6. artifacts: RPMs + `test-results` (uploaded `if: always()`)
+
+Plus a separate `drm-vm` job (added at R2c-drm-harness): builds
+`containers/Containerfile.drm-vm` on top of the build image and runs
+`scripts/drm-vm-test.sh`, which boots the VM (KVM-accelerated where
+`/dev/kvm` is available, TCG otherwise) and runs §2.9 inside it.  It is
+`continue-on-error` while it exercises only the C oracle, and becomes a
+gate in the PR that adds the Rust DRM leg.
 
 Runtime budget: e2e stage ≤ ~5 minutes (dozens of tests, each a short-
 lived compositor instance; instances are cheap headless/VNC processes).

@@ -513,13 +513,26 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             resizeable: out.resizeable,
             gbm_format: out.gbm_format.clone(),
             mirror_of: out.mirror_of.clone(),
+            // DRM-only keys; the DRM configure is the only reader.
+            // `mode_string` keeps the raw text alongside the parsed
+            // size because on DRM "preferred"/"current"/a modeline are
+            // all valid and only the backend can resolve a modeline.
+            mode_string: out.mode.clone(),
+            max_bpc: out.max_bpc,
+            content_type: out.content_type.clone(),
+            seat: out.seat.clone(),
+            force_on: out.force_on == Some(true),
+            clone_of: out.clone_of.clone(),
         };
         if let Some(mode) = &out.mode {
             if mode == "off" {
                 rule.off = true;
             } else if let Some(size) = parse_mode(mode) {
                 rule.size = Some(size);
-            } else {
+            } else if !matches!(mode.as_str(), "preferred" | "current") {
+                // On DRM these two, and anything else, are meaningful
+                // (see mode_string above); on every other backend C
+                // logs this and falls back to the defaults.
                 weston::log::message(&format!("Invalid mode for output {name}. Using defaults."));
             }
         }

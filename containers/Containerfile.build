@@ -43,6 +43,7 @@ RUN dnf -y install epel-release \
         libxcb-devel \
         pipewire \
         pipewire-utils \
+        seatd \
         rust \
         cargo \
         clippy \

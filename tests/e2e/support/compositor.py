@@ -69,12 +69,25 @@ def _toml_value(value):
         return f'"{escaped}"'
 
 
+# Multiplier applied to every deadline in this module.  The DRM VM
+# (docs/drm-testing.md) falls back to TCG emulation on a host without
+# /dev/kvm, where the FIRST compositor start takes ~22s -- cold page
+# cache plus llvmpipe EGL init; later starts in the same run are 1.3-2s
+# -- which blows this module's 10s deadlines outright.  Scaling them
+# where the environment is known to be slow is the honest fix;
+# loosening them for everyone would hide a real startup regression on
+# the fast path.
+TIMEOUT_SCALE = float(os.environ.get("WESTONITE_E2E_TIMEOUT_SCALE", "1"))
+
+
 class Timeout(AssertionError):
     pass
 
 
 def wait_until(predicate, deadline=10.0, interval=0.1, message="condition"):
-    """Poll predicate() until truthy; raise Timeout after deadline seconds."""
+    """Poll predicate() until truthy; raise Timeout after deadline seconds
+    (times TIMEOUT_SCALE)."""
+    deadline *= TIMEOUT_SCALE
     end = time.monotonic() + deadline
     while time.monotonic() < end:
         value = predicate()
@@ -119,6 +132,12 @@ class Westonite:
             # there is no GPU in the test container; pixman is what the
             # vnc leg uses for the same reason
             argv += ["--renderer=pixman"]
+        elif backend == "drm":
+            # The DRM leg runs in a VM whose only device is vkms (see
+            # docs/drm-testing.md); there is no keyboard or mouse, and
+            # weston refuses to start without one unless told to.  A
+            # property of the environment, not of any one test.
+            argv += ["--continue-without-input"]
         if backend in ("vnc", "headless", "wayland", "x11") and width is not None:
             argv += [f"--width={width}", f"--height={height}"]
         if socket_name:
@@ -242,6 +261,7 @@ class Westonite:
         """Run a Wayland client to completion; return CompletedProcess
         with captured text output. Asserts exit code 0 unless
         check=False (for clients that are EXPECTED to fail)."""
+        timeout *= TIMEOUT_SCALE
         result = subprocess.run(argv, env=self.client_env(), timeout=timeout,
                                 capture_output=True, text=True)
         assert not check or result.returncode == 0, (
@@ -253,6 +273,7 @@ class Westonite:
 
     def wait_exit(self, deadline=15.0):
         """Wait for the compositor to exit on its own; return exit code."""
+        deadline *= TIMEOUT_SCALE
         try:
             return self.proc.wait(deadline)
         except subprocess.TimeoutExpired:
@@ -262,6 +283,7 @@ class Westonite:
 
     def terminate(self, sig=signal.SIGTERM, deadline=10.0):
         """Signal the compositor and assert it exits cleanly (code 0)."""
+        deadline *= TIMEOUT_SCALE
         if self.proc.poll() is None:
             self.proc.send_signal(sig)
         try:
