@@ -31,96 +31,6 @@ jobs:
           docker run --rm -v "$PWD":/src -v "$PWD/test-results":/results \
             westonite-build /src/scripts/e2e-test.sh /results
 
-      # Throwaway probe (NOT a gate — continue-on-error), here rather
-      # than in its own job because it needs the build image.  Rounds
-      # 1-2 established: the Azure runner kernel has no vkms, /dev/kvm
-      # is present, a hyperv_drm card already exists (KMS, connector
-      # "connected"), and linux-modules-extra-$(uname -r) is
-      # installable.  Round 3 asks the only question that decides the
-      # DRM slice: with vkms actually loaded, does the *C* frontend —
-      # the oracle, not our port — bring a DRM output up in CI?
-      #
-      # Deliberately NOT using the hyperv_drm card: it is the runner's
-      # own console, and taking DRM master on it risks disturbing the
-      # machine under test.  vkms is a separate virtual device built
-      # for exactly this.
-      #
-      # Delete this step once the DRM slice picks its route.
-      - name: DRM bring-up probe on vkms (C frontend, non-fatal)
-        continue-on-error: true
-        run: |
-          set -x
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" \
-            || echo "PROBE: modules-extra install FAILED"
-          # Identify the vkms card by DELTA, not by driver name: since
-          # ~6.14 vkms registers on the faux bus, so
-          # /sys/class/drm/cardN/device/driver resolves to
-          # "faux_driver" and a name match silently finds nothing (it
-          # did exactly that on the first run of this probe).  The card
-          # that appears across modprobe is unambiguous.
-          cards() { ls /sys/class/drm 2>/dev/null | grep -E "^card[0-9]+$" | sort; }
-          BEFORE=$(cards)
-          echo "PROBE: cards before modprobe: $(echo "$BEFORE" | tr "\n" " ")"
-          sudo modprobe vkms || echo "PROBE: modprobe vkms FAILED"
-          AFTER=$(cards)
-          echo "PROBE: cards after  modprobe: $(echo "$AFTER" | tr "\n" " ")"
-          ls -l /dev/dri || true
-          VKMS=$(comm -13 <(echo "$BEFORE") <(echo "$AFTER") | head -1)
-          for c in /sys/class/drm/card*; do
-            [ -d "$c/device" ] || continue    # skip card*-<connector> dirs
-            name=$(basename "$c")
-            case "$name" in *-*) continue;; esac
-            # `|| true`: a bare assignment from a failing substitution
-            # would take the step down under `set -e`.
-            drv=$(readlink -f "$c/device/driver" 2>/dev/null || true)
-            path=$(readlink -f "$c" 2>/dev/null || true)
-            echo "PROBE: $name bus-driver=${drv##*/} devpath=$path"
-          done
-          for con in /sys/class/drm/card*-*; do
-            [ -e "$con" ] || continue
-            echo "PROBE: $(basename "$con") = $(cat "$con/status" 2>/dev/null)"
-          done
-          if [ -z "$VKMS" ]; then
-            echo "PROBE RESULT: no vkms card — DRM needs the VM route (/dev/kvm is present)"
-            exit 0
-          fi
-          echo "PROBE: vkms is $VKMS; trying the C frontend on it"
-          # Seat: round 4 proved LIBSEAT_BACKEND=builtin is not a thing
-          # here -- libseat answered "No backend matched name 'builtin'",
-          # and this build indeed has only the logind and seatd backends
-          # compiled in.  logind wants a session bus we do not have in a
-          # container, so run seatd itself and point libseat at it.
-          # --continue-without-input because a vkms-only runner has no
-          # input devices for libinput to find.
-          # VKMS goes in via -e so the inner script can stay single
-          # quoted (no escaping across two shell levels).
-          docker run --rm --device /dev/dri -e VKMS="$VKMS" \
-            -v "$PWD":/src westonite-build sh -c '
-              ninja -C /src/build install >/dev/null 2>&1 || true
-              mkdir -p -m 0700 /tmp/xdg
-              seatd > /tmp/seatd.log 2>&1 &
-              for _ in $(seq 1 20); do
-                [ -S /run/seatd.sock ] && break
-                sleep 0.5
-              done
-              echo "--- seatd socket: $(ls -l /run/seatd.sock 2>&1 | head -1)"
-              XDG_RUNTIME_DIR=/tmp/xdg LIBSEAT_BACKEND=seatd \
-                timeout 25 westonite --backend=drm --drm-device="$VKMS" \
-                  --continue-without-input --socket=drm-probe \
-                  --log=/tmp/drm.log &
-              sleep 15
-              echo "--- compositor log:"
-              cat /tmp/drm.log 2>/dev/null || echo "(no log)"
-              if grep -q "enabled with head" /tmp/drm.log 2>/dev/null; then
-                echo "PROBE RESULT: C frontend brought a DRM output up on vkms"
-              else
-                echo "PROBE RESULT: C frontend did NOT reach an enabled output"
-                echo "--- seatd log:"
-                cat /tmp/seatd.log 2>/dev/null || true
-              fi
-            ' || echo "PROBE: container run failed"
-
       - name: Destroy-storm stress test (valgrind, D18)
         # Reuses the build tree the e2e step left in the workspace mount
         # (configuring it from scratch when absent, so the step also
@@ -198,6 +108,51 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: test-results-rust
+          path: test-results/
+          if-no-files-found: ignore
+
+  # The DRM backend needs a KMS device, which no container and no
+  # GitHub-hosted runner offers.  This job boots a VM that carries its
+  # own kernel (ours, from the same EL10 content set as everything else)
+  # and loads vkms inside it -- so the only thing asked of the runner is
+  # /dev/kvm, and even that is optional.  docs/drm-testing.md explains
+  # the route and, importantly, what vkms does *not* prove.
+  #
+  # continue-on-error until the Rust DRM port lands (plan §7 R2c): until
+  # then this exercises the C oracle only, and a red X on the oracle
+  # would be telling us about EPEL, not about our port.  Promote it to a
+  # gate in the same PR that adds the Rust leg.
+  drm-vm:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the CentOS Stream 10 + EPEL build image
+        run: docker build -f containers/Containerfile.build -t westonite-build .
+
+      - name: Build the DRM VM image
+        run: docker build -f containers/Containerfile.drm-vm -t westonite-drm-vm .
+
+      - name: DRM e2e inside the VM (C frontend)
+        run: |
+          mkdir -p test-results
+          # The runner has /dev/kvm but it is group-owned; the container
+          # runs as root and still needs write access to it.  Falling
+          # back to TCG costs ~30s of boot, so this is best-effort.
+          KVM=
+          if [ -c /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm || true
+            KVM="--device /dev/kvm"
+          fi
+          docker run --rm $KVM -v "$PWD":/src -v "$PWD/test-results":/results \
+            westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+
+      - name: Upload DRM VM results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-drm-vm
           path: test-results/
           if-no-files-found: ignore
 

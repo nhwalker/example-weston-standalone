@@ -943,11 +943,22 @@ halves can be mixed and smoke-tested at every phase boundary.
   ships no X.org server at all, so there is no Xvfb route), and
   pipewire needs only its daemon.  **RDP is dropped as a product
   decision** (2026-07-29): westonite does not ship it, `--backend=rdp`
-  says so, and VNC is the supported remote path.  Remaining in R2c:
-  the DRM backend (the one that genuinely needs a virtual KMS device —
-  a throwaway CI probe job decides between vkms-on-the-runner and a
-  VM), remoting/pipewire *virtual output* plugins, and the deferred
-  clone-of + color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
+  says so, and VNC is the supported remote path.  *R2c-drm-harness* ✅
+  *(done — see PROVENANCE.md log)*: DRM is the one backend that
+  genuinely needs a KMS device, so it gets a test environment before
+  it gets a port.  Four throwaway CI probes tried vkms on the runner
+  itself and were abandoned as too brittle (2026-07-31); the
+  replacement is a VM that ships its own kernel inside our image
+  (`containers/Containerfile.drm-vm`, `scripts/drm-vm-test.sh`), so
+  the only thing asked of a runner is `/dev/kvm` — and its absence
+  merely falls back to TCG.  The C oracle brings a full atomic-KMS
+  output up on vkms in it, which is what made the port worth
+  starting; **docs/drm-testing.md** records the route, the probe
+  findings it replaced, and — load-bearing — what vkms does *not*
+  prove (a one-time real-hardware validation is still an R3 gate).
+  Remaining in R2c: the DRM backend port itself, remoting/pipewire
+  *virtual output* plugins, and the deferred clone-of +
+  color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
   log)*: the `frontend/xwayland.c` glue (module load + plugin API,
   lazy `spawn_xserver` through `westonite-spawn`, `-displayfd`
   readiness watch, SIGCHLD-driven `xserver_exited` respawn,
