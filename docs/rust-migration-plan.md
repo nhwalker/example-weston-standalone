@@ -965,9 +965,16 @@ halves can be mixed and smoke-tested at every phase boundary.
   `clone-of` section resolution the earlier slices had deferred.
   Verified by `tests/e2e/test_backend_drm.py` running against
   `westonite-rs` inside the VM harness, and the `drm-vm` CI job is a
-  gate from here on.  Remaining in R2c: the remoting/pipewire *virtual
-  output* plugins, the deferred colour-management output attributes,
-  and `configure_input_device` — the `[libinput]` hook, which needs
+  gate from here on.  **The remoting plugin is dropped as a
+  product decision** (2026-07-31), like RDP: `[[remote-output]]` is a
+  startup error naming the decision.  It is *not* deprecated upstream
+  (weston 15.0.90 still builds it by default, and `screen-share` — the
+  thing that IS deprecated, pending removal — westonite never shipped,
+  its replacement being the `mirror-of` machinery ported at
+  R2c-mirror); westonite simply does not ship GStreamer/RTP output
+  streaming, and VNC is its remote path.  Remaining in R2c: the
+  *pipewire* virtual-output plugin, the deferred colour-management
+  output attributes, and `configure_input_device` — the `[libinput]` hook, which needs
   libinput bindings weston-sys does not have and is refused fail-loud
   meanwhile.  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM

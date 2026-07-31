@@ -247,6 +247,14 @@ to GL; there is no GPU in the container).
 | x11-default-size | x11's own configure defaults, 1024x600, distinct from every other backend's |
 | pipewire-output | with a pipewire daemon running, `--backend=pipewire` publishes the `pipewire` output (skipped where the daemon is absent) |
 | rdp-refused [toml] | `--backend=rdp` is a startup error naming the product decision (C still builds RDP, so Rust-only) |
+| remote-output-refused [toml] | `[[remote-output]]` is a startup error naming the product decision — the remoting plugin is dropped like RDP |
+| pipewire-output-refused [toml] | `[[pipewire-output]]` (the pipewire *plugin*, not the backend) is a startup error while unported |
+
+Those last two guard a regression that actually happened: both sections
+parsed into the config model and **nothing read them**, so asking for a
+remote output got silence and no output — precisely the failure mode
+the fail-loud rule exists to prevent.  A refusal without a test is how
+that recurs.
 
 Nested instances also fixed a harness assumption: the `westonite`
 fixture now tears instances down in **reverse** creation order, since a
