@@ -60,6 +60,15 @@ Rebase procedure on an EPEL weston bump: plan §8.
     sentinel*, not qemu's exit status, as the verdict: qemu exits 0 for
     a guest that panicked, hung to the timeout, or never ran the tests,
     so a missing sentinel is always a failure.
+  - The sentinel goes out through `/dev/kmsg`, and that is load-bearing.
+    The first KVM-accelerated CI run reported "no sentinel" for a run
+    whose seven tests had all passed: a userspace write to
+    `/dev/console` is buffered by the tty layer and flushed
+    asynchronously, so the sysrq power-off printk was emitted into the
+    middle of it — `DRMVM: DRMVM-EXI[ 6.082274] sysrq: Power Off` /
+    `T=0`.  Only KVM was fast enough for the race to land; every TCG run
+    had been clean.  printk emits records whole, so a kmsg write cannot
+    be split that way.
   - **The checkpoint that justified the whole route**: the C frontend
     on vkms reaches `Output 'Virtual-1' enabled with head(s) Virtual-1`
     — atomic modesetting, GBM modifiers, a 34-entry mode list

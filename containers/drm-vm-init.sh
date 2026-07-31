@@ -42,7 +42,30 @@ finish() {
     code=$1
     sync
     umount /results 2>/dev/null || true
+
+    # The sentinel goes out through /dev/kmsg, not just /dev/console.
+    # A userspace write to the console is buffered by the tty layer and
+    # flushed asynchronously, so a kernel printk can be emitted into
+    # the MIDDLE of it -- which is exactly what the sysrq power-off two
+    # lines down did the first time this ran on a KVM-accelerated
+    # runner, fast enough for the race to land:
+    #
+    #   DRMVM: DRMVM-EXI[    6.082274] sysrq: Power Off
+    #   T=0
+    #
+    # and the host rightly reported no sentinel for a run whose seven
+    # tests had all passed.  printk emits records whole, so a kmsg
+    # write cannot be split that way; <2> (KERN_CRIT) makes sure it
+    # reaches the console whatever the console loglevel is.  The
+    # console copy stays as the human-readable one -- if it survives
+    # intact the host just reads the same value twice.
+    echo "<2>DRMVM-EXIT=$code" > /dev/kmsg 2>/dev/null || true
     log "DRMVM-EXIT=$code"
+
+    # Let the tty drain before anything else prints, so the console log
+    # stays readable for whoever has to debug a failure.
+    sleep 1
+
     # No systemd, so no `poweroff`: ask the kernel directly.  `o` is
     # power-off; if the emulated machine ignores it the host's timeout
     # is the backstop.

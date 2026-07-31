@@ -93,6 +93,21 @@ greps it for the `DRMVM-EXIT=<n>` sentinel and exits with `n`; **no
 sentinel is a failure**, which is what makes a kernel panic, an early
 exit and a hang all report correctly instead of silently passing.
 
+The sentinel is written to **`/dev/kmsg`**, not just `/dev/console`,
+and that is load-bearing rather than stylistic. A userspace write to
+the console is buffered by the tty layer and flushed asynchronously, so
+a kernel printk can be emitted into the middle of it. On the first
+KVM-accelerated CI run — fast enough for the race to land — the console
+read:
+
+    DRMVM: DRMVM-EXI[    6.082274] sysrq: Power Off
+    T=0
+
+and the harness correctly reported "no sentinel" for a run whose seven
+tests had all passed. printk emits records whole, so a kmsg write
+cannot be split that way. Don't move the sentinel back to a plain
+console write.
+
 JUnit XML and the per-failure artifact directories come back on a
 second, tiny ext4 disk, read out with `debugfs dump`/`rdump` — again,
 without mounting anything.

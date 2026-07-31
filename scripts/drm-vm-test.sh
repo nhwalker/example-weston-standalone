@@ -136,10 +136,19 @@ debugfs -R "rdump /failures-drm-$FRONTEND $RESULTS" /vm/results.img \
 # The sentinel, not qemu's exit status, is the verdict: qemu exits 0 for
 # a guest that panicked, hung until the timeout, or never ran the tests.
 # No sentinel is a failure, always.
-# `|| true`: with pipefail set, a grep that matches nothing would take
-# the whole script down here -- exactly in the case whose error message
-# below is the most useful thing this script can produce.
-SENTINEL=$(grep -ao 'DRMVM-EXIT=[0-9]*' "$CONSOLE" | tail -1 | cut -d= -f2 || true)
+#
+# The guest prints it twice -- once through /dev/kmsg, once to the
+# console -- so take the FIRST match, which is the kmsg one: printk
+# emits records whole, while the console copy can be spliced by a
+# concurrent printk (see containers/drm-vm-init.sh).  And require at
+# least one digit, so a console copy cut off right after the `=` cannot
+# match and yield an empty verdict.
+#
+# `|| true`: with pipefail set, a grep that matches nothing -- or a
+# SIGPIPE from head -- would take the whole script down here, exactly in
+# the case whose error message below is the most useful thing this
+# script can produce.
+SENTINEL=$(grep -ao 'DRMVM-EXIT=[0-9][0-9]*' "$CONSOLE" | head -1 | cut -d= -f2 || true)
 if [ -z "$SENTINEL" ]; then
 	echo "drm-vm: FAILED -- no DRMVM-EXIT sentinel (qemu rc=$QEMU_RC)" >&2
 	tail -60 "$CONSOLE" >&2
