@@ -86,16 +86,26 @@ jobs:
             exit 0
           fi
           echo "PROBE: vkms is $VKMS; trying the C frontend on it"
-          # Root + the builtin libseat backend is the headless seat
-          # recipe; --continue-without-input because a vkms-only runner
-          # has no input devices for libinput to find.
+          # Seat: round 4 proved LIBSEAT_BACKEND=builtin is not a thing
+          # here -- libseat answered "No backend matched name 'builtin'",
+          # and this build indeed has only the logind and seatd backends
+          # compiled in.  logind wants a session bus we do not have in a
+          # container, so run seatd itself and point libseat at it.
+          # --continue-without-input because a vkms-only runner has no
+          # input devices for libinput to find.
           # VKMS goes in via -e so the inner script can stay single
           # quoted (no escaping across two shell levels).
           docker run --rm --device /dev/dri -e VKMS="$VKMS" \
             -v "$PWD":/src westonite-build sh -c '
               ninja -C /src/build install >/dev/null 2>&1 || true
               mkdir -p -m 0700 /tmp/xdg
-              XDG_RUNTIME_DIR=/tmp/xdg LIBSEAT_BACKEND=builtin \
+              seatd > /tmp/seatd.log 2>&1 &
+              for _ in $(seq 1 20); do
+                [ -S /run/seatd.sock ] && break
+                sleep 0.5
+              done
+              echo "--- seatd socket: $(ls -l /run/seatd.sock 2>&1 | head -1)"
+              XDG_RUNTIME_DIR=/tmp/xdg LIBSEAT_BACKEND=seatd \
                 timeout 25 westonite --backend=drm --drm-device="$VKMS" \
                   --continue-without-input --socket=drm-probe \
                   --log=/tmp/drm.log &
@@ -106,6 +116,8 @@ jobs:
                 echo "PROBE RESULT: C frontend brought a DRM output up on vkms"
               else
                 echo "PROBE RESULT: C frontend did NOT reach an enabled output"
+                echo "--- seatd log:"
+                cat /tmp/seatd.log 2>/dev/null || true
               fi
             ' || echo "PROBE: container run failed"
 
