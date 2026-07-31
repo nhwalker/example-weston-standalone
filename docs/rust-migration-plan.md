@@ -979,8 +979,13 @@ halves can be mixed and smoke-tested at every phase boundary.
   PipeWire", **ported** at R2c-nested) versus `pipewire` ("Virtual
   remote output with Pipewire on DRM backend", dropped).  Neither is
   deprecated upstream; both are still default-on in 15.0.90.
-  Remaining in R2c: the deferred colour-management
-  output attributes, and `configure_input_device` — the `[libinput]` hook, which needs
+  *R2c-color* ✅ *(done — see PROVENANCE.md log)*: the colour
+  slice — `[core] color-management`, and per output `icc-profile`,
+  `eotf-mode`, `colorimetry-mode`, `color-characteristics` (with C's
+  entirely-or-not-at-all group rule) and `allow-hdcp`, which had been
+  missing from the config model outright.  `vrr-mode` and `max-cll`
+  were removed instead: neither is read anywhere in 14.0.1.  Remaining
+  in R2c: `configure_input_device` — the `[libinput]` hook, which needs
   libinput bindings weston-sys does not have and is refused fail-loud
   meanwhile.  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM

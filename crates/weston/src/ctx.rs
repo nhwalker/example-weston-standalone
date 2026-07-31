@@ -57,6 +57,11 @@ pub(crate) struct CtxInner {
     /// C wet_compositor::layoutput_list — the DRM head→output grouping
     /// (see crate::layoutput).  Empty unless the DRM backend is loaded.
     pub(crate) layoutputs: RefCell<Vec<crate::layoutput::Layoutput>>,
+    /// C wet_compositor::use_color_manager — set only when
+    /// `[core] color-management=true` loaded the manager successfully.
+    /// Gates icc-profile, and gates the non-default eotf/colorimetry
+    /// modes with C's own error message.
+    pub(crate) use_color_manager: Cell<bool>,
     /// C `wet_compositor.init_failed`: an output that could not be
     /// created, configured or enabled aborts startup rather than
     /// leaving a running compositor with missing outputs (main.c
@@ -163,6 +168,7 @@ impl Ctx {
             display: Cell::new(std::ptr::null_mut()),
             backends: RefCell::new(Vec::new()),
             layoutputs: RefCell::new(Vec::new()),
+            use_color_manager: Cell::new(false),
             init_failed: Cell::new(false),
             depth: Cell::new(0),
             draining: Cell::new(false),

@@ -289,7 +289,7 @@ fn process_one(ctx: &Ctx, lo_index: usize, policy: &OutputPolicy, current_mode: 
         // The setup is decided per *flush*, from the controlling
         // section — the same lookup C does with lo->section.
         let setup = match policy.decide_drm(&section_head, false, current_mode) {
-            crate::output_policy::DrmHeadPlan::Enable { setup, .. } => setup,
+            crate::output_policy::DrmHeadPlan::Enable(plan) => plan.setup,
             // Unreachable: a group only exists because a head reached
             // Enable.  Fall back to defaults rather than skip config.
             _ => policy.drm_defaults(current_mode),
@@ -529,7 +529,11 @@ fn configure(
         let seat = CString::new(setup.seat.as_str()).unwrap_or_default();
         ((*api).set_seat.expect("drm set_seat"))(output.as_ptr(), seat.as_ptr());
     }
-    true
+
+    // C's tail: allow_content_protection, then colour profile, EOTF,
+    // colorimetry and characteristics (main.c:2415-2423).  `full`
+    // because DRM is one of the two paths that reads the whole slice.
+    crate::compositor::apply_color(ctx, output, &setup.color, true)
 }
 
 /// The transform of the output's first head, when the output has

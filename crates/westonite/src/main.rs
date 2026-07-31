@@ -115,6 +115,7 @@ fn main() -> ExitCode {
     if let Some(msec) = settings.config.core.repaint_window {
         builder = builder.with_repaint_window_msec(msec);
     }
+    builder = builder.color_management(settings.color_management);
     if let Some(r) = &settings.config.core.require_outputs {
         match weston::RequireOutputs::parse(r) {
             Some(r) => builder = builder.require_outputs(r),
@@ -503,23 +504,32 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
                 "[[output]] '{name}': max-bpc applies to the drm backend only"
             )));
         }
-        if out.icc_profile.is_some()
-            || out.eotf_mode.is_some()
-            || out.colorimetry_mode.is_some()
-            || out.color_characteristics.is_some()
-            || out.vrr_mode.is_some()
+        // eotf-mode / colorimetry-mode / color-characteristics reach
+        // libweston only through the DRM configure (main.c:2417-2423);
+        // the windowed and remote ones read icc-profile and allow-hdcp
+        // and nothing else.  On a non-DRM output they would be inert,
+        // so say so rather than accept them.
+        if !has_drm
+            && (out.eotf_mode.is_some()
+                || out.colorimetry_mode.is_some()
+                || out.color_characteristics.is_some())
         {
             return Some(fatal(&format!(
-                "[[output]] '{name}': color-management/DRM attributes are not yet ported \
-                 to the Rust frontend"
+                "[[output]] '{name}': eotf-mode, colorimetry-mode and \
+                 color-characteristics apply to the drm backend only"
+            )));
+        }
+        // C returns from wet_output_set_color_profile before even
+        // reading icc_profile when the manager is absent, so an
+        // icc-profile without color-management=true is silently
+        // ignored there.  Refuse instead.
+        if out.icc_profile.is_some() && !settings.color_management {
+            return Some(fatal(&format!(
+                "[[output]] '{name}': icc-profile requires [core] color-management = true"
             )));
         }
     }
-    if settings.color_management {
-        return Some(fatal(
-            "color-management is not yet ported to the Rust frontend",
-        ));
-    }
+
     if let Some(shell) = &cli.shell {
         // Parity flag: the Rust frontend's shell is built in; only the
         // default spelling is accepted (D19).
@@ -549,6 +559,156 @@ fn unhandled_option(flag: &str) -> ExitCode {
     fatal(&format!(
         "unhandled option: {flag} (not consumed by any loaded backend)"
     ))
+}
+
+/// The colour slice of one `[[output]]`, with C's validation.
+///
+/// C `parse_color_characteristics` (main.c:1538) enforces a rule that
+/// is easy to miss and easy to get wrong: the eleven characteristic
+/// keys form five groups — primaries (six values), white (two), max
+/// luminance, min luminance, maxFALL — and each group must be given
+/// **entirely or not at all**.  Half a group is a config error, not a
+/// partial application.  Ranges are checked too: 0..=1 for the
+/// chromaticity coordinates, 0..=1e5 for the luminances.
+fn build_color_setup(
+    settings: &Settings,
+    out: &westonite_config::Output,
+    name: &str,
+) -> Result<weston::ColorSetup, String> {
+    let eotf_mode = match &out.eotf_mode {
+        Some(m) => Some(weston::EotfMode::parse(m).ok_or_else(|| {
+            format!(
+                "[[output]] '{name}': '{m}' is not a valid EOTF mode. Try one of: {}",
+                weston::EotfMode::NAMES.join(" ")
+            )
+        })?),
+        None => None,
+    };
+    let colorimetry_mode = match &out.colorimetry_mode {
+        Some(m) => Some(weston::ColorimetryMode::parse(m).ok_or_else(|| {
+            format!(
+                "[[output]] '{name}': '{m}' is not a valid colorimetry mode. Try one of: {}",
+                weston::ColorimetryMode::NAMES.join(" ")
+            )
+        })?),
+        None => None,
+    };
+    // C: a non-default eotf/colorimetry mode needs the colour manager.
+    if eotf_mode.is_some_and(|m| m != weston::EotfMode::Sdr) && !settings.color_management {
+        return Err(format!(
+            "[[output]] '{name}': a non-SDR eotf-mode requires [core] color-management = true"
+        ));
+    }
+    if colorimetry_mode.is_some_and(|m| m != weston::ColorimetryMode::Default)
+        && !settings.color_management
+    {
+        return Err(format!(
+            "[[output]] '{name}': a non-default colorimetry-mode requires \
+             [core] color-management = true"
+        ));
+    }
+
+    let characteristics = match &out.color_characteristics {
+        Some(cc_name) => Some(resolve_characteristics(settings, cc_name, name)?),
+        None => None,
+    };
+
+    Ok(weston::ColorSetup {
+        icc_profile: out.icc_profile.clone(),
+        eotf_mode,
+        colorimetry_mode,
+        characteristics,
+        // C allow_content_protection default (main.c:1681).
+        allow_hdcp: out.allow_hdcp.unwrap_or(true),
+    })
+}
+
+fn resolve_characteristics(
+    settings: &Settings,
+    cc_name: &str,
+    output: &str,
+) -> Result<weston::ColorCharacteristics, String> {
+    let cc = settings
+        .config
+        .color_characteristics
+        .iter()
+        .find(|c| c.name.as_deref() == Some(cc_name))
+        .ok_or_else(|| {
+            format!(
+                "output {output}: no [[color-characteristics]] section with \
+                 'name = \"{cc_name}\"' found"
+            )
+        })?;
+    // C rejects ':' in the name: it is reserved for the profile
+    // descriptions libweston builds from these.
+    if cc_name.contains(':') {
+        return Err(format!(
+            "[[color-characteristics]] name={cc_name}: reserved name. \
+             Do not use ':' character in the name."
+        ));
+    }
+
+    let range = |v: Option<f64>, key: &str, lo: f64, hi: f64| -> Result<Option<f32>, String> {
+        match v {
+            // NaN shall not pass, as C puts it.
+            Some(x) if x.is_nan() || x < lo || x > hi => Err(format!(
+                "[[color-characteristics]] name={cc_name}: {key} value {x} is outside \
+                 of the range {lo} - {hi}."
+            )),
+            Some(x) => Ok(Some(x as f32)),
+            None => Ok(None),
+        }
+    };
+    let prim = [
+        ("red-x", cc.red_x),
+        ("red-y", cc.red_y),
+        ("green-x", cc.green_x),
+        ("green-y", cc.green_y),
+        ("blue-x", cc.blue_x),
+        ("blue-y", cc.blue_y),
+    ];
+    let white = [("white-x", cc.white_x), ("white-y", cc.white_y)];
+
+    // Each group entirely or not at all.
+    let group = |keys: &[(&str, Option<f64>)], label: &str| -> Result<bool, String> {
+        let set = keys.iter().filter(|(_, v)| v.is_some()).count();
+        if set == 0 {
+            return Ok(false);
+        }
+        if set != keys.len() {
+            let missing: Vec<&str> = keys
+                .iter()
+                .filter(|(_, v)| v.is_none())
+                .map(|(k, _)| *k)
+                .collect();
+            return Err(format!(
+                "[[color-characteristics]] name={cc_name}: group {label} key {} is missing. \
+                 You must set either none or all keys of a group.",
+                missing.join(", ")
+            ));
+        }
+        Ok(true)
+    };
+    let have_primaries = group(&prim, "primaries")?;
+    let have_white = group(&white, "white")?;
+
+    let mut out_cc = weston::ColorCharacteristics::default();
+    if have_primaries {
+        let v: Vec<f32> = prim
+            .iter()
+            .map(|(k, v)| range(*v, k, 0.0, 1.0).map(|x| x.unwrap_or(0.0)))
+            .collect::<Result<_, _>>()?;
+        out_cc.primaries = Some([(v[0], v[1]), (v[2], v[3]), (v[4], v[5])]);
+    }
+    if have_white {
+        let x = range(cc.white_x, "white-x", 0.0, 1.0)?.unwrap_or(0.0);
+        let y = range(cc.white_y, "white-y", 0.0, 1.0)?.unwrap_or(0.0);
+        out_cc.white = Some((x, y));
+    }
+    out_cc.max_luminance = range(cc.max_luminance, "max-luminance", 0.0, 1e5)?;
+    out_cc.min_luminance = range(cc.min_luminance, "min-luminance", 0.0, 1e5)?;
+    out_cc.max_fall = range(cc.max_fall, "max-fall", 0.0, 1e5)?;
+    Ok(out_cc)
 }
 
 /// Resolve the settings into the fence's [`weston::OutputPolicy`]
@@ -611,6 +771,7 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
             seat: out.seat.clone(),
             force_on: out.force_on == Some(true),
             clone_of: out.clone_of.clone(),
+            color: build_color_setup(settings, out, &name)?,
         };
         if let Some(mode) = &out.mode {
             if mode == "off" {

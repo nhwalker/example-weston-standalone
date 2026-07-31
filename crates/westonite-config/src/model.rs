@@ -306,7 +306,6 @@ pub struct Output {
     /// Name of a `[[color-characteristics]]` block.
     pub color_characteristics: Option<String>,
     pub max_bpc: Option<u32>,
-    pub vrr_mode: Option<String>,
     /// `[output] content-type=` (DRM): the HDMI content-type hint.
     pub content_type: Option<String>,
     /// `[output] force-on=` (DRM): enable the head even when the
@@ -317,6 +316,9 @@ pub struct Output {
     pub resizeable: Option<bool>,
     /// "true" disables the output (C `mode=off` alternative surface).
     pub off: Option<bool>,
+    /// `[output] allow-hdcp=` (C's `allow_hdcp`), default true.  Read
+    /// by every backend's configure, not just DRM.
+    pub allow_hdcp: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, PartialEq)]
@@ -342,9 +344,10 @@ pub struct PipewireOutput {
 pub struct ColorCharacteristics {
     /// Referenced from `[[output]] color-characteristics = name`.
     pub name: Option<String>,
-    pub maximum_luminance: Option<f64>,
-    pub minimum_luminance: Option<f64>,
-    pub max_cll: Option<f64>,
+    /// C's ini spellings are `max_L` / `min_L` / `maxFALL`; the TOML
+    /// model is kebab-case throughout (D11).
+    pub max_luminance: Option<f64>,
+    pub min_luminance: Option<f64>,
     pub max_fall: Option<f64>,
     pub red_x: Option<f64>,
     pub red_y: Option<f64>,

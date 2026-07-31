@@ -262,6 +262,29 @@ fixture now tears instances down in **reverse** creation order, since a
 nested child dies non-zero if its host (and with it the parent display
 or X server) is killed first.
 
+### 2.9b Colour management *(added at R2c-color)*
+
+`tests/e2e/test_color_management.py`, nine cases, all in the container
+— no VM.  Mostly *validation*, because validation is what a port gets
+wrong quietly.
+
+| Test | Asserts |
+|---|---|
+| unknown-eotf / unknown-colorimetry | an unrecognised mode name is a startup error listing the valid ones |
+| eotf-on-non-drm | eotf/colorimetry/characteristics on a non-DRM output are refused, not silently inert |
+| icc-without-cm | an `icc-profile` without `[core] color-management` is refused — **C ignores it silently**, so this is a deliberate divergence |
+| half-a-group | three of the six primaries is a config error (C's entirely-or-not-at-all rule) |
+| out-of-range | a chromaticity outside 0..=1 is refused |
+| missing-section | `color-characteristics = X` with no matching block is refused |
+| allow-hdcp | accepted on any backend — C reads it everywhere, and it was missing from our model until R2c-color |
+| vrr-mode/max-cll | both are now unknown keys: neither is read anywhere in 14.0.1 |
+
+Ordering note worth keeping, found by a red test: the "these keys are
+drm-only" refusal runs *before* the name and range validation, so on a
+headless output it masks the error under test.  Those cases request
+`--backend=drm` purely to get past that gate — which needs no VM, since
+config validation precedes backend load.
+
 ### 2.9 DRM backend, in a VM *(added at R2c-drm-harness)*
 
 The one backend that needs a kernel mode-setting device.  It gets one
