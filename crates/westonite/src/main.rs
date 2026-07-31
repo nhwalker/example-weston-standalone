@@ -461,11 +461,19 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
                 )));
             }
         }
+        // max-bpc IS ported (R2c-drm reads it in decide_drm, including
+        // C's mode=current interaction) — but only the DRM configure
+        // consumes it, so elsewhere it would be inert.  Same shape as
+        // clone-of above.
+        if out.max_bpc.is_some() && !has_drm {
+            return Some(fatal(&format!(
+                "[[output]] '{name}': max-bpc applies to the drm backend only"
+            )));
+        }
         if out.icc_profile.is_some()
             || out.eotf_mode.is_some()
             || out.colorimetry_mode.is_some()
             || out.color_characteristics.is_some()
-            || out.max_bpc.is_some()
             || out.vrr_mode.is_some()
         {
             return Some(fatal(&format!(
