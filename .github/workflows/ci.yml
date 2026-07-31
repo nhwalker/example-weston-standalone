@@ -53,9 +53,20 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" \
             || echo "PROBE: modules-extra install FAILED"
+          # Identify the vkms card by DELTA, not by driver name: since
+          # ~6.14 vkms registers on the faux bus, so
+          # /sys/class/drm/cardN/device/driver resolves to
+          # "faux_driver" and a name match silently finds nothing (it
+          # did exactly that on the first run of this probe).  The card
+          # that appears across modprobe is unambiguous.
+          cards() { ls /sys/class/drm 2>/dev/null | grep -E "^card[0-9]+$" | sort; }
+          BEFORE=$(cards)
+          echo "PROBE: cards before modprobe: $(echo "$BEFORE" | tr "\n" " ")"
           sudo modprobe vkms || echo "PROBE: modprobe vkms FAILED"
+          AFTER=$(cards)
+          echo "PROBE: cards after  modprobe: $(echo "$AFTER" | tr "\n" " ")"
           ls -l /dev/dri || true
-          VKMS=""
+          VKMS=$(comm -13 <(echo "$BEFORE") <(echo "$AFTER") | head -1)
           for c in /sys/class/drm/card*; do
             [ -d "$c/device" ] || continue    # skip card*-<connector> dirs
             name=$(basename "$c")
@@ -63,8 +74,8 @@ jobs:
             # `|| true`: a bare assignment from a failing substitution
             # would take the step down under `set -e`.
             drv=$(readlink -f "$c/device/driver" 2>/dev/null || true)
-            echo "PROBE: $name -> ${drv##*/}"
-            if [ "${drv##*/}" = "vkms" ]; then VKMS=$name; fi
+            path=$(readlink -f "$c" 2>/dev/null || true)
+            echo "PROBE: $name bus-driver=${drv##*/} devpath=$path"
           done
           for con in /sys/class/drm/card*-*; do
             [ -e "$con" ] || continue
