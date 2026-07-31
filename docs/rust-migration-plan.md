@@ -956,9 +956,20 @@ halves can be mixed and smoke-tested at every phase boundary.
   starting; **docs/drm-testing.md** records the route, the probe
   findings it replaced, and — load-bearing — what vkms does *not*
   prove (a one-time real-hardware validation is still an R3 gate).
-  Remaining in R2c: the DRM backend port itself, remoting/pipewire
-  *virtual output* plugins, and the deferred clone-of +
-  color-management work. R2d xwayland ✅ *(done — see PROVENANCE.md
+  *R2c-drm* ✅ *(done — see PROVENANCE.md log)*: the DRM backend
+  itself — `load_drm_backend`, `drm_heads_changed`, and the
+  **layoutput machinery** (`wet_layoutput`/`wet_output`/
+  `wet_head_array`, `drm_try_attach`/`drm_try_enable`'s
+  attach-then-enable-with-undo, `drm_process_layoutput(s)`,
+  `require-outputs`), plus `drm_backend_output_configure` and the
+  `clone-of` section resolution the earlier slices had deferred.
+  Verified by `tests/e2e/test_backend_drm.py` running against
+  `westonite-rs` inside the VM harness, and the `drm-vm` CI job is a
+  gate from here on.  Remaining in R2c: the remoting/pipewire *virtual
+  output* plugins, the deferred colour-management output attributes,
+  and `configure_input_device` — the `[libinput]` hook, which needs
+  libinput bindings weston-sys does not have and is refused fail-loud
+  meanwhile. R2d xwayland ✅ *(done — see PROVENANCE.md
   log)*: the `frontend/xwayland.c` glue (module load + plugin API,
   lazy `spawn_xserver` through `westonite-spawn`, `-displayfd`
   readiness watch, SIGCHLD-driven `xserver_exited` respawn,

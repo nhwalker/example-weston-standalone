@@ -63,6 +63,16 @@ enum BackendSpec {
     Drm(DrmOptions),
 }
 
+/// The two backend-level settings the DRM heads-changed branch needs
+/// that are not per-output policy.
+#[derive(Debug, Clone, Copy, Default)]
+struct DrmRuntime {
+    /// C --current-mode: every output takes its current mode.
+    current_mode: bool,
+    /// C `[core] require-outputs` — how hard a failed layoutput is.
+    require_outputs: crate::layoutput::RequireOutputs,
+}
+
 /// DRM/KMS backend options (C load_drm_backend, main.c:3375).
 ///
 /// Unlike every other backend this one creates no heads of its own on
@@ -214,6 +224,9 @@ pub struct CompositorBuilder {
     shell: Option<(u32, ShellFactory)>,
     /// Some(xserver path) loads xwayland.so in build() (C main.c:4725).
     xwayland: Option<std::path::PathBuf>,
+    /// C `[core] require-outputs` — DRM only (it is the only backend
+    /// whose outputs can fail to come up).
+    require_outputs: crate::layoutput::RequireOutputs,
 }
 
 impl Default for CompositorBuilder {
@@ -238,6 +251,7 @@ impl CompositorBuilder {
             socket_name: None,
             shell: None,
             xwayland: None,
+            require_outputs: crate::layoutput::RequireOutputs::default(),
         }
     }
 
@@ -293,6 +307,12 @@ impl CompositorBuilder {
 
     pub fn add_drm(mut self, opts: DrmOptions) -> Self {
         self.backends.push(BackendSpec::Drm(opts));
+        self
+    }
+
+    /// C `[core] require-outputs` (main.c:4644, default "any").
+    pub fn require_outputs(mut self, r: crate::layoutput::RequireOutputs) -> Self {
+        self.require_outputs = r;
         self
     }
 
@@ -492,10 +512,22 @@ impl CompositorBuilder {
         // state + the output policy — a pure data lookup, no app
         // borrow (A3).
         let policy = self.policy.clone();
+        // The DRM branch needs two settings the policy does not carry
+        // (they are backend-level, not per-output): --current-mode and
+        // [core] require-outputs.  Captured here rather than looked up
+        // in the handler, so the sync-tier A3 proof stays "wrapper
+        // state only, no app borrow".
+        let drm_runtime = DrmRuntime {
+            current_mode: self
+                .backends
+                .iter()
+                .any(|b| matches!(b, BackendSpec::Drm(o) if o.current_mode)),
+            require_outputs: self.require_outputs,
+        };
         let listener = Listener::new(
             "heads_changed",
             false,
-            Box::new(move |ctx, _data| heads_changed(ctx, &policy)),
+            Box::new(move |ctx, _data| heads_changed(ctx, &policy, drm_runtime)),
         );
         // SAFETY: the compositor outlives the listener (Compositor owns
         // both; drop detaches before destroy).
@@ -1388,7 +1420,7 @@ extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
 /// The registry side of head/output tracking (§3b): registration and
 /// destroy-listener attachment in one place, invoked from the sync-tier
 /// heads-changed handler.  C simple_heads_changed, all three branches.
-fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
+fn heads_changed(ctx: &Ctx, policy: &OutputPolicy, drm: DrmRuntime) {
     let compositor = ctx.inner.compositor.get();
     if compositor.is_null() {
         return;
@@ -1413,6 +1445,7 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
     // both jobs are done by lookup: a head whose backend we did not
     // load is skipped, and the kind picks the configure flavor.
     let backends = ctx.inner.backends.borrow().clone();
+    let mut saw_drm = false;
 
     for head in heads {
         // SAFETY: head snapshot entries stay valid inside the flush; the
@@ -1434,6 +1467,29 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
         else {
             continue;
         };
+        // C gives DRM its own heads-changed handler
+        // (`drm_heads_changed`, main.c:3006) rather than a branch of
+        // the simple one, because the enable step is a *group*
+        // operation: heads are staged on a layoutput and enabled
+        // together, after this loop.  Same split here.
+        if kind == BackendKind::Drm {
+            let name = head_name(head);
+            let forced = policy.drm_force_on(&name);
+            if (connected || forced) && !enabled {
+                drm_prepare_enable(ctx, policy, &name, head, non_desktop, drm.current_mode);
+            } else if !(connected || forced) && enabled {
+                drm_head_disable(ctx, head);
+            } else if enabled && changed {
+                log::log_line(&format!(
+                    "Detected a monitor change on head '{name}', \
+                     not bothering to do anything about it."
+                ));
+            }
+            // SAFETY: head live in the snapshot; C resets per head.
+            unsafe { weston_sys::weston_head_reset_device_changed(head.as_ptr()) };
+            saw_drm = true;
+            continue;
+        }
         if connected && !enabled && !non_desktop {
             let name = head_name(head);
             // C simple_head_enable's remote-mirror deferral: a remote
@@ -1473,6 +1529,55 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy) {
         // disable destroys the *output*); C resets the flag per head.
         unsafe { weston_sys::weston_head_reset_device_changed(head.as_ptr()) };
     }
+
+    // C drm_heads_changed's tail: once every head of this flush is
+    // staged, bring the groups up.  A failure here is fatal to startup
+    // (C sets wet->init_failed), which is how `mode=off` on the only
+    // head, or a layoutput that would not enable, stops the compositor
+    // instead of leaving it running blind.
+    if saw_drm && !crate::layoutput::process_all(ctx, policy, drm.current_mode, drm.require_outputs)
+    {
+        ctx.inner.init_failed.set(true);
+    }
+}
+
+/// C `drm_head_prepare_enable` (main.c:2764): decide which layoutput
+/// this head joins, or that it joins none.
+fn drm_prepare_enable(
+    ctx: &Ctx,
+    policy: &OutputPolicy,
+    name: &str,
+    head: NonNull<weston_sys::weston_head>,
+    non_desktop: bool,
+    current_mode: bool,
+) {
+    use crate::output_policy::DrmHeadPlan;
+    match policy.decide_drm(name, non_desktop, current_mode) {
+        DrmHeadPlan::Enable { output_name, .. } => {
+            crate::layoutput::add_head(ctx, &output_name, name, head);
+        }
+        // mode=off, or a non-desktop head with no section: C returns
+        // without staging and lets the backend turn the head off.
+        DrmHeadPlan::Off | DrmHeadPlan::NonDesktop => {}
+        DrmHeadPlan::BadCloneOf(message) => {
+            // C logs and treats the head as having no section at all.
+            log::log_line(&message);
+            crate::layoutput::add_head(ctx, name, name, head);
+        }
+    }
+}
+
+/// C `drm_head_disable` (main.c:2985): detach, and destroy the output
+/// once its last head has gone.
+fn drm_head_disable(ctx: &Ctx, head: NonNull<weston_sys::weston_head>) {
+    // SAFETY: head live in the snapshot; pure query.
+    let output = unsafe { weston_sys::weston_head_get_output(head.as_ptr()) };
+    // SAFETY: head live and attached.
+    unsafe { weston_sys::weston_head_detach(head.as_ptr()) };
+    let Some(output) = NonNull::new(output) else {
+        return;
+    };
+    crate::layoutput::head_detached(ctx, output);
 }
 
 /// The kind of the loaded backend that owns `backend`, if we loaded it
@@ -1590,7 +1695,7 @@ fn mirror_on_output_resized(
     apply_mirror_modeline(ctx, &rule.name, resized, remote);
 }
 
-fn output_name(output: NonNull<weston_sys::weston_output>) -> String {
+pub(crate) fn output_name(output: NonNull<weston_sys::weston_output>) -> String {
     // SAFETY: output live; name copied at the fence (§3h).
     unsafe {
         let p = (*output.as_ptr()).name;
@@ -1626,7 +1731,7 @@ fn disable_head(head: NonNull<weston_sys::weston_head>) {
 /// single head the list is empty here and the peer branch does not run,
 /// which is why no headless test can reach it; the multi-output
 /// coverage arrives with the second backend at R2c.
-fn lazy_align(
+pub(crate) fn lazy_align(
     compositor: *mut weston_sys::weston_compositor,
     output: NonNull<weston_sys::weston_output>,
 ) {
@@ -1645,7 +1750,7 @@ fn lazy_align(
     }
 }
 
-fn head_name(head: NonNull<weston_sys::weston_head>) -> String {
+pub(crate) fn head_name(head: NonNull<weston_sys::weston_head>) -> String {
     // SAFETY: head live; name copied at the fence (§3h).
     unsafe {
         let p = weston_sys::weston_head_get_name(head.as_ptr());
@@ -1972,7 +2077,7 @@ fn apply_mirror_modeline(
 
 /// Returns true when this call registered the head, false when it was
 /// already known (callers use it as a once-per-head gate).
-fn register_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, name: &str) -> bool {
+pub(crate) fn register_head(ctx: &Ctx, head: NonNull<weston_sys::weston_head>, name: &str) -> bool {
     if ctx.inner.heads.borrow().id_of(head).is_some() {
         return false;
     }

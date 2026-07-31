@@ -54,6 +54,9 @@ pub(crate) struct CtxInner {
     /// dispatches per head to that backend's configure flavor (the
     /// `wb->simple_output_configure` role).
     pub(crate) backends: RefCell<Vec<(*mut weston_sys::weston_backend, BackendKind)>>,
+    /// C wet_compositor::layoutput_list — the DRM head→output grouping
+    /// (see crate::layoutput).  Empty unless the DRM backend is loaded.
+    pub(crate) layoutputs: RefCell<Vec<crate::layoutput::Layoutput>>,
     /// C `wet_compositor.init_failed`: an output that could not be
     /// created, configured or enabled aborts startup rather than
     /// leaving a running compositor with missing outputs (main.c
@@ -159,6 +162,7 @@ impl Ctx {
             compositor: Cell::new(std::ptr::null_mut()),
             display: Cell::new(std::ptr::null_mut()),
             backends: RefCell::new(Vec::new()),
+            layoutputs: RefCell::new(Vec::new()),
             init_failed: Cell::new(false),
             depth: Cell::new(0),
             draining: Cell::new(false),

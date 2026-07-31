@@ -118,13 +118,11 @@ jobs:
   # /dev/kvm, and even that is optional.  docs/drm-testing.md explains
   # the route and, importantly, what vkms does *not* prove.
   #
-  # continue-on-error until the Rust DRM port lands (plan §7 R2c): until
-  # then this exercises the C oracle only, and a red X on the oracle
-  # would be telling us about EPEL, not about our port.  Promote it to a
-  # gate in the same PR that adds the Rust leg.
+  # A gate since the Rust DRM port landed: it now exercises the code we
+  # own, so a red X here is ours to fix.  The C-oracle leg stays
+  # alongside the Rust one until R3 deletes the C frontend.
   drm-vm:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -134,7 +132,7 @@ jobs:
       - name: Build the DRM VM image
         run: docker build -f containers/Containerfile.drm-vm -t westonite-drm-vm .
 
-      - name: DRM e2e inside the VM (C frontend)
+      - name: DRM e2e inside the VM (Rust frontend, then the C oracle)
         run: |
           mkdir -p test-results
           # The runner has /dev/kvm but it is group-owned; the container
@@ -145,8 +143,13 @@ jobs:
             sudo chmod 0666 /dev/kvm || true
             KVM="--device /dev/kvm"
           fi
-          docker run --rm $KVM -v "$PWD":/src -v "$PWD/test-results":/results \
-            westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+          # Rust first: it is the thing under test, and running it first
+          # means a failure is reported against our port rather than
+          # after a passing oracle leg has already eaten the clock.
+          for frontend in rust c; do
+            docker run --rm $KVM -v "$PWD":/src -v "$PWD/test-results":/results \
+              westonite-drm-vm /src/scripts/drm-vm-test.sh /results "$frontend"
+          done
 
       - name: Upload DRM VM results
         if: always()

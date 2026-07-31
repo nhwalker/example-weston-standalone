@@ -20,6 +20,57 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-drm (2026-07-31)** — the DRM backend, branch
+  `claude/rust-migration-j84b2p`.  The last backend, and the only one
+  that needed an environment built for it first (R2c-drm-harness,
+  below).
+  - **The layoutput machinery is what makes DRM different.** Every
+    other backend takes the simple path: one head, one output,
+    configure, enable.  DRM cannot, because several connectors may be
+    driven as clones of one logical output, and because
+    `weston_output_enable` failing is *normal* on real hardware (not
+    enough CRTCs, incompatible modes).  So C gives it its own
+    heads-changed handler plus `wet_layoutput` / `wet_output` /
+    `wet_head_array` / `drm_try_attach` / `drm_try_enable` /
+    `drm_process_layoutput(s)`; `crates/weston/src/layoutput.rs` is
+    that pile.  Heads are *staged* on a group rather than enabled on
+    sight, then attached and enabled together, detaching one head at a
+    time and retrying until it comes up — losers pushed to the next
+    round rather than dropped.
+  - Two details kept exactly because they are load-bearing and look
+    like slips: `wet_head_array` keeps its holes rather than
+    compacting (the undo walk indexes from the end and relies on
+    them), and C's cap is `n + 1 >= ARRAY_LENGTH`, one below the array
+    size.
+  - `require-outputs` (any/all/none) decides how hard a failed group
+    is.  Note the consequence C leaves implicit: with the default
+    `any`, an *empty* layoutput list also fails (`0 == 0`) — which is
+    exactly how `mode=off` on the only head becomes a startup failure
+    rather than a compositor running blind.  The e2e test asserts that.
+  - `drm_backend_output_configure`: mode (preferred/current/modeline),
+    max-bpc, scale, transform, gbm-format, content-type, seat — with
+    C's two non-obvious defaults preserved: `mode=current` with no
+    explicit `max-bpc` passes 0 rather than 16 (so reusing the current
+    mode does not force a full modeset), and a single-head output
+    inherits the *head's* transform rather than NORMAL (a panel
+    mounted rotated reports it).
+  - `clone-of` section resolution landed with it, retiring the
+    fail-loud refusal carried since R2b.
+  - Verified live: `tests/e2e/test_backend_drm.py`, **7 passed**
+    against `westonite-rs` on vkms in the VM.  The modeline test is
+    self-proving about *which* binary ran — the harness feeds the Rust
+    leg TOML, which the C frontend cannot parse, so 1280x720 instead
+    of the preferred 1024x768 could only have come from our port.  The
+    `drm-vm` CI job is a gate from here on and runs the Rust leg
+    first.
+  - **Deliberately not ported, refused fail-loud**:
+    `configure_input_device`.  C wires it into
+    `weston_drm_backend_config.configure_device`, and it is the only
+    consumer of `[libinput]` in the whole frontend — but weston-sys has
+    no libinput bindings at all, so binding libinput's device-config
+    API is a slice of its own.  `[libinput]` with DRM loaded is a
+    startup error meanwhile.  The refusal is conditional on DRM
+    because without it the section does nothing in C either.
 - **R2c-drm-harness (2026-07-31)** — a test environment for the DRM
   backend, before any DRM porting.  Branch
   `claude/rust-migration-j84b2p`.  No Rust changed in this slice; it is

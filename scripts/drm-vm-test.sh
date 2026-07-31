@@ -16,7 +16,11 @@ RESULTS="${1:-/tmp}"
 FRONTEND="${2:-c}"
 mkdir -p "$RESULTS"
 
-CONSOLE="$RESULTS/drm-vm-console.log"
+# Per-frontend, because CI runs both legs into the same results dir
+# and a shared name would leave only the last one's console behind --
+# exactly the artifact you need when the *first* leg is the one that
+# failed.
+CONSOLE="$RESULTS/drm-vm-console-$FRONTEND.log"
 JUNIT="$RESULTS/e2e-drm-$FRONTEND.xml"
 
 test -d /vm/rootfs || { echo "not the drm-vm image (no /vm/rootfs)" >&2; exit 2; }

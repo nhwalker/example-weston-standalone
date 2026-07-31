@@ -135,6 +135,14 @@ pub struct Core {
     /// `[core] idle-time=` (inert since T3 — kept for surface
     /// completeness, D1).
     pub idle_time: Option<u32>,
+    /// `[core] pageflip-timeout=` (ms, DRM only; 0 disables).
+    pub pageflip_timeout: Option<u32>,
+    /// `[core] pixman-shadow=` (DRM only).  C default true.
+    pub pixman_shadow: Option<bool>,
+    /// `[core] require-outputs=`: any|all|none.  C default "any" —
+    /// DRM only, since it is the only backend whose outputs can fail
+    /// to come up (main.c:4644).
+    pub require_outputs: Option<String>,
     /// `[core] repaint-window=` (ms; C validates -10..=1000).
     pub repaint_window: Option<i32>,
     /// `[core] modules=` / `--modules`: extra wet_module_init plugins.
@@ -158,6 +166,9 @@ impl Default for Core {
             color_management: false,
             xwayland: false,
             idle_time: None,
+            pageflip_timeout: None,
+            pixman_shadow: None,
+            require_outputs: None,
             repaint_window: None,
             modules: Vec::new(),
             shell: None,
