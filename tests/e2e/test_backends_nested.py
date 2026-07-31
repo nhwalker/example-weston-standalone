@@ -152,13 +152,29 @@ port=5000
 
 
 @toml_only
-def test_pipewire_output_is_refused_until_ported(westonite):
-    """The pipewire *plugin* (distinct from the pipewire backend, which
-    is ported) is unported, so asking for it is a startup error."""
+def test_pipewire_output_is_refused_by_design(westonite):
+    """The pipewire virtual-output *plugin* is dropped alongside
+    remoting.  Weston keeps two independent options here and they are
+    different features -- `backend-pipewire` ("screencasting via
+    PipeWire") vs `pipewire` ("virtual remote output ... on DRM
+    backend").  Only the latter is dropped."""
     w = westonite(config="""
 [pipewire-output]
 name=pwout1
 mode=640x480@30
 """, wait=False)
-    w.wait_for_log(r"pipewire-output\]\] is not yet ported")
+    w.wait_for_log(r"pipewire-output\]\] is not supported by westonite")
     assert w.wait_exit() != 0
+
+
+def test_pipewire_backend_is_still_supported(westonite):
+    """The other side of that distinction, asserted so the drop above
+    cannot quietly widen: --backend=pipewire must NOT be refused.
+
+    Deliberately not skipped when the daemon is absent -- the point is
+    the *frontend's* verdict, and reaching a backend-load failure
+    already proves the refusal did not fire."""
+    w = westonite(backend="pipewire", socket_name="pw-alive",
+                  width=None, wait=False)
+    w.wait_for_log(r"Loading module|initializing pipewire backend|pipewire")
+    assert "is not supported by westonite" not in w.log(), w.log()

@@ -248,7 +248,8 @@ to GL; there is no GPU in the container).
 | pipewire-output | with a pipewire daemon running, `--backend=pipewire` publishes the `pipewire` output (skipped where the daemon is absent) |
 | rdp-refused [toml] | `--backend=rdp` is a startup error naming the product decision (C still builds RDP, so Rust-only) |
 | remote-output-refused [toml] | `[[remote-output]]` is a startup error naming the product decision — the remoting plugin is dropped like RDP |
-| pipewire-output-refused [toml] | `[[pipewire-output]]` (the pipewire *plugin*, not the backend) is a startup error while unported |
+| pipewire-output-refused [toml] | `[[pipewire-output]]` — the pipewire virtual-output *plugin* — is a startup error naming the product decision |
+| pipewire-backend-still-works | the other side of that line: `--backend=pipewire` (the *backend*, ported at R2c-nested) is **not** refused, so the drop cannot quietly widen |
 
 Those last two guard a regression that actually happened: both sections
 parsed into the config model and **nothing read them**, so asking for a
