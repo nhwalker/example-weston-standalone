@@ -65,8 +65,20 @@ def _toml_value(value):
         int(value)
         return value
     except ValueError:
-        escaped = value.replace("\\", "\\\\").replace('"', '\\"')
-        return f'"{escaped}"'
+        pass
+    # Floats: the colour-characteristics keys are the first typed-float
+    # values in the model, and without this they arrive quoted and fail
+    # deserialization as "invalid type: string, expected f64".
+    # `float()` also accepts "inf"/"nan", which are not TOML floats, so
+    # require a digit.
+    try:
+        float(value)
+        if any(c.isdigit() for c in value):
+            return value
+    except ValueError:
+        pass
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
 
 
 # Multiplier applied to every deadline in this module.  The DRM VM

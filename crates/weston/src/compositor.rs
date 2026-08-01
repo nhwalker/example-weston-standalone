@@ -188,6 +188,7 @@ pub enum CompositorError {
     ShellInit,
     OutputInit,
     Xwayland,
+    ColorManager,
 }
 
 impl std::fmt::Display for CompositorError {
@@ -197,6 +198,7 @@ impl std::fmt::Display for CompositorError {
             CompositorError::LogCtxCreate => "weston_log_ctx_create failed",
             CompositorError::CompositorCreate => "weston_compositor_create failed",
             CompositorError::BackendLoad => "loading the backend failed",
+            CompositorError::ColorManager => "loading the color manager failed",
             CompositorError::WindowedOutputApi => "windowed output API unavailable",
             CompositorError::HeadCreate => "creating the head failed",
             CompositorError::SocketAdd => "binding the wayland socket failed",
@@ -227,6 +229,8 @@ pub struct CompositorBuilder {
     /// C `[core] require-outputs` — DRM only (it is the only backend
     /// whose outputs can fail to come up).
     require_outputs: crate::layoutput::RequireOutputs,
+    /// C `[core] color-management` (main.c:1203).
+    color_management: bool,
 }
 
 impl Default for CompositorBuilder {
@@ -252,6 +256,7 @@ impl CompositorBuilder {
             shell: None,
             xwayland: None,
             require_outputs: crate::layoutput::RequireOutputs::default(),
+            color_management: false,
         }
     }
 
@@ -313,6 +318,14 @@ impl CompositorBuilder {
     /// C `[core] require-outputs` (main.c:4644, default "any").
     pub fn require_outputs(mut self, r: crate::layoutput::RequireOutputs) -> Self {
         self.require_outputs = r;
+        self
+    }
+
+    /// C `[core] color-management=true`: load the colour manager.
+    /// Without it every colour key is inert in C, so the frontend
+    /// refuses the combination rather than reproducing that silence.
+    pub fn color_management(mut self, on: bool) -> Self {
+        self.color_management = on;
         self
     }
 
@@ -474,6 +487,16 @@ impl CompositorBuilder {
                 "Output repaint window is {} ms maximum.",
                 (*compositor).repaint_msec
             ));
+            // C main.c:1203, immediately after the repaint window and
+            // before the backends load — the colour manager must exist
+            // before any output is configured, since that is when
+            // profiles and EOTF modes are applied.
+            if self.color_management {
+                if weston_sys::weston_compositor_load_color_manager(compositor) < 0 {
+                    return Err(CompositorError::ColorManager);
+                }
+                ctx.inner.use_color_manager.set(true);
+            }
             // main.c:4653 `wet.compositor->multi_backend = backends &&
             // strchr(backends, ',')`, set before load_backends.  Load
             // bearing in libweston: output_accumulate_damage drops the
@@ -1503,7 +1526,7 @@ fn heads_changed(ctx: &Ctx, policy: &OutputPolicy, drm: DrmRuntime) {
             } else {
                 let setup = head_setup_for(policy, kind, &name);
                 match setup {
-                    Some(setup) => enable_head(ctx, head, setup, None),
+                    Some(setup) => enable_head(ctx, head, setup, None, &policy.decide_color(&name)),
                     None => {
                         // [[output]] off: leave the head unenabled (our
                         // re-spec extension; C windowed backends have no
@@ -1553,8 +1576,8 @@ fn drm_prepare_enable(
 ) {
     use crate::output_policy::DrmHeadPlan;
     match policy.decide_drm(name, non_desktop, current_mode) {
-        DrmHeadPlan::Enable { output_name, .. } => {
-            crate::layoutput::add_head(ctx, &output_name, name, head);
+        DrmHeadPlan::Enable(plan) => {
+            crate::layoutput::add_head(ctx, &plan.output_name, name, head);
         }
         // mode=off, or a non-desktop head with no section: C returns
         // without staging and lets the backend turn the head off.
@@ -1654,7 +1677,13 @@ fn mirror_on_output_created(
     let Some(setup) = setup else {
         return; // off = true wins over mirror-of
     };
-    enable_head(ctx, head, setup, Some(output));
+    enable_head(
+        ctx,
+        head,
+        setup,
+        Some(output),
+        &policy.decide_color(&rule.name),
+    );
     // C wet_output_handle_create resets the flag right after the
     // enable, and it is load-bearing: this head was created with
     // device_changed set (weston_head_set_monitor_strings), and the
@@ -1842,11 +1871,120 @@ fn head_setup_for(policy: &OutputPolicy, kind: BackendKind, name: &str) -> Optio
     }
 }
 
+/// The colour slice of an output's configuration, applied to a
+/// not-yet-enabled output.  Returns false on a configuration error, in
+/// which case the caller must abandon the output as C does.
+///
+/// C splits this across four helpers called from each backend's
+/// configure — `wet_output_set_color_profile` (main.c:1365),
+/// `_set_eotf_mode` (1403), `_set_colorimetry_mode` (1464),
+/// `_set_color_characteristics` (1644) — plus
+/// `allow_content_protection` (1679).  One function here, because the
+/// only thing that differs between backends is *which* of them get
+/// called, and that is the caller's business.
+pub(crate) fn apply_color(
+    ctx: &Ctx,
+    output: NonNull<weston_sys::weston_output>,
+    color: &crate::output_policy::ColorSetup,
+    full: bool,
+) -> bool {
+    let compositor = ctx.inner.compositor.get();
+    let have_cm = ctx.inner.use_color_manager.get();
+    let name = output_name(output);
+
+    // C allow_content_protection: unconditional, every backend, and it
+    // cannot fail.
+    // SAFETY: output live and not yet enabled.
+    unsafe { weston_sys::weston_output_allow_protection(output.as_ptr(), color.allow_hdcp) };
+
+    // C wet_output_set_color_profile: a no-op without the colour
+    // manager, *including* the icc_profile key — C returns 0 before
+    // even reading it, so an icc-profile without color-management=true
+    // is silently ignored there.  We refuse that combination in the
+    // frontend instead, so reaching here with one means the manager is
+    // loaded.
+    if have_cm && let Some(icc) = &color.icc_profile {
+        let Ok(path) = CString::new(icc.as_str()) else {
+            return false;
+        };
+        // SAFETY: compositor live; the loader copies what it needs.
+        let cprof =
+            unsafe { weston_sys::weston_compositor_load_icc_file(compositor, path.as_ptr()) };
+        if cprof.is_null() {
+            return false;
+        }
+        // SAFETY: cprof owned by us until unref; output live.
+        let ok = unsafe { weston_sys::weston_output_set_color_profile(output.as_ptr(), cprof) };
+        // SAFETY: releasing our reference, exactly as C does whether or
+        // not the set succeeded.
+        unsafe { weston_sys::weston_color_profile_unref(cprof) };
+        if !ok {
+            log::log_line(&format!(
+                "Error: failed to set color profile '{icc}' for output {name}"
+            ));
+            return false;
+        }
+    }
+
+    // The rest is DRM/headless-only in C (the windowed and remote
+    // configures call set_color_profile and nothing else).
+    if !full {
+        return true;
+    }
+
+    // SAFETY: output live; both are pure queries, and the setters take
+    // a mode this build's headers define.
+    unsafe {
+        let eotf = color.eotf_mode.unwrap_or_default();
+        let supported = weston_sys::weston_output_get_supported_eotf_modes(output.as_ptr());
+        if supported & eotf.to_c() == 0 {
+            log::log_line(&format!(
+                "Error: output '{name}' does not support EOTF mode {}.",
+                crate::output_policy::EotfMode::NAMES[eotf as usize]
+            ));
+            return false;
+        }
+        weston_sys::weston_output_set_eotf_mode(output.as_ptr(), eotf.to_c());
+
+        let cmode = color.colorimetry_mode.unwrap_or_default();
+        let supported = weston_sys::weston_output_get_supported_colorimetry_modes(output.as_ptr());
+        if supported & cmode.to_c() == 0 {
+            log::log_line(&format!(
+                "Error: output '{name}' does not support colorimetry mode {}.",
+                crate::output_policy::ColorimetryMode::NAMES[cmode as usize]
+            ));
+            return false;
+        }
+        weston_sys::weston_output_set_colorimetry_mode(output.as_ptr(), cmode.to_c());
+
+        if let Some(cc) = &color.characteristics {
+            let mut c: weston_sys::weston_color_characteristics = std::mem::zeroed();
+            c.group_mask = cc.group_mask();
+            if let Some(p) = cc.primaries {
+                for (i, (x, y)) in p.iter().enumerate() {
+                    c.primary[i].x = *x;
+                    c.primary[i].y = *y;
+                }
+            }
+            if let Some((x, y)) = cc.white {
+                c.white.x = x;
+                c.white.y = y;
+            }
+            c.max_luminance = cc.max_luminance.unwrap_or(0.0);
+            c.min_luminance = cc.min_luminance.unwrap_or(0.0);
+            c.maxFALL = cc.max_fall.unwrap_or(0.0);
+            weston_sys::weston_output_set_color_characteristics(output.as_ptr(), &c);
+        }
+    }
+    true
+}
+
 fn enable_head(
     ctx: &Ctx,
     head: NonNull<weston_sys::weston_head>,
     setup: HeadSetup,
     mirror_of: Option<NonNull<weston_sys::weston_output>>,
+    color: &crate::output_policy::ColorSetup,
 ) {
     let compositor = ctx.inner.compositor.get();
     let name = head_name(head);
@@ -1972,6 +2110,13 @@ fn enable_head(
             }
         }
     };
+    // C's simple configures call allow_content_protection and
+    // wet_output_set_color_profile and stop there — the eotf,
+    // colorimetry and characteristics keys are DRM-path only
+    // (main.c:1873/1881 vs 2415-2423), hence `full: false`.  The
+    // frontend refuses the DRM-only keys on a non-DRM output rather
+    // than letting them be inert here.
+    let configured = configured && apply_color(ctx, output, color, false);
     if !configured {
         // C wet_configure_windowed_output_from_config failure path.
         crate::log::log_line(&format!("Cannot configure output \"{name}\"."));

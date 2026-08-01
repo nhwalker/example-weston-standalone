@@ -20,6 +20,38 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-color (2026-07-31)** — colour management: `[core]
+  color-management` and the `[[output]]` colour keys, deferred since
+  R2b because the DRM output path did not exist yet.
+  - Ported: `wet_output_set_color_profile` / `_set_eotf_mode` /
+    `_set_colorimetry_mode` / `_set_color_characteristics` /
+    `allow_content_protection` (main.c:1365-1700), as one
+    `apply_color` in the fence because the only thing that differs
+    between backends is *which* of them get called.  Every symbol was
+    already bound, so the fence's external surface did not grow.
+  - **`allow_hdcp` was missing from the config model entirely.** C
+    reads it on every backend (main.c:1873), so it was unreachable.
+  - **Two keys in the model that C never reads**: `vrr-mode` (no
+    reader anywhere in 14.0.1) and `max-cll` (no such field in
+    `weston_color_characteristics`).  Removed, so `deny_unknown_fields`
+    reports them with a span instead of accepting something libweston
+    cannot apply.
+  - C's grouping rule is the subtle part and is reproduced exactly: the
+    eleven characteristic keys form five groups (primaries, white, maxL,
+    minL, maxFALL) and each must be given **entirely or not at all**.
+    Half a group is a config error, not a partial application.
+  - One deliberate divergence: C returns from
+    `wet_output_set_color_profile` *before reading* `icc_profile` when
+    the manager is absent, so an icc-profile without
+    `color-management=true` is silently ignored there.  We refuse it.
+  - Test-harness finding: `ini_to_config` typed bools and ints but not
+    floats, so the first float-valued keys in the model arrived quoted
+    and failed deserialization.  Fixed in `support/compositor.py`.
+  - Ordering finding, from a red test: the "these keys are drm-only"
+    refusal runs before the name/range validation, so on a headless
+    output it masks the error under test.  The validation cases request
+    `--backend=drm` purely to get past that gate — no VM needed, since
+    config validation precedes backend load.
 - **Pipewire virtual-output plugin dropped (2026-07-31)** —
   `[[pipewire-output]]`, decided right after remoting and on the same
   grounds.  The distinction that makes this safe to drop is worth

@@ -91,6 +91,10 @@ pub struct OutputRule {
     /// `[output] clone-of=` (DRM only): this section contributes
     /// nothing itself — the named section controls the head instead.
     pub clone_of: Option<String>,
+    /// The colour slice: icc-profile / eotf-mode / colorimetry-mode /
+    /// color-characteristics / allow-hdcp.  Already validated by the
+    /// frontend (mode names, characteristic groups).
+    pub color: ColorSetup,
     /// `[output] mirror-of=` — the *source* output this (remote) head
     /// mirrors (C wet_config_find_output_mirror family).  The rule's
     /// `name` is the remote head; `mirror_of` names the native output
@@ -312,6 +316,149 @@ pub struct VncOutputSetup {
     pub resizeable: bool,
 }
 
+/// C `wet_output_set_eotf_mode`'s `modes[]` table (main.c:1408),
+/// names exactly.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum EotfMode {
+    #[default]
+    Sdr,
+    HdrGamma,
+    St2084,
+    Hlg,
+}
+
+impl EotfMode {
+    pub fn parse(s: &str) -> Option<EotfMode> {
+        Some(match s {
+            "sdr" => EotfMode::Sdr,
+            "hdr-gamma" => EotfMode::HdrGamma,
+            "st2084" => EotfMode::St2084,
+            "hlg" => EotfMode::Hlg,
+            _ => return None,
+        })
+    }
+
+    /// C's error message lists the valid names; keep the same order.
+    pub const NAMES: [&'static str; 4] = ["sdr", "hdr-gamma", "st2084", "hlg"];
+
+    pub(crate) fn to_c(self) -> u32 {
+        use weston_sys::weston_eotf_mode as m;
+        match self {
+            EotfMode::Sdr => m::WESTON_EOTF_MODE_SDR,
+            EotfMode::HdrGamma => m::WESTON_EOTF_MODE_TRADITIONAL_HDR,
+            EotfMode::St2084 => m::WESTON_EOTF_MODE_ST2084,
+            EotfMode::Hlg => m::WESTON_EOTF_MODE_HLG,
+        }
+    }
+}
+
+/// C `wet_output_set_colorimetry_mode`'s `modes[]` (main.c:1469).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ColorimetryMode {
+    #[default]
+    Default,
+    Bt2020Cycc,
+    Bt2020Ycc,
+    Bt2020Rgb,
+    P3d65,
+    P3dci,
+    Ictcp,
+}
+
+impl ColorimetryMode {
+    pub fn parse(s: &str) -> Option<ColorimetryMode> {
+        Some(match s {
+            "default" => ColorimetryMode::Default,
+            "bt2020cycc" => ColorimetryMode::Bt2020Cycc,
+            "bt2020ycc" => ColorimetryMode::Bt2020Ycc,
+            "bt2020rgb" => ColorimetryMode::Bt2020Rgb,
+            "p3d65" => ColorimetryMode::P3d65,
+            "p3dci" => ColorimetryMode::P3dci,
+            "ictcp" => ColorimetryMode::Ictcp,
+            _ => return None,
+        })
+    }
+
+    pub const NAMES: [&'static str; 7] = [
+        "default",
+        "bt2020cycc",
+        "bt2020ycc",
+        "bt2020rgb",
+        "p3d65",
+        "p3dci",
+        "ictcp",
+    ];
+
+    pub(crate) fn to_c(self) -> u32 {
+        use weston_sys::weston_colorimetry_mode as m;
+        match self {
+            ColorimetryMode::Default => m::WESTON_COLORIMETRY_MODE_DEFAULT,
+            ColorimetryMode::Bt2020Cycc => m::WESTON_COLORIMETRY_MODE_BT2020_CYCC,
+            ColorimetryMode::Bt2020Ycc => m::WESTON_COLORIMETRY_MODE_BT2020_YCC,
+            ColorimetryMode::Bt2020Rgb => m::WESTON_COLORIMETRY_MODE_BT2020_RGB,
+            ColorimetryMode::P3d65 => m::WESTON_COLORIMETRY_MODE_P3D65,
+            ColorimetryMode::P3dci => m::WESTON_COLORIMETRY_MODE_P3DCI,
+            ColorimetryMode::Ictcp => m::WESTON_COLORIMETRY_MODE_ICTCP,
+        }
+    }
+}
+
+/// One `[[color-characteristics]]` block, already parsed and
+/// **group-validated** by the frontend (C `parse_color_characteristics`,
+/// main.c:1538).
+///
+/// The grouping rule is the whole point and is easy to miss: the eleven
+/// keys form five groups — primaries (the six red/green/blue x,y),
+/// white (x,y), max luminance, min luminance, maxFALL — and each group
+/// must be given **entirely or not at all**.  Half a group is a config
+/// error, not a partial application.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct ColorCharacteristics {
+    pub primaries: Option<[(f32, f32); 3]>,
+    pub white: Option<(f32, f32)>,
+    pub max_luminance: Option<f32>,
+    pub min_luminance: Option<f32>,
+    pub max_fall: Option<f32>,
+}
+
+impl ColorCharacteristics {
+    pub(crate) fn group_mask(&self) -> u32 {
+        use weston_sys::weston_color_characteristics_groups as g;
+        let mut mask = 0;
+        if self.primaries.is_some() {
+            mask |= g::WESTON_COLOR_CHARACTERISTICS_GROUP_PRIMARIES;
+        }
+        if self.white.is_some() {
+            mask |= g::WESTON_COLOR_CHARACTERISTICS_GROUP_WHITE;
+        }
+        if self.max_luminance.is_some() {
+            mask |= g::WESTON_COLOR_CHARACTERISTICS_GROUP_MAXL;
+        }
+        if self.min_luminance.is_some() {
+            mask |= g::WESTON_COLOR_CHARACTERISTICS_GROUP_MINL;
+        }
+        if self.max_fall.is_some() {
+            mask |= g::WESTON_COLOR_CHARACTERISTICS_GROUP_MAXFALL;
+        }
+        mask
+    }
+}
+
+/// The colour slice of an output's configuration — read by every
+/// backend's configure for `icc-profile`/`allow-hdcp`, and by the DRM
+/// and headless ones for the rest (C main.c:1873/2415-2423/3459-3464).
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ColorSetup {
+    /// `icc-profile=` (C's ini key is the underscored `icc_profile`).
+    /// Only consulted when the colour manager is loaded.
+    pub icc_profile: Option<String>,
+    pub eotf_mode: Option<EotfMode>,
+    pub colorimetry_mode: Option<ColorimetryMode>,
+    pub characteristics: Option<ColorCharacteristics>,
+    /// `allow-hdcp=` (C's `allow_hdcp`), default true.
+    pub allow_hdcp: bool,
+}
+
 /// How a DRM output picks its video mode (C
 /// `weston_drm_backend_output_mode` plus the modeline string that goes
 /// with it, main.c:2356-2378).
@@ -331,7 +478,9 @@ pub enum DrmMode {
 /// The resolved per-head decision for a DRM output — C
 /// `drm_backend_output_configure` (main.c:2333), which reads a wider
 /// slice of the section than any other backend's configure.
-#[derive(Debug, Clone, PartialEq, Eq)]
+// No `Eq`: the colour characteristics are f32, so equality is
+// partial by construction.
+#[derive(Debug, Clone, PartialEq)]
 pub struct DrmOutputSetup {
     pub mode: DrmMode,
     /// `max-bpc=`, C default 16.  Note the interaction: with
@@ -348,17 +497,28 @@ pub struct DrmOutputSetup {
     /// `seat=`, C default the empty string (not absent — C always calls
     /// set_seat, with "" when the key is missing).
     pub seat: String,
+    /// The colour slice, taken from the *controlling* section — DRM is
+    /// the one path where clone-of has already redirected which section
+    /// applies (C reads all of these from `lo->section`).
+    pub color: ColorSetup,
 }
 
 /// Why a DRM head is not getting an output.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The payload of [`DrmHeadPlan::Enable`], boxed inside the enum.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DrmEnablePlan {
+    pub output_name: String,
+    pub setup: DrmOutputSetup,
+}
+
+// No `Eq`, for the same reason as DrmOutputSetup above.  The Enable
+// variant is boxed because it is far larger than the others and clippy
+// is right that every DrmHeadPlan would otherwise pay for it.
+#[derive(Debug, Clone, PartialEq)]
 pub enum DrmHeadPlan {
     /// Enable it, on the layoutput named by the section's `name=` (or
     /// by the head itself when no section matches).
-    Enable {
-        output_name: String,
-        setup: DrmOutputSetup,
-    },
+    Enable(Box<DrmEnablePlan>),
     /// `mode=off`: pruned before it ever reaches a layoutput
     /// (drm_head_prepare_enable, main.c:2777).
     Off,
@@ -426,20 +586,20 @@ impl OutputPolicy {
             if non_desktop {
                 return DrmHeadPlan::NonDesktop;
             }
-            return DrmHeadPlan::Enable {
+            return DrmHeadPlan::Enable(Box::new(DrmEnablePlan {
                 output_name: head_name.to_string(),
                 setup: self.drm_setup(None, current_mode_cli),
-            };
+            }));
         };
         if rule.off {
             return DrmHeadPlan::Off;
         }
         // C keys the layoutput on the *section's* name=, which is how
         // several heads land on one output (clone mode).
-        DrmHeadPlan::Enable {
+        DrmHeadPlan::Enable(Box::new(DrmEnablePlan {
             output_name: rule.name.clone(),
             setup: self.drm_setup(Some(rule), current_mode_cli),
-        }
+        }))
     }
 
     fn drm_setup(&self, rule: Option<&OutputRule>, current_mode_cli: bool) -> DrmOutputSetup {
@@ -468,7 +628,22 @@ impl OutputPolicy {
             gbm_format: rule.and_then(|r| r.gbm_format.clone()),
             content_type: rule.and_then(|r| r.content_type.clone()),
             seat: rule.and_then(|r| r.seat.clone()).unwrap_or_default(),
+            color: rule.map(|r| r.color.clone()).unwrap_or_default(),
         }
+    }
+
+    /// The colour slice for a head on a *simple* (non-DRM) backend.
+    /// C reads `icc_profile` and `allow_hdcp` there and nothing else
+    /// (simple_head_enable, main.c:1873/1881); the eotf/colorimetry/
+    /// characteristics keys are DRM-path only, so a value set on a
+    /// headless or VNC output would be inert — the frontend refuses
+    /// that rather than ignoring it.
+    pub fn decide_color(&self, head_name: &str) -> ColorSetup {
+        self.rules
+            .iter()
+            .find(|r| r.name == head_name)
+            .map(|r| r.color.clone())
+            .unwrap_or_default()
     }
 
     /// The setup a DRM output gets with no controlling section at all —

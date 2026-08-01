@@ -71,6 +71,7 @@ pub use events::{ActivateVia, Event};
 pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
 pub use layoutput::RequireOutputs;
+pub use output_policy::{ColorCharacteristics, ColorSetup, ColorimetryMode, EotfMode};
 pub use output_policy::{
     OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform, VncOutputSetup,
 };
