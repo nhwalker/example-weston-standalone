@@ -726,6 +726,23 @@ mod tests {
     }
 
     #[test]
+    fn deprecated_enable_tap_spelling_reaches_the_model() {
+        // C honors the underscore spelling behind a deprecation
+        // warning (main.c:2260); the re-spec drops it, but the key
+        // must PARSE — the frontend refuses it with a message naming
+        // the rename (see westonite's refusal table), which a generic
+        // unknown-field death here would preempt.  It must also stay
+        // a separate field: aliasing it onto enable-tap would silently
+        // honor it instead.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("westonite.toml");
+        std::fs::write(&path, "[libinput]\nenable_tap = true\n").unwrap();
+        let s = resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
+        assert_eq!(s.config.libinput.enable_tap_deprecated, Some(true));
+        assert_eq!(s.config.libinput.enable_tap, None);
+    }
+
+    #[test]
     fn list_keys_accept_comma_strings_and_arrays() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("westonite.toml");

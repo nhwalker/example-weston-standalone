@@ -230,6 +230,25 @@ def test_unsupported_feature_fails_loudly(tmp_path):
 
 
 @toml_only
+def test_deprecated_enable_tap_spelling_names_the_rename(tmp_path):
+    """C honors `enable_tap` behind a `!!DEPRECATION WARNING!!`
+    (main.c:2260) and applies it; the re-spec drops it in favour of
+    the one spelling.  The key is kept in the config model so the
+    refusal can tell the user what to type -- their old weston.ini is
+    where the spelling came from, and a generic unknown-field error
+    would point at a key the C docs never used."""
+    cfg = tmp_path / "westonite.toml"
+    cfg.write_text("[libinput]\nenable_tap = true\n")
+    log = tmp_path / "log"
+    r = run([WESTONITE, "--backend=headless", f"--log={log}", f"--config={cfg}"],
+            env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert r.returncode != 0
+    text = log.read_text()
+    assert "enable_tap" in text and "enable-tap" in text, text
+    assert "not supported by westonite" in text, text
+
+
+@toml_only
 def test_libinput_device_settings_without_drm_are_inert(westonite):
     """The per-device settings reach libinput only through the DRM
     backend's configure_device hook, so without DRM they do nothing --

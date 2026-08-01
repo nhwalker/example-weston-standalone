@@ -38,6 +38,7 @@ An annotated example lives at the repo root:
 | booleans `true`/`false` | bare `true` / `false` | unquoted |
 | numbers | bare numbers | unquoted |
 | `background-color=0xff002244` | `background-color = "0xff002244"` | quoted string, hex spelling kept; a bare `0xff002244` or a decimal number also works, so `-o shell.background-color=0xff002244` needs no quoting |
+| `[libinput] enable_tap=` (deprecated) | **dropped** — spell it `enable-tap` | C still honors the underscore spelling behind a `!!DEPRECATION WARNING!!`; here it is a startup error that names the rename |
 | unknown/typo'd keys silently ignored | **startup error** with line/column | D9: `deny_unknown_fields` |
 | `WESTON_CONFIG_FILE` exported to clients | **dropped** | D12: no shipped client reads it, and no stock client parses TOML |
 | `weston.ini` never read | unchanged (`westonite.toml` only) | P2 behavior kept |
