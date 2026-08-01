@@ -29,6 +29,15 @@
 #color-management = false
 # Start Xwayland support lazily.
 #xwayland = false
+# Deprecated aliases for renderer=; mutually exclusive, and neither may
+# be combined with an explicit renderer.  (C honours the file spelling
+# only on the headless backend; westonite honours it everywhere, like
+# the matching --use-gl/--use-pixman flags.)
+#use-gl = false
+#use-pixman = false
+# Draw a decoration border around headless outputs.  Headless-only, and
+# it needs the GL renderer -- the backend refuses it on pixman/noop.
+#output-decorations = false
 # Log the pid and stop (SIGSTOP) at startup, before anything is
 # created, so a debugger can attach.  Send SIGCONT to continue.  The
 # --wait-for-debugger flag wins; this only applies when it is absent.
@@ -70,6 +79,11 @@
 #accel-speed = 0.0             # -1.0 .. 1.0
 #scroll-method = "two-finger"  # two-finger | edge | button | none
 #scroll-button = "BTN_RIGHT"   # evdev button name; needs scroll-method = "button"
+# NOT SUPPORTED, refused at startup: the weston_touch_calibration
+# protocol is deliberately dropped (no calibrator client ships with
+# westonite).  calibration-helper only feeds it, so it is refused too.
+#touchscreen-calibrator = false
+#calibration-helper = ""
 
 [autolaunch]
 # Client to spawn once the compositor is up.  `watch = true` ties the

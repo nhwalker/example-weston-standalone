@@ -161,8 +161,12 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | flight-recorder-default *(R2f)* | absent `--flight-rec-scopes` starts the recorder from C's default list; an explicitly **empty** one disables it (absent ≠ empty) |
 | logger-scopes *(R2f)* | `--logger-scopes=drm-backend` *replaces* the logger's `"log"` subscription, so ordinary output leaves the log file while the compositor still starts; `--logger-scopes=log` is the default spelled out and keeps it |
 | wait-for-debugger *(R2f)* | `--wait-for-debugger` logs the pid and SIGSTOPs — asserted as process state `T` with no socket yet created, then resumed with SIGCONT |
+| protocol-dump *(R2g)* | `--logger-scopes=proto` dumps every request and event, with arguments decoded (a string, two ints and a generic new-id in one `wl_registry.bind` line); **negative**: no subscriber, no dump, so one user's log never fills with another client's traffic |
+| debug-protocol *(R2g)* | `--debug` makes `weston_debug_v1` appear in the registry; **negative**: absent by default, since the flag also lets every client screenshot every output |
+| output-decorations *(R2g)* | `[core] output-decorations` reaches the headless backend — asserted through its failure mode (decorations need GL/Vulkan; the backend refuses them on noop/pixman), because a key that never arrived would let startup succeed |
+| use-pixman-config-key *(R2g)* | `[core] use-pixman` + `renderer=gl` is "Conflicting renderer specifications" — the cheapest proof the *file* spelling is read at all, where before only the CLI flags were |
 
-The four R2f rows are **shared with the C oracle**, not `toml_only`:
+The R2f and R2g rows are **shared with the C oracle**, not `toml_only`:
 this is libweston's own log machinery and both frontends wire it the
 same way, so the oracle passing them is the parity proof.  Note
 `logger-scopes` is testable only because the fixture waits on the

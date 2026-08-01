@@ -1016,7 +1016,16 @@ halves can be mixed and smoke-tested at every phase boundary.
   through the scope fixes that and is what makes subscribers possible
   at all.  The log context moved from `Compositor` to the **frontend**,
   since C creates it before the first log line and destroys it after
-  the display.  **Virtual-output probe (2026-07-31)**, run with the C
+  the display.
+  *R2g* ✅ *(done — see PROVENANCE.md log)*: the last three gaps, found
+  by a mechanical audit of every `weston_config_section_get_*` key (67)
+  and `WESTON_OPTION_*` flag (48) in main.c against the config model
+  and the clap struct.  `--debug` (weston-debug protocol, allow-all
+  screenshot authority, and the always-on `proto` protocol dump),
+  `[core] output-decorations`, and `[core] use-gl`/`use-pixman` are
+  ported; `[libinput] touchscreen-calibrator` is dropped by product
+  decision.  **The Rust frontend now reads every config key and CLI
+  flag the C frontend does.**  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM
   backend (`load_additional_modules`, main.c:1066), so the VM harness
   is the only place they can run at all.  Remoting *works there today*

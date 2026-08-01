@@ -313,11 +313,19 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         }
     }
 
-    // C load_headless_backend/load_x11_backend: use-gl and use-pixman
-    // are mutually exclusive, and neither may be combined with an
-    // explicit --renderer.  Wording kept from the C frontend.
-    if (cli.use_gl && cli.use_pixman) || (cli.renderer.is_some() && (cli.use_gl || cli.use_pixman))
-    {
+    // C load_headless_backend: use-gl and use-pixman are mutually
+    // exclusive, and neither may be combined with an explicit
+    // renderer.  Wording kept from the C frontend.
+    //
+    // Flag OR config key, because that is what C's parse_options does
+    // to the variable it already read the key into: the flag can only
+    // turn the switch on, never cancel a `use-pixman = true` in the
+    // file.  See the model for why the keys apply on every backend
+    // here where C honours them only on headless.
+    let use_gl = cli.use_gl || config.core.use_gl;
+    let use_pixman = cli.use_pixman || config.core.use_pixman;
+    let renderer_given = cli.renderer.is_some() || config.core.renderer.is_some();
+    if (use_gl && use_pixman) || (renderer_given && (use_gl || use_pixman)) {
         return Err(ConfigError::Invalid(
             "Conflicting renderer specifications".to_string(),
         ));
@@ -326,9 +334,9 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         .renderer
         .clone()
         .or_else(|| {
-            if cli.use_gl {
+            if use_gl {
                 Some("gl".into())
-            } else if cli.use_pixman {
+            } else if use_pixman {
                 Some("pixman".into())
             } else {
                 None

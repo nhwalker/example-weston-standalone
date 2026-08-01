@@ -203,18 +203,19 @@ def test_unknown_config_key_is_fatal(tmp_path):
 
 
 @toml_only
-def test_unported_feature_fails_loudly(tmp_path):
-    """R2a gate: a requested-but-unported feature is a startup error,
-    never a silent no-op.
+def test_unsupported_feature_fails_loudly(tmp_path):
+    """R2a gate: a requested-but-unavailable feature is a startup
+    error, never a silent no-op.
 
-    This has moved twice as the migration ate its targets: first
+    This has moved three times as the migration ate its targets --
     `--backend=drm`, then `[libinput]` as a whole, both ported now.  It
-    points at `touchscreen-calibrator` -- the last piece of that
-    section still outstanding, and a different feature from the
-    per-device settings around it: the weston_touch_calibration
-    protocol plus a helper C runs through system().  Unlike the device
-    settings it is not DRM-bound (C enables it from
-    weston_compositor_init_config), so the refusal is unconditional.
+    points at `touchscreen-calibrator`, which is no longer *unported*
+    but *unsupported*: the weston_touch_calibration protocol is a
+    product decision to drop (2026-08-01), since westonite ships no
+    calibrator client to drive it.
+
+    The gate is the principle, not any one feature: something the user
+    asked for and will not get has to say so.
     """
     cfg = tmp_path / "westonite.toml"
     cfg.write_text("[libinput]\ntouchscreen-calibrator = true\n")
@@ -222,7 +223,10 @@ def test_unported_feature_fails_loudly(tmp_path):
     r = run([WESTONITE, "--backend=headless", f"--log={log}", f"--config={cfg}"],
             env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
     assert r.returncode != 0
-    assert "not yet ported" in log.read_text()
+    text = log.read_text()
+    assert "not supported by westonite" in text, text
+    # Not a promise of a future slice: there is no slice coming.
+    assert "not yet ported" not in text, text
 
 
 @toml_only
@@ -374,3 +378,69 @@ def test_modules_cli_flag_is_refused_too(tmp_path):
             env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
     assert r.returncode != 0
     assert "not supported by westonite" in log.read_text()
+
+
+# ---------------------------------------------------------------------
+# --debug, the protocol dump, and the two [core] renderer aliases.
+# Shared with the C oracle: libweston machinery, wired the same way.
+# ---------------------------------------------------------------------
+
+def test_protocol_dump_scope(westonite):
+    """The `proto` scope and its wl_protocol_logger are installed
+    unconditionally (main.c:4618) -- `--debug` does not gate them.
+    They cost nothing until someone subscribes, which is what
+    --logger-scopes=proto does."""
+    w = westonite(extra_args=["--logger-scopes=proto"], socket_name="proto-probe")
+    w.run_client(["wayland-info"])
+    log = w.log()
+    assert re.search(r"rq wl_display@1\.get_registry\(new id wl_registry@2\)", log), log
+    # Argument decoding, not just the message name: a string, two ints
+    # and a generic new-id in one line.
+    assert re.search(r'rq wl_registry@2\.bind\(\d+, "wl_\w+", \d+, new id \[unknown\]@\d+\)',
+                     log), log
+
+
+def test_protocol_dump_is_silent_without_a_subscriber(westonite):
+    """The other half: no subscription, no dump.  Without this, the
+    test above would also pass if we logged unconditionally -- which
+    would put every client's traffic in every user's log file."""
+    w = westonite()
+    w.run_client(["wayland-info"])
+    assert "wl_display@1.get_registry" not in w.log(), w.log()
+
+
+def test_debug_protocol_advertises_the_global(westonite):
+    """--debug enables libweston's weston-debug protocol, which is
+    observable where it matters: the global appears in the registry."""
+    w = westonite(extra_args=["--debug"])
+    assert "weston_debug_v1" in w.run_client(["wayland-info"]).stdout
+
+
+def test_debug_protocol_is_off_by_default(westonite):
+    """It stays off unless asked: the global is a debugging interface
+    and the flag also makes every client able to screenshot every
+    output, so a default-on would be a privilege leak."""
+    w = westonite()
+    assert "weston_debug_v1" not in w.run_client(["wayland-info"]).stdout
+
+
+def test_output_decorations_reach_the_backend(westonite):
+    """`[core] output-decorations` is headless-only in C too (a field of
+    weston_headless_backend_config).  Asserted through its failure
+    mode rather than its pixels: decorations need the GL or Vulkan
+    renderer, and the headless backend refuses them on noop/pixman
+    (headless.c:731).  A key that never reached the backend would let
+    startup succeed, so this is the plumbing check."""
+    w = westonite(config="[core]\noutput-decorations=true\n", wait=False)
+    assert w.wait_exit() != 0, w.log()
+    assert "decorations" in w.log(), w.log()
+
+
+def test_use_pixman_config_key_conflicts_with_renderer(westonite):
+    """`[core] use-pixman` / `use-gl` are deprecated aliases for
+    `renderer=`, and C rejects the combination (main.c:3511).  The
+    conflict is the cheapest proof the *file* spelling is read at all
+    -- before this slice only the CLI flags were."""
+    w = westonite(config='[core]\nuse-pixman=true\nrenderer=gl\n', wait=False)
+    assert w.wait_exit() != 0, w.log()
+    assert "Conflicting renderer specifications" in w.log(), w.log()

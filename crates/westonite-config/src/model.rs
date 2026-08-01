@@ -123,6 +123,24 @@ pub struct Core {
     pub backends: Vec<String>,
     /// `[core] renderer=` / `--renderer`: auto|gl|pixman|noop.
     pub renderer: Option<String>,
+    /// `[core] use-gl=` / `use-pixman=`: deprecated aliases for
+    /// `renderer=`.  Mutually exclusive, and neither may be combined
+    /// with an explicit `renderer`.
+    ///
+    /// Divergence, deliberate: C reads these keys **only** in
+    /// `load_headless_backend` (main.c:3490), so on any other backend
+    /// the file spelling is silently inert while the identically named
+    /// CLI flags work everywhere.  That asymmetry is an accident of
+    /// where the read sits, not a design, and "silently inert" is the
+    /// failure mode this port exists to remove — so here they apply to
+    /// every backend, exactly like the flags.
+    pub use_gl: bool,
+    pub use_pixman: bool,
+    /// `[core] output-decorations=`: draw a decoration border around
+    /// headless outputs.  Headless-only in C too (it is a field of
+    /// `weston_headless_backend_config`), so this one stays as C has
+    /// it.
+    pub output_decorations: bool,
     /// `[core] gbm-format=`.
     pub gbm_format: Option<String>,
     /// `[core] require-input=`.  C default true.
@@ -165,6 +183,9 @@ impl Default for Core {
             backend: None,
             backends: Vec::new(),
             renderer: None,
+            use_gl: false,
+            use_pixman: false,
+            output_decorations: false,
             gbm_format: None,
             require_input: true,
             color_management: false,

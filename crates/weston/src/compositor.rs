@@ -40,6 +40,10 @@ pub struct HeadlessOptions {
     pub no_outputs: bool,
     /// C --refresh-rate, mHz; backend default -1.
     pub refresh_mhz: Option<i32>,
+    /// C `[core] output-decorations` (main.c:3494): draw a decoration
+    /// border around each headless output.  Headless-only in C too --
+    /// it is a field of weston_headless_backend_config.
+    pub decorate: bool,
 }
 
 /// VNC backend options (C load_vnc_backend: CLI + `[vnc]` section,
@@ -240,6 +244,10 @@ pub struct CompositorBuilder {
     require_outputs: crate::layoutput::RequireOutputs,
     /// C `[core] color-management` (main.c:1203).
     color_management: bool,
+    /// C `--debug`: the weston-debug protocol plus an allow-all
+    /// screenshot authority.  A privilege change, so it is opt-in and
+    /// never inferred.
+    debug_protocol: bool,
     /// The frontend's log context, borrowed for
     /// `weston_compositor_create`.  Required: `build()` fails without
     /// one, because C has no path that reaches a compositor without a
@@ -274,9 +282,17 @@ impl CompositorBuilder {
             xwayland: None,
             require_outputs: crate::layoutput::RequireOutputs::default(),
             color_management: false,
+            debug_protocol: false,
             log_ctx: None,
             flight_rec: std::ptr::null_mut(),
         }
+    }
+
+    /// C `--debug` (main.c:4626): enable the weston-debug protocol and
+    /// let any client capture any output.
+    pub fn debug_protocol(mut self, on: bool) -> CompositorBuilder {
+        self.debug_protocol = on;
+        self
     }
 
     /// Hand the builder the frontend's [`crate::log::LogContext`].
@@ -546,11 +562,51 @@ impl CompositorBuilder {
             ctx: ctx.clone(),
             policy_names: self.policy.rules.iter().map(|r| r.name.clone()).collect(),
             heads_changed: None,
+            protocol_scope: std::ptr::null_mut(),
+            protologger: std::ptr::null_mut(),
             frontend_listeners: Vec::new(),
             signal_sources: Vec::new(),
             socket_bound: None,
             exit_code: 0,
         };
+
+        // C main.c:4618, in the same place -- right after the
+        // compositor exists and before anything can talk protocol.
+        // Unconditional, as in C: the handler bails on an unsubscribed
+        // scope, so an idle "proto" dump costs one branch per message.
+        // SAFETY: log_ctx live (the frontend owns it and outlives us);
+        // the strings are static and libweston copies what it keeps.
+        comp.protocol_scope = unsafe {
+            weston_sys::weston_log_ctx_add_log_scope(
+                log_ctx,
+                c"proto".as_ptr(),
+                c"Wayland protocol dump for all clients.\n".as_ptr(),
+                None,
+                None,
+                std::ptr::null_mut(),
+            )
+        };
+        if !comp.protocol_scope.is_null() {
+            // The scope rides in as user_data: this is the one
+            // trampoline that needs no Ctx at all, and passing the
+            // pointer keeps it working even during teardown ordering.
+            // SAFETY: display live; the logger is destroyed in Drop
+            // before the scope it points at.
+            comp.protologger = unsafe {
+                weston_sys::wl_display_add_protocol_logger(
+                    display.as_ptr(),
+                    Some(crate::debug::protocol_log_fn),
+                    comp.protocol_scope.cast(),
+                )
+            };
+        }
+
+        // C main.c:4626: --debug.  After the protocol logger, as C has
+        // it, and before backends load so an early capture attempt is
+        // already covered.
+        if self.debug_protocol {
+            comp.frontend_listeners.push(crate::debug::enable(&ctx));
+        }
 
         // Signal sources BEFORE backend load, as C installs signals[]
         // right after display creation: wl_event_loop_add_signal blocks
@@ -771,6 +827,13 @@ pub struct Compositor {
     /// walks the config sections (load_x11_backend / load_wayland_backend).
     policy_names: Vec<String>,
     heads_changed: Option<Listener>,
+    /// C `protocol_scope` + `protologger` (main.c:4618): the "proto"
+    /// dump.  Installed unconditionally, as C does — it costs nothing
+    /// until someone subscribes to the scope.  Owned here because the
+    /// logger belongs to the display and the scope must die before the
+    /// frontend's log context does.
+    protocol_scope: *mut weston_sys::weston_log_scope,
+    protologger: *mut weston_sys::wl_protocol_logger,
     /// Frontend listeners on compositor-embedded signals (mirror L6 +
     /// L2): detached in Drop before weston_compositor_destroy.
     frontend_listeners: Vec<Listener>,
@@ -810,6 +873,7 @@ impl Compositor {
         config.renderer = renderer.to_c();
         // C load_headless_backend: -1 unless --refresh-rate was given.
         config.refresh = opts.refresh_mhz.unwrap_or(-1);
+        config.decorate = opts.decorate;
 
         // SAFETY: compositor live; config outlives the call (the backend
         // copies what it needs — same contract the C frontend relies on).
@@ -1389,6 +1453,21 @@ impl Drop for Compositor {
             // SAFETY-relevant ordering: the signal lists these sit on
             // live inside the compositor struct, freed just below.
             l.detach();
+        }
+        // C main.c:4793/4803: the protocol logger first (it points at
+        // the scope), then the scope -- both before the display, and
+        // both before the frontend's log context destroys the log ctx
+        // that owns the scope.
+        // SAFETY: each is ours, created in build(), destroyed once.
+        unsafe {
+            if !self.protologger.is_null() {
+                weston_sys::wl_protocol_logger_destroy(self.protologger);
+                self.protologger = std::ptr::null_mut();
+            }
+            if !self.protocol_scope.is_null() {
+                weston_sys::weston_log_scope_destroy(self.protocol_scope);
+                self.protocol_scope = std::ptr::null_mut();
+            }
         }
         for src in self.signal_sources.drain(..) {
             // SAFETY: sources created on this display's loop and still
