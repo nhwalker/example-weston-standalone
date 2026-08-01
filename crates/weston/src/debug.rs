@@ -290,5 +290,10 @@ pub(crate) fn enable(ctx: &Ctx) -> Listener {
             auth.raw_ptr(),
         );
     }
+    // raw_ptr() contract (listener.rs): a hand-attached node MUST be
+    // marked, or detach-on-drop skips it — the Compositor's teardown
+    // would then free this pinned box while its node is still linked
+    // on ask_auth, inside the still-live compositor struct.
+    auth.mark_attached();
     auth
 }
