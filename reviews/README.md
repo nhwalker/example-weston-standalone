@@ -45,20 +45,29 @@ Ground rules used throughout:
 | [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | [pr-033](pr-033-r2c-color.md) | 3 / 0 (nits) — faithful; closes final PR19-C4 items; grouping rule + refcount protocol verified |
 | [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | [pr-034](pr-034-r2c-input-bindings.md) | 1 / 0 — minimal; the link-test pattern highlighted |
 | [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | [pr-035](pr-035-libinput-config-logging.md) | 3 / 0 — punctuation-faithful libinput port; RAII LogContext; deprecated enable_tap spelling dropped undocumented |
-| [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | *pending* | |
+| [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | [pr-036](pr-036-close-port-surface.md) | 2 / 0 — completes the PR19-C4 audit; **1 live soundness bug: --debug authority listener never mark_attached, box freed while linked** |
 
 ## Cross-PR open items (running list)
 
 Issues found in one PR that were **not** fixed by any later PR in the
 reviewed range — i.e. still live on `main`:
 
+* **`--debug` authority listener never `mark_attached`** (PR36-C1,
+  moderate→major, soundness): `debug::enable` violates the Listener
+  contract; at teardown under `--debug` the pinned box is freed while
+  its node is still linked on `output_capture.ask_auth`. Latent UAF —
+  one-line fix (match `screenshooter.rs`). Verified live on main.
+
 * **Signal-handling divergence** (PR16-C4): SIGINT caught via signalfd
   (C uses `sigaction`→`raise(SIGUSR2)` so gdb Ctrl+C works), no SIGUSR2
   termination route, no `caught signal %d` log line. Verified still
   present on current main.
-* **Bring-up ordering** (PR16-C6): socket bound before the heads flush;
-  `weston_compositor_wake` earlier than C's. *(To re-verify once #19/#22
-  reviews establish the final bring-up shape.)*
+* **Bring-up ordering** (PR16-C6): final shape (post-#36) is
+  backends_loaded → shell attach → socket → flush → xwayland → wake,
+  vs C's flush → socket → shell → xwayland → wake. The shell-before-
+  flush half is documented (with rationale) at `with_shell`; the
+  socket-before-flush half is acknowledged only in a smoke-script
+  comment. Live divergence, low impact.
 * **Silent A3-violation fallback** (PR17-C1): `dispatch_sync`'s comment
   promises a loud debug-build fallback when a sync event arrives with
   the app borrow held; no assert/log exists. Verified still absent on
