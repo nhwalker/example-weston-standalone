@@ -116,13 +116,33 @@ echo "drm-vm: booting with -accel $ACCEL, timeout scale $SCALE (frontend: $FRONT
 # -no-reboot so a panic ends the process instead of looping; the guest
 # powers itself off with sysrq when it is done.  console=ttyS0 + -serial
 # stdio is the only channel out.
+#
+# -vga none, not just -display none: q35 gives every guest an emulated
+# Bochs VGA whether or not anything displays it, and once udevd runs its
+# coldplug that modalias gets modprobed -- a SECOND DRM card, which
+# weston then picked over vkms (its connector is called Virtual-2, which
+# is how this was spotted: every mode assertion here is anchored to
+# vkms).  Removing the adapter is better than teaching the harness to
+# pass --drm-device: the tests should exercise weston's own card
+# selection, and there is exactly one right answer when there is
+# exactly one card.
+#
+# The two virtio input devices are what give the `[libinput]` tests
+# something to configure: virtio-keyboard-pci and virtio-mouse-pci
+# register real evdev nodes, which udevd tags and libinput then picks
+# up.  A mouse as well as a keyboard because most of the section's keys
+# are pointer-side (accel, scroll, left-handed) and a keyboard
+# advertises none of those capabilities.  A *relative* pointer
+# specifically -- virtio-tablet-pci is absolute, and libinput offers a
+# different, smaller config surface for those.
 set +e
 timeout 900 /usr/libexec/qemu-kvm \
 	-accel "$ACCEL" -M q35 -cpu max -m 3G -smp 2 -no-reboot \
-	-display none -serial stdio \
+	-display none -vga none -serial stdio \
 	-kernel /vm/vmlinuz -initrd /vm/initramfs.img \
 	-drive file=/vm/run.img,if=virtio,format=raw \
 	-drive file=/vm/results.img,if=virtio,format=raw \
+	-device virtio-keyboard-pci -device virtio-mouse-pci \
 	-append "root=LABEL=drmvm-root rw console=ttyS0,115200 init=/init.sh selinux=0 panic=10 rd.emergency=poweroff" \
 	> "$CONSOLE" 2>&1
 QEMU_RC=$?

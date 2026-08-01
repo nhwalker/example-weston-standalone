@@ -215,6 +215,8 @@ pub struct Libinput {
     pub enable_tap: Option<bool>,
     pub tap_and_drag: Option<bool>,
     pub tap_and_drag_lock: Option<bool>,
+    /// `[libinput] disable-while-typing=` (touchpads).
+    pub disable_while_typing: Option<bool>,
     pub natural_scroll: Option<bool>,
     pub left_handed: Option<bool>,
     pub middle_button_emulation: Option<bool>,
@@ -222,7 +224,11 @@ pub struct Libinput {
     pub accel_profile: Option<String>,
     pub accel_speed: Option<f64>,
     pub scroll_method: Option<String>,
-    /// Button name or bare keycode number.
+    /// evdev button *name*, e.g. `BTN_RIGHT` — that is all
+    /// `libevdev_event_code_from_name` accepts, in C too.  The scalar
+    /// deserializer is kept so a numeric spelling reaches the frontend
+    /// as a string and is rejected with a message rather than a serde
+    /// type error.
     #[serde(default, deserialize_with = "de_opt_scalar_string")]
     pub scroll_button: Option<String>,
     pub touchscreen_calibrator: Option<bool>,

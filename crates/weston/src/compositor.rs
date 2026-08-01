@@ -12,6 +12,7 @@
 
 use std::ffi::{CString, c_int, c_void};
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use crate::ctx::Ctx;
 use crate::events::Event;
@@ -99,6 +100,11 @@ pub struct DrmOptions {
     /// C --continue-without-input: clears compositor->require_input, so
     /// a machine with no keyboard or mouse still starts.
     pub continue_without_input: bool,
+    /// C weston.ini `[libinput]`, applied per device through the
+    /// backend's `configure_device` hook (crate::libinput).  DRM is the
+    /// only backend that has that hook, which is why the section rides
+    /// along here rather than on the builder.
+    pub input: crate::libinput::InputConfig,
 }
 
 /// X11 backend options (C load_x11_backend's CLI slice, main.c:3947).
@@ -1155,6 +1161,13 @@ impl Compositor {
         config.gbm_format = ptr(&gbm);
         config.pageflip_timeout = opts.pageflip_timeout;
         config.use_pixman_shadow = opts.use_pixman_shadow;
+        // C installs configure_device unconditionally (main.c:3425), so
+        // the per-device log line appears on every DRM start whether or
+        // not weston.ini has a [libinput] section.  The hook is called
+        // during the load below for devices already present, so the
+        // config must be in the context first.
+        *self.ctx.inner.input_config.borrow_mut() = Rc::new(opts.input.clone());
+        config.configure_device = Some(crate::libinput::tramp_configure_device);
 
         // C: `if (without_input) c->require_input = !without_input;` --
         // only ever clears the flag, never sets it (main.c:3419).

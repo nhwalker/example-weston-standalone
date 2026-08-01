@@ -205,29 +205,59 @@ def test_unported_feature_fails_loudly(tmp_path):
     """R2a gate: a requested-but-unported feature is a startup error,
     never a silent no-op.
 
-    This used to point at `--backend=drm`; DRM is ported now (R2c-drm),
-    so it points at the one hook that slice deliberately left behind —
-    `[libinput]`, which reaches libinput only through the DRM backend's
-    configure_device and needs libinput bindings weston-sys has not
-    got.  Note the gate is *conditional on DRM being loaded*: without
-    it the section does nothing in C either, so refusing it everywhere
-    would be inventing an error C does not have.
+    This has moved twice as the migration ate its targets: first
+    `--backend=drm`, then `[libinput]` as a whole, both ported now.  It
+    points at `touchscreen-calibrator` -- the last piece of that
+    section still outstanding, and a different feature from the
+    per-device settings around it: the weston_touch_calibration
+    protocol plus a helper C runs through system().  Unlike the device
+    settings it is not DRM-bound (C enables it from
+    weston_compositor_init_config), so the refusal is unconditional.
     """
     cfg = tmp_path / "westonite.toml"
-    cfg.write_text("[libinput]\nenable-tap = true\n")
+    cfg.write_text("[libinput]\ntouchscreen-calibrator = true\n")
     log = tmp_path / "log"
-    r = run([WESTONITE, "--backend=drm", f"--log={log}", f"--config={cfg}"],
+    r = run([WESTONITE, "--backend=headless", f"--log={log}", f"--config={cfg}"],
             env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
     assert r.returncode != 0
     assert "not yet ported" in log.read_text()
 
 
 @toml_only
-def test_libinput_without_drm_is_not_refused(westonite):
-    """The other half of that conditional: with no DRM backend the
-    section is inert in C too, so it must NOT be a startup error.
+def test_libinput_device_settings_without_drm_are_inert(westonite):
+    """The per-device settings reach libinput only through the DRM
+    backend's configure_device hook, so without DRM they do nothing --
+    in C too.  Refusing them here would be inventing an error C has
+    not got, so the section must simply be accepted and ignored.
 
-    The fixture asserts both halves for us — it waits for the socket
-    (so startup succeeded) and requires exit 0 at teardown."""
+    The fixture asserts it for us: it waits for the socket (so startup
+    succeeded) and requires exit 0 at teardown."""
     w = westonite(config="[libinput]\nenable-tap=true\n")
-    assert "not yet ported" not in w.log(), w.log()
+    assert "fatal" not in w.log(), w.log()
+
+
+@toml_only
+@pytest.mark.parametrize("section,expected", [
+    ('accel-profile = "swift"', "not a valid accel-profile"),
+    ('accel-speed = 4.0', "out of range"),
+    ('scroll-method = "twofinger"', "not a valid scroll-method"),
+    ('scroll-method = "button"\nscroll-button = "BTN_NONSENSE"',
+     "not an evdev button name"),
+    ('scroll-button = "BTN_RIGHT"', 'only applies with scroll-method'),
+])
+def test_libinput_bad_values_are_startup_errors(tmp_path, section, expected):
+    """Where C warns per device and leaves the key inert, the Rust
+    frontend refuses at startup -- a setting that was asked for and
+    does nothing is the failure mode this migration exists to remove.
+
+    Unconditional, not gated on DRM: these values could not work on any
+    backend, so rejecting them cannot mask a config that would have
+    run.  (The *valid* keys stay inert without DRM -- the test above.)
+    """
+    cfg = tmp_path / "westonite.toml"
+    cfg.write_text(f"[libinput]\n{section}\n")
+    log = tmp_path / "log"
+    r = run([WESTONITE, "--backend=headless", f"--log={log}", f"--config={cfg}"],
+            env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert r.returncode != 0
+    assert expected in log.read_text(), log.read_text()

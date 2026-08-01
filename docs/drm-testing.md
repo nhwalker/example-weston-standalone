@@ -57,9 +57,36 @@ rest of the suite tests against.
 
 | Piece | Where | What it is |
 |-------|-------|------------|
-| slim rootfs, kernel, initramfs | baked into the VM image at build time | `dnf --installroot` of `kernel-core`, `kernel-modules-core`, `weston-libs`, `seatd`, `python3-pytest` and their deps |
-| guest init | `containers/drm-vm-init.sh` | PID 1. Mounts the pseudo filesystems, loads vkms, starts seatd, runs the payload, prints `DRMVM-EXIT=<n>` and powers off. No systemd, no udev. |
+| slim rootfs, kernel, initramfs | baked into the VM image at build time | `dnf --installroot` of `kernel-core`, `kernel-modules-core`, `weston-libs`, `seatd`, `systemd-udev`, `python3-pytest` and their deps |
+| guest init | `containers/drm-vm-init.sh` | PID 1. Mounts the pseudo filesystems, loads vkms, runs udevd, starts seatd, runs the payload, prints `DRMVM-EXIT=<n>` and powers off. No systemd as PID 1 — the kernel is booted `init=/init.sh`. |
 | harness | `scripts/drm-vm-test.sh` | Copies the baked rootfs, injects the freshly built binaries and the e2e tree, `mkfs.ext4 -d` (no mount, no privileges), boots qemu, and turns the console sentinel back into an exit code. |
+
+#### Why udev is in there
+
+Nothing in the *DRM* path needs it: devtmpfs creates `/dev/dri/cardN`
+when vkms registers, and the tests run as root, so there is nothing to
+rename or re-permission.  udevd is there for **input** only.  libinput's
+udev backend enumerates devices with
+`udev_enumerate_add_match_property(e, "ID_INPUT", "1")`, and that
+property is set by udevd's `input_id` builtin — with no udevd run, the
+virtio keyboard and mouse the harness attaches exist as
+`/dev/input/eventN` and are invisible to libinput.  The `[libinput]`
+tests would then pass vacuously: no devices, no hook calls, no log
+lines to contradict.  The guest init asserts a non-zero tagged-device
+count instead of letting that happen quietly.
+
+Two consequences worth knowing before you edit the qemu line:
+
+* **`-vga none` is load-bearing.**  q35 gives every guest an emulated
+  Bochs VGA whether or not anything displays it, and once udevd
+  coldplugs, that modalias gets modprobed — a second DRM card, which
+  weston then picks over vkms.  Every mode assertion in the suite is
+  anchored to vkms, so they all fail against a connector suddenly
+  called `Virtual-2`.
+* **A relative pointer, not a tablet.**  `virtio-mouse-pci` gets the
+  full pointer config surface (accel, scroll methods, left-handed,
+  middle-button emulation); `virtio-tablet-pci` is an absolute device
+  and libinput offers it much less.
 
 The rootfs is assembled with `mkfs.ext4 -d`, which builds the
 filesystem image from a directory *without mounting it* — so the whole

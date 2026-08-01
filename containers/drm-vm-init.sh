@@ -5,12 +5,16 @@
 # there is no systemd, no udev and no login.  Everything the tests need
 # is set up here by hand:
 #
-#   pseudo filesystems -> vkms -> seatd -> pytest -> poweroff
+#   pseudo filesystems -> vkms -> udevd -> seatd -> pytest -> poweroff
 #
-# devtmpfs is what creates /dev/dri/cardN when vkms registers; udev is
-# not involved and is deliberately absent (one less moving part, and
-# nothing in the DRM path needs the device nodes renamed or permissioned
-# -- the tests run as root).
+# devtmpfs is what creates /dev/dri/cardN when vkms registers, so nothing
+# in the DRM path itself needs udev.  udevd runs anyway, for exactly one
+# reason: libinput's udev backend enumerates input devices with
+# `udev_enumerate_add_match_property(e, "ID_INPUT", "1")`, and that
+# property is set by udevd's input_id builtin.  With no udevd run, the
+# virtio keyboard and tablet the harness attaches exist as
+# /dev/input/eventN but are invisible to libinput -- and the
+# `[libinput]` configure_device hook never fires.
 #
 # The last line the host looks for is the DRMVM-EXIT= sentinel: a
 # kernel panic, an early exit or a hang all produce *no* sentinel, which
@@ -99,6 +103,33 @@ for con in /sys/class/drm/card*-*; do
     [ -e "$con/status" ] || continue
     log "connector $(basename "$con") = $(cat "$con/status")"
 done
+
+# -- udev ---------------------------------------------------------------
+# Only for the input-device properties (see the header).  --daemon
+# forks and returns; `udevadm trigger` then replays an "add" for
+# everything already in /sys, because the devices were created before
+# udevd started and the kernel does not resend those uevents.
+if ! /usr/lib/systemd/systemd-udevd --daemon > /run/udevd.log 2>&1; then
+    log "FATAL: systemd-udevd failed to start"
+    cat /run/udevd.log 2>&1 || true
+    finish 94
+fi
+udevadm trigger --type=devices --action=add > /dev/null 2>&1 || true
+# A bounded settle: a timeout here is not fatal on its own -- the check
+# below is what decides, and it says something far more useful.
+udevadm settle --timeout=30 > /dev/null 2>&1 || true
+
+# Assert the one thing udevd was installed for.  Without it the libinput
+# tests would not fail, they would pass vacuously (no devices, no hook
+# calls, no log lines to contradict).
+tagged=$(udevadm trigger --type=devices --subsystem-match=input --dry-run \
+         --property-match=ID_INPUT=1 --verbose 2>/dev/null | wc -l)
+log "udev: $tagged input devices tagged ID_INPUT"
+if [ "$tagged" -eq 0 ]; then
+    log "FATAL: no ID_INPUT devices -- libinput would see nothing"
+    ls -l /dev/input 2>&1 || true
+    finish 95
+fi
 
 # -- seat ---------------------------------------------------------------
 # libseat on EL10 is built with the logind and seatd backends only.

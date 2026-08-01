@@ -45,9 +45,24 @@
 #repeat-delay = 400
 #numlock-on = false
 
+# Per-device libinput settings.  These reach libinput through the DRM
+# backend and nowhere else, so on any other backend the section is
+# accepted and inert — as it is in the C frontend.  A key a given device
+# cannot do (tap on a mouse, left-handed on a keyboard) is skipped for
+# that device, silently; a key with a *bad value* is a startup error.
 [libinput]
 #enable-tap = false
+#tap-and-drag = false
+#tap-and-drag-lock = false
+#disable-while-typing = false
 #natural-scroll = false
+#left-handed = false
+#middle-button-emulation = false
+#rotation = 0
+#accel-profile = "adaptive"    # flat | adaptive
+#accel-speed = 0.0             # -1.0 .. 1.0
+#scroll-method = "two-finger"  # two-finger | edge | button | none
+#scroll-button = "BTN_RIGHT"   # evdev button name; needs scroll-method = "button"
 
 [autolaunch]
 # Client to spawn once the compositor is up.  `watch = true` ties the

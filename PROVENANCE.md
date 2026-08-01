@@ -20,6 +20,49 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2c-input (2026-08-01)** — `[libinput]`, the last item in R2's
+  config surface, in two slices: the weston-sys bindings first, then
+  the port.
+  - Ported: `configure_input_device` and its `configure_input_device_
+    accel` / `_scroll` helpers (main.c:2131-2330), reached through
+    `weston_drm_backend_config.configure_device` — DRM is the only
+    backend with that field, which is why the section is inert
+    everywhere else (in C too).  Parsing and validation live in the
+    frontend (`build_input_config`), application per device in
+    `crates/weston/src/libinput.rs`.
+  - **`disable-while-typing` was missing from the config model
+    entirely.** C reads it (main.c:2294), so it was unreachable —
+    the same class of bug `allow_hdcp` was in R2c-color.
+  - **Divergence, deliberate:** where C warns per device and leaves the
+    key inert, the Rust frontend refuses at startup — an unknown
+    `accel-profile` or `scroll-method`, a `scroll-button` libevdev does
+    not know, an `accel-speed` outside -1..=1, and `scroll-button`
+    without `scroll-method = "button"` (C reads it only in that
+    combination and discards it otherwise).  Unconditional, not gated
+    on DRM: none of these values could work on any backend, so
+    rejecting them cannot mask a config that would have run.  The
+    *valid* keys stay inert without DRM, matching C.
+  - **Not a divergence:** capability gating.  A device with no tap
+    fingers, no rotation, no natural scroll is skipped in silence, per
+    device, exactly as C does — that is a runtime fact about the
+    hardware, not a mistake in the config, and turning it into an error
+    would make `[libinput]` unusable on any mixed set of devices.
+  - Still fail-loud: `touchscreen-calibrator` / `calibration-helper`.
+    They are a different feature from the per-device settings —
+    libweston's `weston_touch_calibration` protocol plus a helper C
+    runs through `system()` (main.c:1075/1214) — and they are *not*
+    DRM-bound, so that refusal is unconditional.  This is now what
+    `test_unported_feature_fails_loudly` points at.
+  - Harness: the DRM VM gained a virtio keyboard and mouse, a udevd
+    run, and `-vga none`.  udevd because libinput's udev backend
+    enumerates with `add_match_property(ID_INPUT, 1)` and nothing else
+    sets that property — without it libinput finds no devices and the
+    hook never fires, so the tests would have passed vacuously.  The
+    guest init asserts a non-zero tagged-device count for that reason.
+    `-vga none` because udevd's coldplug then modprobes q35's emulated
+    Bochs VGA, and weston picked that card over vkms (caught by every
+    mode assertion failing against a connector called `Virtual-2`).
+
 - **R2c-color (2026-07-31)** — colour management: `[core]
   color-management` and the `[[output]]` colour keys, deferred since
   R2b because the DRM output path did not exist yet.

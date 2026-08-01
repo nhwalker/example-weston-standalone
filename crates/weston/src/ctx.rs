@@ -57,6 +57,11 @@ pub(crate) struct CtxInner {
     /// C wet_compositor::layoutput_list — the DRM head→output grouping
     /// (see crate::layoutput).  Empty unless the DRM backend is loaded.
     pub(crate) layoutputs: RefCell<Vec<crate::layoutput::Layoutput>>,
+    /// The `[libinput]` section, consulted by the DRM backend's
+    /// `configure_device` hook (crate::libinput).  There is no user
+    /// data on that callback, so this is how it reaches the config.
+    /// Left at its default (every key absent) unless DRM is loaded.
+    pub(crate) input_config: RefCell<Rc<crate::libinput::InputConfig>>,
     /// C wet_compositor::use_color_manager — set only when
     /// `[core] color-management=true` loaded the manager successfully.
     /// Gates icc-profile, and gates the non-default eotf/colorimetry
@@ -168,6 +173,7 @@ impl Ctx {
             display: Cell::new(std::ptr::null_mut()),
             backends: RefCell::new(Vec::new()),
             layoutputs: RefCell::new(Vec::new()),
+            input_config: RefCell::new(Rc::new(crate::libinput::InputConfig::default())),
             use_color_manager: Cell::new(false),
             init_failed: Cell::new(false),
             depth: Cell::new(0),

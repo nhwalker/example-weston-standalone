@@ -156,3 +156,9 @@ threads inherit it.
 Maintenance rule: growing the sync tier or adding a callback without a
 row here fails review; the R1/R2 porting PRs update the Status column
 as rows go live.
+
+## 8. Backend-config callbacks (R2c-input — C main.c, installed into a `weston_*_backend_config`; no `wl_listener`s, so outside the §1 counts)
+
+| Callback | Registered via | Tier | Notes / hazards | Status |
+|---|---|---|---|---|
+| `configure_device` (C `configure_input_device`, main.c:2239) | `weston_drm_backend_config.configure_device` (`compositor.rs` `load_drm`; DRM is the only backend with the field) | sync, no app borrow (reads the `Ctx`-held `InputConfig` and calls libinput device-config setters — wrapper state only) | Called on C's own schedule: once per device already present *during* `weston_compositor_load_backend`, and again for every hotplug, so it needs the full trampoline shape (panic barrier, `Ctx::current`, A4 depth wrap) even though it dispatches nothing. Installed unconditionally, as C does, so the per-device log line appears whether or not `[libinput]` exists. There is no user-data argument on this hook — the config reaches it through `CtxInner::input_config`, which `load_drm` must populate **before** the load call | R2c-input |
