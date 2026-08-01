@@ -35,7 +35,7 @@ Ground rules used throughout:
 | [#23](https://github.com/nhwalker/example-weston-standalone/pull/23) | R2c-mirror: mirror-of machinery | [pr-023](pr-023-r2c-mirror.md) | 6 / 0 — faithful port incl. the C scale quirk; exemplary handling of the C headless-source abort |
 | [#24](https://github.com/nhwalker/example-weston-standalone/pull/24) | R2d: xwayland | [pr-024](pr-024-r2d-xwayland.md) | 3 / 0 — cleanest FFI file; fixes 3 C fd-hygiene defects (documented); drain gap discovered here but deferred to #26 |
 | [#25](https://github.com/nhwalker/example-weston-standalone/pull/25) | R2e: screenshooter + wcap recorder | [pr-025](pr-025-r2e-screenshooter.md) | 4 / 0 — faithful; fixes C's no-outputs wild pointer; drain-gap leak measured here, fixed #26 |
-| [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | *pending* | |
+| [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | [pr-026](pr-026-deferred-drain.md) | 3 / 0 — the right fix, red-first proof, exemplary entry-point audit; closes PR16-C1 |
 | [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | *pending* | |
 | [#28](https://github.com/nhwalker/example-weston-standalone/pull/28) | DRM CI probe / VM harness | *pending* | |
 | [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | *pending* | |
