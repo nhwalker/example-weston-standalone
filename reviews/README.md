@@ -33,7 +33,7 @@ Ground rules used throughout:
 | [#20](https://github.com/nhwalker/example-weston-standalone/pull/20) | R2b: output policy (headless slice) | [pr-020](pr-020-r2b-output-policy.md) | 3 / 0 (nits) — best-executed slice; closes PR16-C2/C3, PR19-C1/C5; covers unmerged #21 |
 | [#22](https://github.com/nhwalker/example-weston-standalone/pull/22) | R2c: VNC backend + multi-backend | [pr-022](pr-022-r2c-vnc-multibackend.md) | 4 / 2 — strong slice; multi_backend + sigmask catches; closes PR19-C3; first framebuffer validation |
 | [#23](https://github.com/nhwalker/example-weston-standalone/pull/23) | R2c-mirror: mirror-of machinery | [pr-023](pr-023-r2c-mirror.md) | 6 / 0 — faithful port incl. the C scale quirk; exemplary handling of the C headless-source abort |
-| [#24](https://github.com/nhwalker/example-weston-standalone/pull/24) | R2d: xwayland | *pending* | |
+| [#24](https://github.com/nhwalker/example-weston-standalone/pull/24) | R2d: xwayland | [pr-024](pr-024-r2d-xwayland.md) | 3 / 0 — cleanest FFI file; fixes 3 C fd-hygiene defects (documented); drain gap discovered here but deferred to #26 |
 | [#25](https://github.com/nhwalker/example-weston-standalone/pull/25) | R2e: screenshooter + wcap recorder | *pending* | |
 | [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | *pending* | |
 | [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | *pending* | |
