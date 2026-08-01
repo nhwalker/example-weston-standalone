@@ -77,6 +77,13 @@ pub(crate) struct CtxInner {
     // whoever returns it to zero drains.
     depth: Cell<u32>,
     draining: Cell<bool>,
+    /// True while a sync-tier handler invocation is on the stack (set
+    /// around `app.handle` in [`Ctx::dispatch_sync`] only — the drain
+    /// loop's invocations are covered by `draining`).  This is what
+    /// lets the empty-app-slot case in `dispatch_sync` tell a failed
+    /// A3 proof (loud) apart from the two quiet reasons the slot can
+    /// be empty: mid-drain requeueing and no app installed yet.
+    in_sync_handler: Cell<bool>,
     /// Set once teardown begins: enqueued events are discarded (§3e).
     pub(crate) shutting_down: Cell<bool>,
 
@@ -178,6 +185,7 @@ impl Ctx {
             init_failed: Cell::new(false),
             depth: Cell::new(0),
             draining: Cell::new(false),
+            in_sync_handler: Cell::new(false),
             shutting_down: Cell::new(false),
             queue: RefCell::new(VecDeque::with_capacity(64)),
             pending_drop: RefCell::new(Vec::new()),
@@ -279,15 +287,35 @@ impl Ctx {
         let taken = self.inner.app.borrow_mut().take();
         match taken {
             Some(mut app) => {
+                self.inner.in_sync_handler.set(true);
                 app.handle(self, ev);
+                self.inner.in_sync_handler.set(false);
                 let mut slot = self.inner.app.borrow_mut();
                 if slot.is_none() {
                     *slot = Some(app);
                 }
             }
             None => {
-                // App borrow already out: either we're mid-drain (fine,
-                // ordinary queueing) or an A3 proof failed.
+                // App slot empty.  Quiet cases: mid-drain (the drain
+                // loop delivers the queued event in this same drain)
+                // and no app installed yet.  A sync handler on the
+                // stack outside a drain is neither — it's a failed A3
+                // proof (the calling site's inventory row is wrong),
+                // and silently deferring changes delivery order in
+                // ways the policy cannot see.  The assert precedes the
+                // log line on purpose: debug builds (incl. the unit
+                // harness, which installs no weston_log handler) stop
+                // here, and the panic barrier reports the message;
+                // release builds log and degrade to the queue.
+                if self.inner.in_sync_handler.get() && !self.inner.draining.get() {
+                    debug_assert!(
+                        false,
+                        "A3 violation: sync event {ev:?} arrived with the app borrow held outside a drain"
+                    );
+                    crate::log::log_line(&format!(
+                        "westonite: A3 violation: sync event {ev:?} deferred (app borrow held)"
+                    ));
+                }
                 self.enqueue(ev);
             }
         }
@@ -446,16 +474,38 @@ mod tests {
     }
 
     #[test]
-    fn sync_dispatch_delivers_immediately_and_nested_sync_defers() {
+    #[should_panic(expected = "A3 violation")]
+    fn sync_dispatch_with_borrow_held_outside_drain_is_loud() {
+        struct Nested;
+        impl ShellApp for Nested {
+            fn handle(&mut self, ctx: &Ctx, ev: Event) {
+                if matches!(ev, Event::HeadsChanged) {
+                    // A sync trampoline firing while a sync handler is
+                    // on the stack is the A3-violation shape: debug
+                    // builds must stop here (PR17-C1), not silently
+                    // change delivery order.  (Release builds log and
+                    // degrade to the queue — not testable from here.)
+                    ctx.dispatch_sync(Event::SessionActivated);
+                }
+            }
+        }
+        let ctx = fresh_ctx();
+        ctx.set_app(Box::new(Nested));
+        ctx.with_depth(|| ctx.dispatch_sync(Event::HeadsChanged));
+    }
+
+    #[test]
+    fn sync_dispatch_mid_drain_queues_quietly_into_same_drain() {
         struct Nested {
             seen: Rc<RefCell<Vec<Event>>>,
         }
         impl ShellApp for Nested {
             fn handle(&mut self, ctx: &Ctx, ev: Event) {
                 if matches!(ev, Event::HeadsChanged) {
-                    // A sync trampoline firing while the app borrow is
-                    // held (A3 violation shape) must degrade to a queued
-                    // event, not a double borrow.
+                    // The handler is running FROM the drain loop here,
+                    // so a sync dispatch finding the app borrow out is
+                    // the ordinary mid-drain case: quiet requeue,
+                    // delivered later in this same drain — no assert.
                     ctx.dispatch_sync(Event::SessionActivated);
                     assert_eq!(self.seen.borrow().len(), 0);
                 }
@@ -467,11 +517,25 @@ mod tests {
         ctx.set_app(Box::new(Nested {
             seen: Rc::clone(&seen),
         }));
-        ctx.with_depth(|| ctx.dispatch_sync(Event::HeadsChanged));
+        ctx.with_depth(|| ctx.enqueue(Event::HeadsChanged));
         assert_eq!(
             *seen.borrow(),
             vec![Event::HeadsChanged, Event::SessionActivated]
         );
+        ctx.teardown();
+    }
+
+    #[test]
+    fn sync_dispatch_before_app_installed_queues_quietly() {
+        // Builder-phase shape: no app yet.  The empty slot must stay
+        // the quiet fallback (queue for later), not trip the A3 assert
+        // — only a sync handler on the stack outside a drain is loud.
+        let ctx = fresh_ctx();
+        ctx.dispatch_sync(Event::HeadsChanged);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        ctx.set_app(Box::new(Recorder(Rc::clone(&seen))));
+        ctx.with_depth(|| {});
+        assert_eq!(*seen.borrow(), vec![Event::HeadsChanged]);
         ctx.teardown();
     }
 
