@@ -49,7 +49,7 @@ Ground rules used throughout:
 
 ## Resolved since the review
 
-The two high-priority findings were fixed after the review landed:
+Findings fixed after the review series landed:
 
 * **PR36-C1** (`--debug` authority listener never `mark_attached` —
   latent UAF at teardown): **fixed in #38**, which also added the
@@ -63,6 +63,11 @@ The two high-priority findings were fixed after the review landed:
   `drm_non_desktop_follows_the_controlling_section` unit tests (the
   only possible guard until the real-hardware R3 validation, since
   vkms never reports non-desktop heads).
+* **PR27-C1** (nested-wayland default heads numbered after the named
+  count instead of C's from-zero): **fixed in #44** — the asymmetry
+  between C's x11 and wayland loops is now a named
+  `DefaultHeadNumbering` parameter, pinned by two mixed named+default
+  e2e tests that also run against the C oracle.
 
 ## Cross-PR open items (running list)
 
@@ -91,11 +96,6 @@ still live on `main`:
   `weston_config_section_get_color` is always base-16 (unprefixed
   `ff002244` works); the Rust `parse_color` treats unprefixed values
   as decimal. Not mentioned in `docs/config-migration.md`.
-* **Nested-wayland default head numbering** (PR27-C1): C numbers
-  default heads `wayland0..` regardless of named WL-sections; the port
-  numbers them after the named count (`waylandN..`). An `[[output]]`
-  section targeting `wayland0` can silently match nothing. Verified
-  live on main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
 * **Deprecated `enable_tap` ini spelling dropped silently** (PR35-C1):

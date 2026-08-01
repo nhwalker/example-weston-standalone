@@ -42,7 +42,7 @@ is the fix).
 
 ## Findings — correctness
 
-### PR27-C1 (minor divergence, live on main): nested-wayland default head numbering differs from C when named and default heads mix
+### PR27-C1 (minor divergence, live on main): nested-wayland default head numbering differs from C when named and default heads mix — **fixed in #44**
 
 `create_windowed_heads` numbers default heads `made..count` for both
 windowed backends. That matches C's **x11** loop
@@ -59,8 +59,11 @@ rejected — the rule just sits inert, the exact failure mode the
 fail-loud rule exists to catch). Reachable only with
 `--output-count > 1` plus WL-named sections — rare, but the C
 asymmetry between the two loops is precisely the kind of quirk the
-shared helper flattened. Verified still `made..count` for both on
-current `main`.
+shared helper flattened. Was still `made..count` for both at review
+time; **fixed in #44** (the asymmetry became a named
+`DefaultHeadNumbering` parameter with both C loops cited, pinned by
+mixed named+default e2e tests for both backends, run against the C
+oracle too).
 
 ### PR27-C2 (nit): `output_count.max(1)` / `num_outputs.max(1)` silently repair what C would take literally
 
@@ -115,5 +118,6 @@ comment since the loop shapes look more equivalent than they are.
 ## Cross-references
 
 * Closes PR22-S2 (flag-table shape).
-* PR27-C1 added to the cross-PR open-items list (live on main).
+* PR27-C1 was carried on the cross-PR open-items list — since
+  **fixed in #44**.
 * The `drm-vkms-probe` throwaway job feeds #28's harness decision.
