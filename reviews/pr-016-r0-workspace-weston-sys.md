@@ -105,7 +105,7 @@ the early registration:
    the Rust frontend" bug that PR #20's review round diagnosed and fixed
    by moving registration after `weston_output_enable`.
 
-### PR16-C4 (moderate divergence): signal-handling shape differs from C, and the code comment misstates it — SIGINT semantics, SIGUSR2, missing log line
+### PR16-C4 (moderate divergence): signal-handling shape differs from C, and the code comment misstates it — SIGINT semantics, SIGUSR2, missing log line — **fixed in #45**
 
 `crates/weston/src/compositor.rs:295-314` installs SIGTERM **and
 SIGINT** as `wl_event_loop_add_signal` sources. C (`frontend/
@@ -128,11 +128,13 @@ the Rust code says "as main.c installs for SIGTERM/INT", which is not
 what main.c does — the comment actively misleads.
 
 *Status:* SIGCHLD and SIGUSR1-blocking arrive with later slices (R2a,
-R2d). Verified against current `main` (post-#36): the SIGINT-via-
-signalfd shape, the missing SIGUSR2 route, the missing `caught signal`
-log line, and the inaccurate comment **all persist** — this is a live
-divergence, not one a later PR cleaned up. Will be examined in detail at
-the #19 (R2a) review, which owns the real signal-source port.
+R2d). Verified against `main` (post-#36) at review time: the SIGINT-
+via-signalfd shape, the missing SIGUSR2 route, the missing `caught
+signal` log line, and the inaccurate comment **all persisted** through
+the whole series — since **fixed in #45**, which restores C's shape
+(SIGTERM/SIGUSR2 loop sources, sigaction-routed SIGINT re-raising
+SIGUSR2, the `caught signal %d` line) and pins it with e2e tests that
+also run against the C oracle.
 
 ### PR16-C5 (minor): partial failure installing signal sources leaks the first source and bypasses the error type
 
