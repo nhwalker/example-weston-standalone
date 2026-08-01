@@ -39,9 +39,9 @@ Ground rules used throughout:
 | [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | [pr-027](pr-027-r2c-nested.md) | 3 / 0 — probe-first porting; 1 live divergence (wayland default-head numbering) |
 | [#28](https://github.com/nhwalker/example-weston-standalone/pull/28) | DRM CI probe / VM harness | [pr-028](pr-028-drm-vm-harness.md) | 3 / 0 (nits) — exceptional test infra; kmsg-sentinel + no-privilege design; title undersells scope |
 | [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | [pr-029](pr-029-r2c-drm.md) | 3 / 0 — layoutput machinery verified faithful; **1 moderate live divergence: non-desktop head handling inverted vs C, unreachable on vkms** |
-| [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | *pending* | |
-| [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | *pending* | |
-| [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | *pending* | |
+| [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | [pr-030](pr-030-drm-max-bpc.md) | 1 / 0 — correct minimal fix; names the refusal-table drift pattern |
+| [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | [pr-031](pr-031-drop-remoting.md) | 2 / 0 — honest product decision; closes the silent-no-op sections |
+| [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | [pr-032](pr-032-drop-pipewire-output.md) | 0 / 0 — model negative-space test for the backend/plugin line |
 | [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | *pending* | |
 | [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | *pending* | |
 | [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | *pending* | |
