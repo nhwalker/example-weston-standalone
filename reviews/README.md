@@ -63,6 +63,11 @@ Findings fixed after the review series landed:
   `drm_non_desktop_follows_the_controlling_section` unit tests (the
   only possible guard until the real-hardware R3 validation, since
   vkms never reports non-desktop heads).
+* **PR17-C1** (`dispatch_sync`'s A3-violation fallback silent despite
+  the comment's "loud in debug builds" promise): **fixed in #41** —
+  the loud path keys on a sync handler being on the stack outside a
+  drain, so mid-drain requeueing and builder-phase dispatch stay
+  quiet; pinned by three unit tests (loud / mid-drain / pre-app).
 * **PR35-C1** (C's deprecated `enable_tap` spelling dropped with a
   generic unknown-field error and no migration note): **fixed in
   #43** — the key stays in the model (the `modules=` precedent) so
@@ -84,10 +89,6 @@ still live on `main`:
   flush half is documented (with rationale) at `with_shell`; the
   socket-before-flush half is acknowledged only in a smoke-script
   comment. Live divergence, low impact.
-* **Silent A3-violation fallback** (PR17-C1): `dispatch_sync`'s comment
-  promises a loud debug-build fallback when a sync event arrives with
-  the app borrow held; no assert/log exists. Verified still absent on
-  current main.
 * **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
