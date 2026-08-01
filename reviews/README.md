@@ -32,7 +32,7 @@ Ground rules used throughout:
 | [#19](https://github.com/nhwalker/example-weston-standalone/pull/19) | R2a: frontend core — config, spawn, headless | [pr-019](pr-019-r2a-frontend-core.md) | 11 / 2 — 1 major latent (no background curtain under westonite-rs, fixed #20); config-surface holes closed piecemeal through #36 |
 | [#20](https://github.com/nhwalker/example-weston-standalone/pull/20) | R2b: output policy (headless slice) | [pr-020](pr-020-r2b-output-policy.md) | 3 / 0 (nits) — best-executed slice; closes PR16-C2/C3, PR19-C1/C5; covers unmerged #21 |
 | [#22](https://github.com/nhwalker/example-weston-standalone/pull/22) | R2c: VNC backend + multi-backend | [pr-022](pr-022-r2c-vnc-multibackend.md) | 4 / 2 — strong slice; multi_backend + sigmask catches; closes PR19-C3; first framebuffer validation |
-| [#23](https://github.com/nhwalker/example-weston-standalone/pull/23) | R2c-mirror: mirror-of machinery | *pending* | |
+| [#23](https://github.com/nhwalker/example-weston-standalone/pull/23) | R2c-mirror: mirror-of machinery | [pr-023](pr-023-r2c-mirror.md) | 6 / 0 — faithful port incl. the C scale quirk; exemplary handling of the C headless-source abort |
 | [#24](https://github.com/nhwalker/example-weston-standalone/pull/24) | R2d: xwayland | *pending* | |
 | [#25](https://github.com/nhwalker/example-weston-standalone/pull/25) | R2e: screenshooter + wcap recorder | *pending* | |
 | [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | *pending* | |
