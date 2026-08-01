@@ -35,7 +35,7 @@ ACTUAL=$(bindgen --version)
 }
 
 MODVERSION=$(pkg-config --modversion libweston-14)
-CFLAGS=$(pkg-config --cflags libweston-14 wayland-server pixman-1)
+CFLAGS=$(pkg-config --cflags libweston-14 wayland-server pixman-1 libinput libevdev)
 
 TMP=$(mktemp)
 trap 'rm -f "$TMP"' EXIT
@@ -48,6 +48,9 @@ bindgen "$SYS/wrapper.h" \
     --allowlist-item 'wsys_.*' \
     --allowlist-item 'pixman_.*' \
     --allowlist-item 'xkb_.*' \
+    --allowlist-item 'libinput_.*|LIBINPUT_.*' \
+    --allowlist-item 'libevdev_event_code_from_name' \
+    --allowlist-item 'EV_KEY' \
     --blocklist-function 'weston_vlog.*' \
     --blocklist-function 'weston_log_scope_vprintf' \
     --blocklist-function 'weston_log_set_handler' \

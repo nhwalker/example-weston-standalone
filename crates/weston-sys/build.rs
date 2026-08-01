@@ -13,6 +13,16 @@ fn main() {
     let wayland = pkg_config::Config::new()
         .probe("wayland-server")
         .expect("wayland-server.pc not found");
+    // libinput/libevdev: the [libinput] device-config hook (§3, R2c-input).
+    // libweston links libinput itself but only forward-declares
+    // `struct libinput_device`, so the fence needs the real headers — and
+    // the direct link, since we call libinput_device_config_* ourselves.
+    let libinput = pkg_config::Config::new()
+        .probe("libinput")
+        .expect("libinput.pc not found — build inside the westonite build container");
+    let libevdev = pkg_config::Config::new()
+        .probe("libevdev")
+        .expect("libevdev.pc not found — build inside the westonite build container");
 
     // Version tripwire (plan §6, risk R-C): the committed bindings.rs
     // records the libweston version it was generated from; a pkg-config
@@ -53,7 +63,13 @@ fn main() {
     if std::env::var_os("CARGO_FEATURE_TESTSUPPORT").is_some() {
         cc.file("shim/testsupport.c");
     }
-    for inc in libweston.include_paths.iter().chain(&wayland.include_paths) {
+    for inc in libweston
+        .include_paths
+        .iter()
+        .chain(&wayland.include_paths)
+        .chain(&libinput.include_paths)
+        .chain(&libevdev.include_paths)
+    {
         cc.include(inc);
     }
     cc.warnings(true).compile("weston-sys-shim");
