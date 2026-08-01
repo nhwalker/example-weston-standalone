@@ -20,6 +20,86 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2f-logging (2026-08-01)** — the log-scope/subscriber stack, and
+  with it the last two flags that were still warn-and-ignore.  Those
+  were the only remaining exceptions to the fail-loud rule; there are
+  none now.
+  - Ported: `weston_log_ctx_add_log_scope("log")`, the file subscriber,
+    the flight recorder and its Super+D dump binding, and the
+    `vlog`/`vlog_continue` pair (main.c:214/241, 4380, 4499-4534,
+    4633).  `--logger-scopes` / `-l` and `--flight-rec-scopes` / `-f`
+    now do what they say; `--wait-for-debugger` (and `[core]
+    wait-for-debugger`, which was missing from the config model) logs
+    the pid and raises SIGSTOP.
+  - **The Rust frontend's log was not going through libweston at all.**
+    It formatted in the shim and wrote to a Rust `File`, which is why
+    its lines had no timestamps where the C oracle's did — a divergence
+    nobody had noticed because every test matched with `re.search`.
+    Routing through the scope fixes the format *and* is what makes
+    subscribers possible: a log file, a flight recorder, or both, is
+    libweston's decision to make, not ours.
+  - Ownership moved: the log context now belongs to the **frontend**,
+    not to `Compositor`.  C creates it before the first log line and
+    destroys it after the display (main.c:4499/4822), and the
+    subscribers have to outlive the compositor that logs into them.
+    `CompositorBuilder::with_log_context` borrows it; `build()` fails
+    without one, because C has no path to a compositor without a log
+    context either.
+  - Teardown order is main.c:4817-4823 exactly — scope, subscribers,
+    context, file.  Getting it wrong is not silent: libweston prints
+    "debug scope 'log' has not been destroyed" and leaks it, which is
+    how the valgrind smoke caught the first attempt.
+  - Two values C distinguishes and the model now does too: an *absent*
+    `--flight-rec-scopes` means the default list ("log,drm-backend"),
+    an *empty* one disables the recorder.
+  - All six new e2e tests are shared with the C oracle rather than
+    `toml_only`: this is libweston's own machinery and both frontends
+    wire it identically, so the oracle passing them is the parity
+    proof.
+
+- **R2c-input (2026-08-01)** — `[libinput]`, the last item in R2's
+  config surface, in two slices: the weston-sys bindings first, then
+  the port.
+  - Ported: `configure_input_device` and its `configure_input_device_
+    accel` / `_scroll` helpers (main.c:2131-2330), reached through
+    `weston_drm_backend_config.configure_device` — DRM is the only
+    backend with that field, which is why the section is inert
+    everywhere else (in C too).  Parsing and validation live in the
+    frontend (`build_input_config`), application per device in
+    `crates/weston/src/libinput.rs`.
+  - **`disable-while-typing` was missing from the config model
+    entirely.** C reads it (main.c:2294), so it was unreachable —
+    the same class of bug `allow_hdcp` was in R2c-color.
+  - **Divergence, deliberate:** where C warns per device and leaves the
+    key inert, the Rust frontend refuses at startup — an unknown
+    `accel-profile` or `scroll-method`, a `scroll-button` libevdev does
+    not know, an `accel-speed` outside -1..=1, and `scroll-button`
+    without `scroll-method = "button"` (C reads it only in that
+    combination and discards it otherwise).  Unconditional, not gated
+    on DRM: none of these values could work on any backend, so
+    rejecting them cannot mask a config that would have run.  The
+    *valid* keys stay inert without DRM, matching C.
+  - **Not a divergence:** capability gating.  A device with no tap
+    fingers, no rotation, no natural scroll is skipped in silence, per
+    device, exactly as C does — that is a runtime fact about the
+    hardware, not a mistake in the config, and turning it into an error
+    would make `[libinput]` unusable on any mixed set of devices.
+  - Still fail-loud: `touchscreen-calibrator` / `calibration-helper`.
+    They are a different feature from the per-device settings —
+    libweston's `weston_touch_calibration` protocol plus a helper C
+    runs through `system()` (main.c:1075/1214) — and they are *not*
+    DRM-bound, so that refusal is unconditional.  This is now what
+    `test_unported_feature_fails_loudly` points at.
+  - Harness: the DRM VM gained a virtio keyboard and mouse, a udevd
+    run, and `-vga none`.  udevd because libinput's udev backend
+    enumerates with `add_match_property(ID_INPUT, 1)` and nothing else
+    sets that property — without it libinput finds no devices and the
+    hook never fires, so the tests would have passed vacuously.  The
+    guest init asserts a non-zero tagged-device count for that reason.
+    `-vga none` because udevd's coldplug then modprobes q35's emulated
+    Bochs VGA, and weston picked that card over vkms (caught by every
+    mode assertion failing against a connector called `Virtual-2`).
+
 - **R2c-color (2026-07-31)** — colour management: `[core]
   color-management` and the `[[output]]` colour keys, deferred since
   R2b because the DRM output path did not exist yet.

@@ -36,15 +36,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Logging first: handlers, then the --log file, so every later
-    // failure (config errors included) reaches the right sink.
+    // Logging first, in C's order (main.c:4499): the fallback handlers
+    // so the next few lines can fail loudly, then the real log context
+    // -- scope, log file, subscribers -- before the banner.
     weston::log::install_stderr_handlers();
-    if let Some(path) = &cli.log
-        && let Err(e) = weston::log::set_log_file(std::path::Path::new(path))
-    {
-        // C weston_log_file_open falls back to stderr on failure.
-        eprintln!("westonite: cannot open log file '{path}': {e}; logging to stderr");
-    }
+    let log = match weston::log::LogContext::new(&weston::log::LogSetup {
+        file: cli.log.as_deref().map(std::path::PathBuf::from),
+        logger_scopes: split_scopes(cli.logger_scopes.as_deref()),
+        flight_rec_scopes: cli
+            .flight_rec_scopes
+            .as_deref()
+            .map(|v| split_scopes(Some(v))),
+    }) {
+        Ok(l) => l,
+        // C exits here too (main.c:4501/4509): with no log context and
+        // no log file there is nowhere for the session's diagnostics to
+        // go, and starting anyway would hide every later failure.
+        Err(e) => return fatal(&e.to_string()),
+    };
 
     weston::log::message(&format!(
         "westonite {} (Rust frontend, weston 14 based)",
@@ -52,6 +61,17 @@ fn main() -> ExitCode {
     ));
     let cmdline: Vec<String> = std::env::args().collect();
     weston::log::message(&format!("Command line: {}", cmdline.join(" ")));
+    // C main.c:4534, and in the same place: whether the in-memory
+    // recorder is running is the first thing you want to know when
+    // reading a log from a session that went wrong.
+    weston::log::message(&format!(
+        "Flight recorder: {}",
+        if log.flight_rec_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
 
     if let Some(code) = verify_xdg_runtime_dir() {
         return code;
@@ -78,8 +98,19 @@ fn main() -> ExitCode {
         return code;
     }
 
+    // C main.c:4589, and in the same place: after the config is loaded
+    // (so `[core] wait-for-debugger` counts) but before anything is
+    // created, which is the point of stopping at all.
+    if settings.wait_for_debugger {
+        weston::wait_for_debugger();
+    }
+
     let policy = match build_output_policy(&settings) {
         Ok(p) => p,
+        Err(msg) => return fatal(&msg),
+    };
+    let input_config = match build_input_config(&settings.config.libinput) {
+        Ok(c) => c,
         Err(msg) => return fatal(&msg),
     };
     let renderer = match settings.renderer {
@@ -100,6 +131,7 @@ fn main() -> ExitCode {
 
     let kb = &settings.config.keyboard;
     let mut builder = weston::CompositorBuilder::new()
+        .with_log_context(&log)
         .renderer(renderer)
         .with_output_policy(policy)
         .with_keyboard(weston::KeyboardConfig {
@@ -178,6 +210,7 @@ fn main() -> ExitCode {
                 use_pixman_shadow: settings.config.core.pixman_shadow.unwrap_or(true),
                 current_mode: settings.drm_current_mode,
                 continue_without_input: settings.continue_without_input,
+                input: input_config.clone(),
             }),
             // reject_unported() has already refused rdp, a permanent
             // product decision — see there.
@@ -431,19 +464,34 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             return Some(unhandled_option(flag));
         }
     }
-    // [libinput] reaches libinput through the DRM backend's
-    // `configure_device` hook and nowhere else — C's
-    // configure_input_device is wired only into
-    // weston_drm_backend_config (main.c:3425).  That hook is not ported
-    // (weston-sys has no libinput bindings; binding libinput's
-    // device-config API is its own slice), so with DRM loaded these
-    // keys would silently do nothing.  Without DRM they do nothing in
-    // C either, which is why the refusal is conditional.
-    if has_drm && settings.config.libinput != Default::default() {
+    // [libinput] touchscreen-calibrator is not the device-config hook
+    // (that is ported, see build_input_config); it is the separate
+    // weston_touch_calibration protocol, enabled from
+    // weston_compositor_init_config and saved through a helper C runs
+    // with system().  Unported, so requesting it is an error.  Not
+    // gated on DRM: C enables the calibrator whatever the backend.
+    if settings
+        .config
+        .libinput
+        .touchscreen_calibrator
+        .unwrap_or(false)
+    {
         return Some(fatal(
-            "[libinput] is not yet ported to the Rust frontend (it applies to the drm \
-             backend only, through a hook that needs libinput bindings); use the C \
-             westonite, or remove the section",
+            "[libinput] touchscreen-calibrator is not yet ported to the Rust frontend \
+             (the weston_touch_calibration protocol is a separate feature from the \
+             per-device libinput settings); use the C westonite",
+        ));
+    }
+    if settings
+        .config
+        .libinput
+        .calibration_helper
+        .as_deref()
+        .is_some_and(|h| !h.is_empty())
+    {
+        return Some(fatal(
+            "[libinput] calibration-helper is only consulted by the unported \
+             touchscreen-calibrator; use the C westonite",
         ));
     }
     if !settings.modules.is_empty() {
@@ -540,17 +588,21 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             )));
         }
     }
-    if !settings.logger_scopes.is_empty() || !settings.flight_rec_scopes.is_empty() {
-        weston::log::message(
-            "warning: log scope selection is not yet ported to the Rust frontend; ignoring",
-        );
-    }
-    if settings.wait_for_debugger {
-        weston::log::message(
-            "warning: --wait-for-debugger is not yet ported to the Rust frontend; ignoring",
-        );
-    }
     None
+}
+
+/// `--logger-scopes` / `--flight-rec-scopes`: C's comma list.
+///
+/// Takes a nested Option so the caller can keep the distinction C keeps
+/// for the flight recorder: the flag absent (default scopes) versus the
+/// flag given empty (recorder off).
+fn split_scopes(v: Option<&str>) -> Vec<String> {
+    v.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// C main.c's leftover-argv contract (`fatal: unhandled option: %s`),
@@ -559,6 +611,72 @@ fn unhandled_option(flag: &str) -> ExitCode {
     fatal(&format!(
         "unhandled option: {flag} (not consumed by any loaded backend)"
     ))
+}
+
+/// Resolve `[libinput]` into the typed config the DRM backend's
+/// `configure_device` hook applies per device.
+///
+/// Where C warns and carries on with the key silently inert — an
+/// unknown `accel-profile` or `scroll-method`, a `scroll-button` name
+/// libevdev does not know, an `accel-speed` outside -1..=1 — this is a
+/// startup error instead: a setting that was asked for and does nothing
+/// is exactly the failure mode the migration refuses to reproduce.
+/// Capability gating is *not* validated here, because "this touchpad
+/// cannot rotate" is a runtime fact about the device, not a mistake in
+/// the config; those keys are skipped per device, as in C.
+fn build_input_config(li: &westonite_config::Libinput) -> Result<weston::InputConfig, String> {
+    let accel_profile = match &li.accel_profile {
+        Some(p) => Some(weston::AccelProfile::parse(p).ok_or_else(|| {
+            format!(
+                "[libinput] '{p}' is not a valid accel-profile. Try one of: {}",
+                weston::AccelProfile::NAMES.join(" ")
+            )
+        })?),
+        None => None,
+    };
+    if let Some(s) = li.accel_speed
+        && !(-1.0..=1.0).contains(&s)
+    {
+        return Err(format!(
+            "[libinput] accel-speed {s} is out of range (-1.0 to 1.0)"
+        ));
+    }
+    let scroll_method = match &li.scroll_method {
+        Some(m) => Some(weston::ScrollMethod::parse(m).ok_or_else(|| {
+            format!(
+                "[libinput] '{m}' is not a valid scroll-method. Try one of: {}",
+                weston::ScrollMethod::NAMES.join(" ")
+            )
+        })?),
+        None => None,
+    };
+    let scroll_button = match &li.scroll_button {
+        Some(b) => Some(weston::ScrollButton::parse(b).ok_or_else(|| {
+            format!("[libinput] '{b}' is not an evdev button name (e.g. BTN_RIGHT)")
+        })?),
+        None => None,
+    };
+    // C reads scroll-button only under scroll-method=button and
+    // discards it otherwise; say so rather than accepting it inert.
+    if scroll_button.is_some() && scroll_method != Some(weston::ScrollMethod::Button) {
+        return Err(
+            "[libinput] scroll-button only applies with scroll-method = \"button\"".to_string(),
+        );
+    }
+    Ok(weston::InputConfig {
+        enable_tap: li.enable_tap,
+        tap_and_drag: li.tap_and_drag,
+        tap_and_drag_lock: li.tap_and_drag_lock,
+        disable_while_typing: li.disable_while_typing,
+        middle_button_emulation: li.middle_button_emulation,
+        left_handed: li.left_handed,
+        rotation: li.rotation,
+        accel_profile,
+        accel_speed: li.accel_speed,
+        natural_scroll: li.natural_scroll,
+        scroll_method,
+        scroll_button,
+    })
 }
 
 /// The colour slice of one `[[output]]`, with C's validation.

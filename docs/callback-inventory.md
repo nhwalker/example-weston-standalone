@@ -130,7 +130,9 @@ plain deferred notifications.  Field count: 7 + 3 + 19 = 29.)*
 
 | Handler | Via | Tier | Status |
 |---|---|---|---|
-| `vlog` / `vlog_continue` | shim `wsys_install_log_handlers` → `wsys_rust_log_sink` | sync, no app borrow (writes stderr, or the `--log` file since R2a; scope subscription/flight recorder not yet ported) | R0 (file sink R2a) |
+| `vlog` / `vlog_continue` | shim `wsys_install_log_handlers(scope)` (C main.c:214/241) | sync, no app borrow — timestamps the line and prints it into the **"log" scope**, where libweston's subscribers (the `--log` file, the flight recorder) take it | R0, rewritten at R2f |
+| *(same pair, scope-free fallback)* | `wsys_install_log_handlers(NULL)` → `wsys_rust_log_sink` | sync, no app borrow (writes the `--log` file or stderr directly) | Used before a `LogContext` exists and after it is dropped — the R0 smoke binary, the unit harness, a panic-barrier line during teardown. C has no equivalent and drops those lines |
+| `flight_rec_binding` (C `flight_rec_key_binding_handler`, main.c:4371) | `weston_compositor_add_debug_binding(KEY_D, …)` in `build()`, only when a recorder exists | sync, no app borrow — dumps the ring buffer through weston_log, so it takes the A4 wrap when a `Ctx` exists | R2f. The one callback in the tree with a real `data` payload (the subscriber) instead of `Ctx::current`: C passes it the same way, and the pointer belongs to the frontend's `LogContext`, which outlives every binding |
 
 ## 6. Event-loop signal sources (fd callbacks, not `wl_listener`s — C main.c `signals[]`)
 
@@ -156,3 +158,9 @@ threads inherit it.
 Maintenance rule: growing the sync tier or adding a callback without a
 row here fails review; the R1/R2 porting PRs update the Status column
 as rows go live.
+
+## 8. Backend-config callbacks (R2c-input — C main.c, installed into a `weston_*_backend_config`; no `wl_listener`s, so outside the §1 counts)
+
+| Callback | Registered via | Tier | Notes / hazards | Status |
+|---|---|---|---|---|
+| `configure_device` (C `configure_input_device`, main.c:2239) | `weston_drm_backend_config.configure_device` (`compositor.rs` `load_drm`; DRM is the only backend with the field) | sync, no app borrow (reads the `Ctx`-held `InputConfig` and calls libinput device-config setters — wrapper state only) | Called on C's own schedule: once per device already present *during* `weston_compositor_load_backend`, and again for every hotplug, so it needs the full trampoline shape (panic barrier, `Ctx::current`, A4 depth wrap) even though it dispatches nothing. Installed unconditionally, as C does, so the per-device log line appears whether or not `[libinput]` exists. There is no user-data argument on this hook — the config reaches it through `CtxInner::input_config`, which `load_drm` must populate **before** the load call | R2c-input |

@@ -16,7 +16,21 @@ impl ShellApp for Smoke {
 }
 
 fn main() -> std::process::ExitCode {
+    // A compositor needs a log context, exactly as in C -- and it has
+    // to outlive the compositor, so it is created first and dropped
+    // last (main.c order).  Default setup: stderr, the "log" scope, and
+    // the default flight recorder.
+    weston::log::install_stderr_handlers();
+    let log = match weston::log::LogContext::new(&weston::log::LogSetup::default()) {
+        Ok(l) => l,
+        Err(e) => {
+            eprintln!("westonite-r0: log setup failed: {e}");
+            return std::process::ExitCode::FAILURE;
+        }
+    };
+
     let compositor = match CompositorBuilder::headless()
+        .with_log_context(&log)
         .renderer(weston::RendererKind::Noop)
         .output_size(1024, 768)
         .with_socket()

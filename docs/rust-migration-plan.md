@@ -984,10 +984,37 @@ halves can be mixed and smoke-tested at every phase boundary.
   `eotf-mode`, `colorimetry-mode`, `color-characteristics` (with C's
   entirely-or-not-at-all group rule) and `allow-hdcp`, which had been
   missing from the config model outright.  `vrr-mode` and `max-cll`
-  were removed instead: neither is read anywhere in 14.0.1.  Remaining
-  in R2c: `configure_input_device` — the `[libinput]` hook, which needs
-  libinput bindings weston-sys does not have and is refused fail-loud
-  meanwhile.  **Virtual-output probe (2026-07-31)**, run with the C
+  were removed instead: neither is read anywhere in 14.0.1.
+  *R2c-input* ✅ *(done — see PROVENANCE.md log)*: `[libinput]` —
+  `configure_input_device` and its `_accel`/`_scroll` helpers, reached
+  through the DRM backend's `configure_device` hook (the only backend
+  that has one).  Split as usual: parsing and validation in the
+  frontend at startup, application per device in the fence.  Where C
+  warns per device and leaves a bad `accel-profile`/`scroll-method`/
+  `scroll-button`/out-of-range `accel-speed` silently inert, the Rust
+  frontend refuses at startup; *capability* gating stays silent, as in
+  C, because "this device cannot rotate" is a runtime fact rather than
+  a config mistake.  `disable-while-typing` was missing from the config
+  model outright.  `touchscreen-calibrator` / `calibration-helper` are
+  a different feature (the `weston_touch_calibration` protocol plus a
+  `system()` helper, enabled backend-independently) and stay fail-loud.
+  The VM harness grew a virtio keyboard and mouse for this, plus a
+  udevd run — libinput's udev backend enumerates on the `ID_INPUT`
+  property, which only udevd sets — and `-vga none`, since udevd's
+  coldplug otherwise modprobes q35's emulated Bochs VGA and weston
+  picks that card over vkms.
+  *R2f-logging* ✅ *(done — see PROVENANCE.md log)*: the weston-log
+  stack — the `"log"` scope, the file subscriber, the flight recorder
+  and its Super+D dump binding — plus the two flags that were still
+  *warn-and-ignore*, `--logger-scopes` and `--wait-for-debugger`.  With
+  those ported there are **no remaining exceptions to the fail-loud
+  rule**.  The Rust frontend had been bypassing libweston's log
+  machinery entirely (formatting in the shim, writing to a Rust
+  `File`), which is why its lines carried no timestamps; routing
+  through the scope fixes that and is what makes subscribers possible
+  at all.  The log context moved from `Compositor` to the **frontend**,
+  since C creates it before the first log line and destroys it after
+  the display.  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM
   backend (`load_additional_modules`, main.c:1066), so the VM harness
   is the only place they can run at all.  Remoting *works there today*

@@ -10,8 +10,12 @@
 //! configurator at R2; the primitives this file exercises are the R0
 //! deliverable.
 
+/// evdev KEY_D — the flight recorder's dump key (C main.c:4634).
+const KEY_D: u32 = 32;
+
 use std::ffi::{CString, c_int, c_void};
 use std::ptr::NonNull;
+use std::rc::Rc;
 
 use crate::ctx::Ctx;
 use crate::events::Event;
@@ -99,6 +103,11 @@ pub struct DrmOptions {
     /// C --continue-without-input: clears compositor->require_input, so
     /// a machine with no keyboard or mouse still starts.
     pub continue_without_input: bool,
+    /// C weston.ini `[libinput]`, applied per device through the
+    /// backend's `configure_device` hook (crate::libinput).  DRM is the
+    /// only backend that has that hook, which is why the section rides
+    /// along here rather than on the builder.
+    pub input: crate::libinput::InputConfig,
 }
 
 /// X11 backend options (C load_x11_backend's CLI slice, main.c:3947).
@@ -231,6 +240,14 @@ pub struct CompositorBuilder {
     require_outputs: crate::layoutput::RequireOutputs,
     /// C `[core] color-management` (main.c:1203).
     color_management: bool,
+    /// The frontend's log context, borrowed for
+    /// `weston_compositor_create`.  Required: `build()` fails without
+    /// one, because C has no path that reaches a compositor without a
+    /// log context either.
+    log_ctx: Option<*mut weston_sys::weston_log_context>,
+    /// The flight-recorder subscriber, when one is running: C hangs the
+    /// Super+D dump binding off it (main.c:4633).
+    flight_rec: *mut weston_sys::weston_log_subscriber,
 }
 
 impl Default for CompositorBuilder {
@@ -257,7 +274,18 @@ impl CompositorBuilder {
             xwayland: None,
             require_outputs: crate::layoutput::RequireOutputs::default(),
             color_management: false,
+            log_ctx: None,
+            flight_rec: std::ptr::null_mut(),
         }
+    }
+
+    /// Hand the builder the frontend's [`crate::log::LogContext`].
+    /// Borrowed, not consumed: it must outlive the compositor (main.c
+    /// destroys it after the display), so the frontend keeps it.
+    pub fn with_log_context(mut self, log: &crate::log::LogContext) -> CompositorBuilder {
+        self.log_ctx = Some(log.as_ptr());
+        self.flight_rec = log.flight_rec_ptr();
+        self
     }
 
     /// Load the xwayland module at build() and lazily spawn `xserver`
@@ -377,7 +405,13 @@ impl CompositorBuilder {
     }
 
     pub fn build(self) -> Result<Compositor, CompositorError> {
-        log::install_stderr_handlers();
+        // NOT install_stderr_handlers() any more: by the time build()
+        // runs, the frontend's LogContext has installed the
+        // scope-aware pair, and re-installing here would silently
+        // disconnect the log file and the flight recorder.  The
+        // fallback pair is installed by the frontend before its first
+        // line instead (and by the unit harness for tests).
+        //
         // Checked before anything is created: a builder with no backend
         // can never produce a running compositor, and failing here
         // keeps the error off the teardown paths below.
@@ -394,9 +428,11 @@ impl CompositorBuilder {
         };
         ctx.inner.display.set(display.as_ptr());
 
-        // SAFETY: constructor; owned by Compositor, destroyed in Drop
-        // after the weston_compositor (main.c teardown order).
-        let log_ctx = unsafe { weston_sys::weston_log_ctx_create() };
+        // Borrowed, not created here: the frontend owns the log context
+        // because C does (main.c:4499 -- it must exist before the very
+        // first log line, which is long before any compositor).  It
+        // outlives this Compositor, so Drop no longer destroys it.
+        let log_ctx = self.log_ctx.map_or(std::ptr::null_mut(), |c| c);
         if log_ctx.is_null() {
             // SAFETY: display was just created and has no clients.
             unsafe { weston_sys::wl_display_destroy(display.as_ptr()) };
@@ -416,9 +452,9 @@ impl CompositorBuilder {
             )
         };
         if compositor.is_null() {
-            // SAFETY: reverse creation order; nothing else refers to them.
+            // SAFETY: reverse creation order; nothing else refers to
+            // the display.  The log context belongs to the frontend.
             unsafe {
-                weston_sys::weston_log_ctx_destroy(log_ctx);
                 weston_sys::wl_display_destroy(display.as_ptr());
             }
             ctx.teardown();
@@ -465,7 +501,6 @@ impl CompositorBuilder {
             // SAFETY: reverse creation order, same as the paths above.
             unsafe {
                 weston_sys::weston_compositor_destroy(compositor);
-                weston_sys::weston_log_ctx_destroy(log_ctx);
                 weston_sys::wl_display_destroy(display.as_ptr());
             }
             ctx.teardown();
@@ -510,7 +545,6 @@ impl CompositorBuilder {
         let mut comp = Compositor {
             ctx: ctx.clone(),
             policy_names: self.policy.rules.iter().map(|r| r.name.clone()).collect(),
-            log_ctx,
             heads_changed: None,
             frontend_listeners: Vec::new(),
             signal_sources: Vec::new(),
@@ -633,6 +667,24 @@ impl CompositorBuilder {
             return Err(CompositorError::BackendLoad);
         }
 
+        // C main.c:4633: the recorder's dump binding, only when a
+        // recorder exists.  A *debug* binding, so it sits behind
+        // libweston's debug-binding modifier and cannot collide with
+        // anything a client or the shell binds.
+        if !self.flight_rec.is_null() {
+            // SAFETY: compositor live; the subscriber belongs to the
+            // frontend's LogContext, which outlives the compositor, so
+            // the data pointer stays valid for every firing.
+            unsafe {
+                weston_sys::weston_compositor_add_debug_binding(
+                    compositor,
+                    KEY_D,
+                    Some(crate::log::flight_rec_binding),
+                    self.flight_rec.cast(),
+                );
+            }
+        }
+
         let has_shell = self.shell.is_some();
         #[cfg(feature = "hybrid-r1")]
         if let Some((bg, factory)) = self.shell
@@ -718,7 +770,6 @@ pub struct Compositor {
     /// filter them by prefix to decide which heads to create, as C
     /// walks the config sections (load_x11_backend / load_wayland_backend).
     policy_names: Vec<String>,
-    log_ctx: *mut weston_sys::weston_log_context,
     heads_changed: Option<Listener>,
     /// Frontend listeners on compositor-embedded signals (mirror L6 +
     /// L2): detached in Drop before weston_compositor_destroy.
@@ -1155,6 +1206,13 @@ impl Compositor {
         config.gbm_format = ptr(&gbm);
         config.pageflip_timeout = opts.pageflip_timeout;
         config.use_pixman_shadow = opts.use_pixman_shadow;
+        // C installs configure_device unconditionally (main.c:3425), so
+        // the per-device log line appears on every DRM start whether or
+        // not weston.ini has a [libinput] section.  The hook is called
+        // during the load below for devices already present, so the
+        // config must be in the context first.
+        *self.ctx.inner.input_config.borrow_mut() = Rc::new(opts.input.clone());
+        config.configure_device = Some(crate::libinput::tramp_configure_device);
 
         // C: `if (without_input) c->require_input = !without_input;` --
         // only ever clears the flag, never sets it (main.c:3419).
@@ -1347,11 +1405,11 @@ impl Drop for Compositor {
             });
         }
         self.ctx.teardown();
-        // SAFETY: after compositor destroy; order per main.c.
+        // SAFETY: after compositor destroy; order per main.c.  The log
+        // context is NOT destroyed here -- the frontend owns it and
+        // outlives us, exactly as main.c destroys it after the display
+        // (main.c:4819).
         unsafe {
-            if !self.log_ctx.is_null() {
-                weston_sys::weston_log_ctx_destroy(self.log_ctx);
-            }
             if !display.is_null() {
                 weston_sys::wl_display_destroy(display);
             }

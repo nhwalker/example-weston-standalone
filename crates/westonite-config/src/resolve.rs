@@ -96,8 +96,7 @@ pub struct Settings {
     pub socket: Option<String>,
     pub log_file: Option<PathBuf>,
     pub debug_protocol: bool,
-    pub logger_scopes: Vec<String>,
-    pub flight_rec_scopes: Vec<String>,
+
     pub wait_for_debugger: bool,
     pub xwayland: bool,
     pub idle_time: Option<u32>,
@@ -416,17 +415,10 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         socket: cli.socket.clone(),
         log_file: cli.log.clone().map(PathBuf::from),
         debug_protocol: cli.debug,
-        logger_scopes: cli
-            .logger_scopes
-            .as_deref()
-            .map(split_list)
-            .unwrap_or_default(),
-        flight_rec_scopes: cli
-            .flight_rec_scopes
-            .as_deref()
-            .map(split_list)
-            .unwrap_or_default(),
-        wait_for_debugger: cli.wait_for_debugger,
+        // C main.c:4585: the flag wins, and only when it is absent is
+        // the config consulted -- so `[core] wait-for-debugger = false`
+        // cannot cancel `--wait-for-debugger`.
+        wait_for_debugger: cli.wait_for_debugger || config.core.wait_for_debugger,
         xwayland: cli.xwayland || config.core.xwayland,
         idle_time: cli.idle_time.or(config.core.idle_time),
         modules,

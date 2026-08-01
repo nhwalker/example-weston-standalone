@@ -38,6 +38,14 @@ RUN dnf -y install qemu-kvm e2fsprogs \
 #   weston-libs        -- libweston 14 + drm-backend.so + gl-renderer.so
 #   seatd              -- EL10 libseat has only logind and seatd backends,
 #                         and logind needs a session bus we have not got
+#   systemd-udev       -- udevd + the input rules.  NOT for device nodes
+#                         (devtmpfs makes those): libinput's udev backend
+#                         enumerates with add_match_property(ID_INPUT,1),
+#                         a property only udevd's input_id builtin sets,
+#                         so without a udevd run libinput finds no devices
+#                         at all and the [libinput] hook never fires.
+#                         Pulls systemd in, but nothing makes it PID 1 --
+#                         the guest still boots init=/init.sh.
 #   python3-pytest     -- the e2e suite runs INSIDE the guest
 #   wayland-utils      -- wayland-info, the suite's do-you-really-work probe
 # install_weak_deps=False keeps this near 900 MB instead of several GB.
@@ -55,6 +63,7 @@ RUN mkdir -p /vm/rootfs \
             e2fsprogs \
             weston-libs \
             seatd \
+            systemd-udev \
             wayland-utils \
             python3-pytest \
     && rm -rf /vm/rootfs/var/cache/dnf/* /vm/rootfs/var/lib/dnf/history* \

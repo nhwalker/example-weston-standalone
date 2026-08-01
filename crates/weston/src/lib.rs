@@ -43,6 +43,7 @@ pub mod compositor;
 pub mod events;
 pub mod host;
 pub mod ids;
+pub mod libinput;
 pub mod log;
 pub mod output_policy;
 
@@ -71,6 +72,8 @@ pub use events::{ActivateVia, Event};
 pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, ShellHost};
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
 pub use layoutput::RequireOutputs;
+pub use libinput::{AccelProfile, InputConfig, ScrollButton, ScrollMethod};
+pub use log::wait_for_debugger;
 pub use output_policy::{ColorCharacteristics, ColorSetup, ColorimetryMode, EotfMode};
 pub use output_policy::{
     OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform, VncOutputSetup,

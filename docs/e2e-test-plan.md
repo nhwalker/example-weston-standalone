@@ -157,6 +157,17 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | config-env | `WESTON_CONFIG_FILE` exported to child clients (observed via autolaunch env dump) |
 | clean-shutdown | SIGTERM and SIGINT → exit 0, sockets removed (implicitly re-checked by every teardown) |
 | log-file | `--log` creates/appends, timestamps present |
+| log-timestamps *(R2f)* | every line carries `[hh:mm:ss.mmm]`, continuation lines deliberately do not — the parity check that the Rust frontend goes through libweston's `"log"` scope rather than writing the file itself |
+| flight-recorder-default *(R2f)* | absent `--flight-rec-scopes` starts the recorder from C's default list; an explicitly **empty** one disables it (absent ≠ empty) |
+| logger-scopes *(R2f)* | `--logger-scopes=drm-backend` *replaces* the logger's `"log"` subscription, so ordinary output leaves the log file while the compositor still starts; `--logger-scopes=log` is the default spelled out and keeps it |
+| wait-for-debugger *(R2f)* | `--wait-for-debugger` logs the pid and SIGSTOPs — asserted as process state `T` with no socket yet created, then resumed with SIGCONT |
+
+The four R2f rows are **shared with the C oracle**, not `toml_only`:
+this is libweston's own log machinery and both frontends wire it the
+same way, so the oracle passing them is the parity proof.  Note
+`logger-scopes` is testable only because the fixture waits on the
+*wayland socket* rather than on a log line — a readiness check that
+depends on logging could not observe logging being redirected.
 
 ### 2.2 Frontend: child processes & autolaunch
 
@@ -318,12 +329,36 @@ vkms presents a single connected connector, `Virtual-1`, preferred mode
 | mode-off | `mode=off` prunes the head — it never appears to clients, and the "supposed to be pruned" assert is never reached |
 | drm-device | `--drm-device=card0` selects the card |
 | bad-drm-device | a device that does not exist is a startup error, not a silent fallback to the first card |
+| libinput-hook-runs | the `configure_device` hook runs for every device even with no `[libinput]` section (C installs it unconditionally) — and with no section it touches nothing |
+| libinput-pointer-settings | every pointer-side key the mouse supports lands, in C's order, checked as an exact ordered list |
+| libinput-capability-gating | `enable-tap` on devices with no tap fingers, and `left-handed` on a keyboard, are skipped **silently and per device** |
 
 The verdict comes from a `DRMVM-EXIT=<n>` sentinel on the guest
 console, never from qemu's exit status: qemu exits 0 for a guest that
 panicked, hung to the timeout, or never ran the tests at all.  JUnit XML
 and the failure artifacts come back out of a second disk via `debugfs
 dump`/`rdump`, so nothing on the host side needs to mount anything.
+
+Input, added at R2c-input: the `[libinput]` section reaches libinput
+only through this backend's `configure_device` hook, so this is the
+only place it can be tested at all.  The harness therefore attaches a
+`virtio-keyboard-pci` and a `virtio-mouse-pci` (a *relative* pointer —
+`virtio-tablet-pci` is absolute and libinput offers it a smaller config
+surface), and the guest runs **udevd**: libinput's udev backend
+enumerates with `udev_enumerate_add_match_property(e, "ID_INPUT", "1")`
+and nothing but udevd's `input_id` builtin sets that property, so
+without it libinput sees no devices and the tests would pass vacuously.
+The guest init asserts a non-zero tagged-device count rather than let
+that happen quietly.  q35 also brings PS/2 emulations and an ACPI power
+button along, so every assertion is scoped to a *named* device.
+
+Second-order consequence, worth recording because it cost a full run:
+once udevd coldplugs, it modprobes q35's emulated Bochs VGA, which
+registers a second DRM card — and weston picked *that* one over vkms.
+Every mode assertion failed against a connector called `Virtual-2`.
+The fix is `-vga none` (remove the adapter) rather than
+`--drm-device=card0`, so the tests keep exercising weston's own card
+selection.
 
 Harness note, found by a red test rather than by reading: a DRM output
 advertises **every** mode the connector supports over `wl_output` (34
