@@ -20,6 +20,37 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **`modules=` dropped (2026-08-01)** — `--modules` / `[core] modules`,
+  third-party `wet_module_init` plugin loading, is a product decision
+  now rather than a gap.  **This reverses plan D2**, which had kept
+  `modules=` dlopen while dropping `--shell` swapping; D2 is amended in
+  place with the date and the reasoning rather than quietly rewritten.
+  - Why: nothing westonite ships uses it.  The shell is linked into the
+    binary (D2), and the only two plugins that loaded this way —
+    remoting and pipewire-output — are themselves dropped.  Keeping it
+    would mean committing to a stable `wet_module_init` ABI, a dlopen
+    path through the fence for arbitrary C, and settling the
+    `wet_get_config` contract D9 deliberately ends at R3.
+  - Not permanent: revisit if a real plugin need turns up.  The config
+    key stays in the model *on purpose*, so the refusal can say what
+    happened instead of producing the generic unknown-field error a
+    removed field would give.
+  - **This was the last R3 blocker.**  R3 is now gated only on the
+    one-time DRM validation on real hardware (docs/drm-testing.md §3).
+  - Found while auditing the port for completeness: a mechanical diff
+    of every `weston_config_section_get_*` key (67) and every
+    `WESTON_OPTION_*` flag (48) in `frontend/main.c` against the config
+    model and the clap struct.  The CLI surface is complete; the audit
+    also turned up `[core] output-decorations`, `use-gl` and
+    `use-pixman` as config keys with no model field — they fail loudly
+    as unknown fields, but with a generic message, and remain open.
+  - Fixed in passing: `wait-for-debugger` was documented under
+    `[shell]` in `westonite.toml.example` (a `[core]` key, misplaced in
+    R2f).  A new unit test uncomments every key in the example and
+    parses it through the real `deny_unknown_fields` model, which
+    catches exactly that class of mistake — verified by reintroducing
+    the bug and watching the test fail.
+
 - **R2f-logging (2026-08-01)** — the log-scope/subscriber stack, and
   with it the last two flags that were still warn-and-ignore.  Those
   were the only remaining exceptions to the fail-loud rule; there are

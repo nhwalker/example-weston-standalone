@@ -494,9 +494,23 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
              touchscreen-calibrator; use the C westonite",
         ));
     }
+    // `--modules` / `[core] modules` — third-party `wet_module_init`
+    // plugins — dropped by product decision (2026-08-01), reversing
+    // plan D2's "modules= dlopen survives".  Nothing westonite ships
+    // uses it: the shell is linked in (D2), and the two plugins that
+    // did load this way (remoting, pipewire-output) are themselves
+    // dropped.  What it would cost is the whole reason to say no —
+    // a stable `wet_module_init` ABI, a dlopen path through the fence
+    // for arbitrary C, and a decision about the `wet_get_config`
+    // contract D9 deliberately ends at R3.
+    //
+    // "For now": the door is not nailed shut, and the key stays in the
+    // config model so this message can be a real one instead of a
+    // generic unknown-field error.
     if !settings.modules.is_empty() {
         return Some(fatal(
-            "--modules is not yet ported to the Rust frontend; use the C westonite",
+            "--modules / [core] modules is not supported by westonite (third-party \
+             plugin loading is deliberately dropped); the shell is built in",
         ));
     }
     if settings.debug_protocol {

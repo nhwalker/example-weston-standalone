@@ -340,3 +340,37 @@ def test_wait_for_debugger_stops_the_process(westonite):
     assert w._sockets() == []
     os.kill(w.proc.pid, signal.SIGCONT)
     w.wait_ready()
+
+
+@toml_only
+def test_modules_are_refused_by_design(tmp_path):
+    """Third-party plugin loading is dropped by product decision
+    (2026-08-01), reversing plan D2.  Nothing westonite ships uses it:
+    the shell is linked in, and both plugins that loaded this way
+    (remoting, pipewire-output) are themselves dropped.
+
+    The key stays in the config model on purpose -- so this refusal can
+    say what happened, instead of the generic unknown-field error a
+    removed field would produce."""
+    cfg = tmp_path / "westonite.toml"
+    cfg.write_text('[core]\nmodules = ["something.so"]\n')
+    log = tmp_path / "log"
+    r = run([WESTONITE, "--backend=headless", f"--log={log}", f"--config={cfg}"],
+            env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert r.returncode != 0
+    text = log.read_text()
+    assert "not supported by westonite" in text, text
+    # Specifically NOT the "use the C westonite" promise of a future
+    # slice: there is no slice coming.
+    assert "not yet ported" not in text, text
+
+
+@toml_only
+def test_modules_cli_flag_is_refused_too(tmp_path):
+    """Same decision, reached through --modules rather than the file."""
+    log = tmp_path / "log"
+    r = run([WESTONITE, "--backend=headless", f"--log={log}", "--no-config",
+             "--modules=something.so"],
+            env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
+    assert r.returncode != 0
+    assert "not supported by westonite" in log.read_text()

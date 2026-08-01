@@ -13,10 +13,9 @@
 # kebab-case, matching the old ini's hyphenated spellings.
 
 [core]
-# Backend: drm (default), headless, x11, wayland, rdp, vnc, pipewire.
-# The Rust frontend supports headless (R2a/R2b) and vnc (R2c); other
-# backends fail loudly until their migration slice lands (the C
-# frontend remains the oracle).
+# Backend: drm (default), headless, x11, wayland, vnc, pipewire.
+# `rdp` is NOT supported — deliberately dropped; use vnc for remote
+# access.  Every other backend is available.
 #backend = "headless"
 # Or several: backends = ["drm", "vnc"] — the ini spelling
 # backends = "drm,vnc" is accepted too, and so is a comma list in the
@@ -30,7 +29,15 @@
 #color-management = false
 # Start Xwayland support lazily.
 #xwayland = false
-# Extra frontend modules (ini `modules=a.so,b.so` becomes an array).
+# Log the pid and stop (SIGSTOP) at startup, before anything is
+# created, so a debugger can attach.  Send SIGCONT to continue.  The
+# --wait-for-debugger flag wins; this only applies when it is absent.
+#wait-for-debugger = false
+# Third-party frontend plugins.  NOT SUPPORTED: westonite refuses this
+# key at startup rather than ignoring it.  The shell is built into the
+# binary, and the two plugins that used to load this way (remoting,
+# pipewire-output) are dropped.  The key is still recognised so the
+# error can say so.
 #modules = []
 
 [shell]
@@ -38,11 +45,6 @@
 # the ini used; a bare 0xff002244 (TOML integer) works too, which is
 # what `-o shell.background-color=0xff002244` produces.
 #background-color = "0xff002244"
-
-# Log the pid and stop (SIGSTOP) at startup, before anything is
-# created, so a debugger can attach.  Send SIGCONT to continue.  The
-# --wait-for-debugger flag wins; this only applies when it is absent.
-#wait-for-debugger = false
 
 [keyboard]
 #keymap-layout = "us"
@@ -82,10 +84,10 @@
 # section configures the head whose name it matches; a section naming a
 # head that never turns up configures nothing — but it is still
 # checked at startup, so a typo in `transform` is fatal rather than
-# quietly ignored.  mode/scale/transform/off are honoured by the Rust
-# frontend (R2b) on the headless backend; a section carrying
-# clone-of/mirror-of or a colour-management attribute is still a
-# startup error there until the DRM slice lands.
+# quietly ignored.  mode/scale/transform/off are honoured on every
+# backend.  Keys that only mean something on one backend —
+# clone-of/max-bpc (drm), mirror-of/resizeable (vnc/rdp) — are a
+# startup error when that backend is not loaded, rather than inert.
 #[[output]]
 #name = "headless"
 # "WxH" or "WxH@rate"; an unparseable mode logs and keeps the backend

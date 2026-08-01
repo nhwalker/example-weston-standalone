@@ -505,6 +505,63 @@ mod tests {
         HashMap::new()
     }
 
+    /// Every key in `westonite.toml.example` must be a real key, in
+    /// the right section.
+    ///
+    /// The example ships fully commented out, so nothing else ever
+    /// parses it -- which is how `wait-for-debugger` (a `[core]` key)
+    /// came to sit under `[shell]` for a slice without anyone
+    /// noticing.  Uncommenting every `#key = value` line and feeding
+    /// the result to the same `deny_unknown_fields` model the real
+    /// loader uses turns the example into something the compiler
+    /// checks.
+    ///
+    /// Commented section headers (`#[[output]]`) are restored along
+    /// with the keys; prose comments keep their `#` and are dropped.
+    #[test]
+    fn example_config_is_valid() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../westonite.toml.example");
+        let text =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+        let uncommented: String = text
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim_start();
+                match t.strip_prefix('#') {
+                    // A commented section header: `#[[output]]`.  These
+                    // must come back too, or the keys under them float
+                    // up into the previous section and the check fails
+                    // for the wrong reason.
+                    Some(rest) if rest.starts_with('[') && rest.trim_end().ends_with(']') => {
+                        Some(rest.to_string())
+                    }
+                    // A commented key: `#name = value`.  Prose comments
+                    // have a space or punctuation after the `#`.
+                    Some(rest)
+                        if rest.contains(" = ")
+                            && rest.split(" = ").next().is_some_and(|k| {
+                                !k.is_empty()
+                                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                            }) =>
+                    {
+                        Some(rest.to_string())
+                    }
+                    Some(_) => None,
+                    // Section headers and blank lines pass through.
+                    None => Some(line.to_string()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: Result<Config, _> = toml::from_str(&uncommented);
+        assert!(
+            parsed.is_ok(),
+            "westonite.toml.example does not match the config model: {}\n\
+             --- reconstructed ---\n{uncommented}",
+            parsed.unwrap_err()
+        );
+    }
+
     #[test]
     fn defaults_match_c() {
         let s = resolve_from(&cli(&["--no-config"]), &no_env()).unwrap();
