@@ -134,4 +134,22 @@ wait_for_marker /tmp/rs-xw.log "created wm" 120 \
 kill -TERM "$XWPID"
 wait "$XWPID" || { cat /tmp/rs-xw-vg.log >&2; fail "xwayland valgrind reported errors or leaks"; }
 
+echo "== rust 9: westonite-rs --debug (R2g) attaches and detaches the authority cleanly"
+# Debug build, so the frontend-listener assert in Compositor::drop is
+# armed: an authority listener hand-attached without mark_attached()
+# (the PR36-C1 bug) aborts here instead of freeing a still-linked node.
+# Valgrind for the teardown itself.
+rm -f /tmp/rs-dbg.log
+valgrind --error-exitcode=42 --leak-check=full \
+	--errors-for-leak-kinds=definite \
+	target/debug/westonite-rs --backend=headless --no-config --debug \
+	--socket=rs-dbg-smoke --log=/tmp/rs-dbg.log > /tmp/rs-dbg-vg.log 2>&1 &
+DBGPID=$!
+wait_for_marker /tmp/rs-dbg.log "westonite-shell: Rust shell initialized" 120 \
+	|| { cat /tmp/rs-dbg.log /tmp/rs-dbg-vg.log >&2; fail "--debug: shell marker missing"; }
+kill -TERM "$DBGPID"
+wait "$DBGPID" \
+	|| { cat /tmp/rs-dbg.log /tmp/rs-dbg-vg.log >&2; \
+	     fail "--debug: non-zero exit (listener assert or valgrind errors)"; }
+
 echo "ALL RUST SMOKE TESTS PASSED"

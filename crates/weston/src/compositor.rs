@@ -1450,6 +1450,16 @@ impl Drop for Compositor {
             l.detach();
         }
         for l in self.frontend_listeners.drain(..) {
+            // Invariant: everything in this set was attached at creation
+            // and stays attached until this very detach.  A listener
+            // reporting otherwise was hand-attached via raw_ptr()
+            // without mark_attached() (the PR36-C1 bug shape): detach()
+            // would no-op and the pinned box below would be freed while
+            // its node is still linked inside the live compositor.
+            debug_assert!(
+                l.is_attached(),
+                "frontend listener dropped while not marked attached"
+            );
             // SAFETY-relevant ordering: the signal lists these sit on
             // live inside the compositor struct, freed just below.
             l.detach();
