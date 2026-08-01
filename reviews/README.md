@@ -49,7 +49,7 @@ Ground rules used throughout:
 
 ## Resolved since the review
 
-The two high-priority findings were fixed after the review landed:
+Findings fixed after the review series landed:
 
 * **PR36-C1** (`--debug` authority listener never `mark_attached` —
   latent UAF at teardown): **fixed in #38**, which also added the
@@ -63,6 +63,11 @@ The two high-priority findings were fixed after the review landed:
   `drm_non_desktop_follows_the_controlling_section` unit tests (the
   only possible guard until the real-hardware R3 validation, since
   vkms never reports non-desktop heads).
+* **PR35-C1** (C's deprecated `enable_tap` spelling dropped with a
+  generic unknown-field error and no migration note): **fixed in
+  #43** — the key stays in the model (the `modules=` precedent) so
+  the refusal names the rename, `config-migration.md` gains the row,
+  unit + e2e tests pin both halves.
 
 ## Cross-PR open items (running list)
 
@@ -98,7 +103,3 @@ still live on `main`:
   live on main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
-* **Deprecated `enable_tap` ini spelling dropped silently** (PR35-C1):
-  C honors it with a deprecation warning; the TOML model rejects it
-  with a generic unknown-field error and `config-migration.md` is
-  silent. Live on main.
