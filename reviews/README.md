@@ -27,7 +27,7 @@ Ground rules used throughout:
 | PR | Title (abridged) | Review | Findings (C / S) |
 |---|---|---|---|
 | [#16](https://github.com/nhwalker/example-weston-standalone/pull/16) | R0: workspace + weston-sys bindings | [pr-016](pr-016-r0-workspace-weston-sys.md) | 11 / 6 — incl. 1 major fixed in #26, 1 major fixed in #20 |
-| [#17](https://github.com/nhwalker/example-weston-standalone/pull/17) | R1: desktop shell in Rust (hybrid) | *pending* | |
+| [#17](https://github.com/nhwalker/example-weston-standalone/pull/17) | R1: desktop shell in Rust (hybrid) | [pr-017](pr-017-r1-rust-shell.md) | 9 / 5 — high-fidelity port; fixes two real C defects; findings mostly at doc/tier seams |
 | [#18](https://github.com/nhwalker/example-weston-standalone/pull/18) | Post-merge review fixes (#11, #13–#16) | *pending* | |
 | [#19](https://github.com/nhwalker/example-weston-standalone/pull/19) | R2a: frontend core — config, spawn, headless | *pending* | |
 | [#20](https://github.com/nhwalker/example-weston-standalone/pull/20) | R2b: output policy (headless slice) | *pending* | |
@@ -59,3 +59,11 @@ reviewed range — i.e. still live on `main`:
 * **Bring-up ordering** (PR16-C6): socket bound before the heads flush;
   `weston_compositor_wake` earlier than C's. *(To re-verify once #19/#22
   reviews establish the final bring-up shape.)*
+* **Silent A3-violation fallback** (PR17-C1): `dispatch_sync`'s comment
+  promises a loud debug-build fallback when a sync event arrives with
+  the app borrow held; no assert/log exists. Verified still absent on
+  current main.
+* **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
+  L28 (`output_create`) are marked *deferred* in the inventory while
+  the implementation dispatches both sync. Verified still wrong on
+  current main.
