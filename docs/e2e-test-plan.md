@@ -157,6 +157,17 @@ Grouped by owner of the code under test. Tags: [pix] = pixel assertion,
 | config-env | `WESTON_CONFIG_FILE` exported to child clients (observed via autolaunch env dump) |
 | clean-shutdown | SIGTERM and SIGINT → exit 0, sockets removed (implicitly re-checked by every teardown) |
 | log-file | `--log` creates/appends, timestamps present |
+| log-timestamps *(R2f)* | every line carries `[hh:mm:ss.mmm]`, continuation lines deliberately do not — the parity check that the Rust frontend goes through libweston's `"log"` scope rather than writing the file itself |
+| flight-recorder-default *(R2f)* | absent `--flight-rec-scopes` starts the recorder from C's default list; an explicitly **empty** one disables it (absent ≠ empty) |
+| logger-scopes *(R2f)* | `--logger-scopes=drm-backend` *replaces* the logger's `"log"` subscription, so ordinary output leaves the log file while the compositor still starts; `--logger-scopes=log` is the default spelled out and keeps it |
+| wait-for-debugger *(R2f)* | `--wait-for-debugger` logs the pid and SIGSTOPs — asserted as process state `T` with no socket yet created, then resumed with SIGCONT |
+
+The four R2f rows are **shared with the C oracle**, not `toml_only`:
+this is libweston's own log machinery and both frontends wire it the
+same way, so the oracle passing them is the parity proof.  Note
+`logger-scopes` is testable only because the fixture waits on the
+*wayland socket* rather than on a log line — a readiness check that
+depends on logging could not observe logging being redirected.
 
 ### 2.2 Frontend: child processes & autolaunch
 

@@ -36,15 +36,24 @@ fn main() -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    // Logging first: handlers, then the --log file, so every later
-    // failure (config errors included) reaches the right sink.
+    // Logging first, in C's order (main.c:4499): the fallback handlers
+    // so the next few lines can fail loudly, then the real log context
+    // -- scope, log file, subscribers -- before the banner.
     weston::log::install_stderr_handlers();
-    if let Some(path) = &cli.log
-        && let Err(e) = weston::log::set_log_file(std::path::Path::new(path))
-    {
-        // C weston_log_file_open falls back to stderr on failure.
-        eprintln!("westonite: cannot open log file '{path}': {e}; logging to stderr");
-    }
+    let log = match weston::log::LogContext::new(&weston::log::LogSetup {
+        file: cli.log.as_deref().map(std::path::PathBuf::from),
+        logger_scopes: split_scopes(cli.logger_scopes.as_deref()),
+        flight_rec_scopes: cli
+            .flight_rec_scopes
+            .as_deref()
+            .map(|v| split_scopes(Some(v))),
+    }) {
+        Ok(l) => l,
+        // C exits here too (main.c:4501/4509): with no log context and
+        // no log file there is nowhere for the session's diagnostics to
+        // go, and starting anyway would hide every later failure.
+        Err(e) => return fatal(&e.to_string()),
+    };
 
     weston::log::message(&format!(
         "westonite {} (Rust frontend, weston 14 based)",
@@ -52,6 +61,17 @@ fn main() -> ExitCode {
     ));
     let cmdline: Vec<String> = std::env::args().collect();
     weston::log::message(&format!("Command line: {}", cmdline.join(" ")));
+    // C main.c:4534, and in the same place: whether the in-memory
+    // recorder is running is the first thing you want to know when
+    // reading a log from a session that went wrong.
+    weston::log::message(&format!(
+        "Flight recorder: {}",
+        if log.flight_rec_enabled() {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    ));
 
     if let Some(code) = verify_xdg_runtime_dir() {
         return code;
@@ -76,6 +96,13 @@ fn main() -> ExitCode {
 
     if let Some(code) = reject_unported(&cli, &settings) {
         return code;
+    }
+
+    // C main.c:4589, and in the same place: after the config is loaded
+    // (so `[core] wait-for-debugger` counts) but before anything is
+    // created, which is the point of stopping at all.
+    if settings.wait_for_debugger {
+        weston::wait_for_debugger();
     }
 
     let policy = match build_output_policy(&settings) {
@@ -104,6 +131,7 @@ fn main() -> ExitCode {
 
     let kb = &settings.config.keyboard;
     let mut builder = weston::CompositorBuilder::new()
+        .with_log_context(&log)
         .renderer(renderer)
         .with_output_policy(policy)
         .with_keyboard(weston::KeyboardConfig {
@@ -560,17 +588,21 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             )));
         }
     }
-    if !settings.logger_scopes.is_empty() || !settings.flight_rec_scopes.is_empty() {
-        weston::log::message(
-            "warning: log scope selection is not yet ported to the Rust frontend; ignoring",
-        );
-    }
-    if settings.wait_for_debugger {
-        weston::log::message(
-            "warning: --wait-for-debugger is not yet ported to the Rust frontend; ignoring",
-        );
-    }
     None
+}
+
+/// `--logger-scopes` / `--flight-rec-scopes`: C's comma list.
+///
+/// Takes a nested Option so the caller can keep the distinction C keeps
+/// for the flight recorder: the flag absent (default scopes) versus the
+/// flag given empty (recorder off).
+fn split_scopes(v: Option<&str>) -> Vec<String> {
+    v.unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|p| !p.is_empty())
+        .map(String::from)
+        .collect()
 }
 
 /// C main.c's leftover-argv contract (`fatal: unhandled option: %s`),

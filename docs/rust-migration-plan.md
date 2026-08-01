@@ -1002,7 +1002,19 @@ halves can be mixed and smoke-tested at every phase boundary.
   udevd run — libinput's udev backend enumerates on the `ID_INPUT`
   property, which only udevd sets — and `-vga none`, since udevd's
   coldplug otherwise modprobes q35's emulated Bochs VGA and weston
-  picks that card over vkms.  **Virtual-output probe (2026-07-31)**, run with the C
+  picks that card over vkms.
+  *R2f-logging* ✅ *(done — see PROVENANCE.md log)*: the weston-log
+  stack — the `"log"` scope, the file subscriber, the flight recorder
+  and its Super+D dump binding — plus the two flags that were still
+  *warn-and-ignore*, `--logger-scopes` and `--wait-for-debugger`.  With
+  those ported there are **no remaining exceptions to the fail-loud
+  rule**.  The Rust frontend had been bypassing libweston's log
+  machinery entirely (formatting in the shim, writing to a Rust
+  `File`), which is why its lines carried no timestamps; routing
+  through the scope fixes that and is what makes subscribers possible
+  at all.  The log context moved from `Compositor` to the **frontend**,
+  since C creates it before the first log line and destroys it after
+  the display.  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM
   backend (`load_additional_modules`, main.c:1066), so the VM harness
   is the only place they can run at all.  Remoting *works there today*

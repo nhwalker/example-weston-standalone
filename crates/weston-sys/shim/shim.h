@@ -38,7 +38,19 @@ void wsys_wl_signal_add(struct wl_signal *signal, struct wl_listener *listener);
  * C handler can satisfy weston_log's int return. */
 extern int wsys_rust_log_sink(const char *buf, size_t len, bool cont);
 
-/* Install wsys-owned vlog/vlog_continue via weston_log_set_handler. */
-void wsys_install_log_handlers(void);
+struct weston_log_scope;
+
+/* Install wsys-owned vlog/vlog_continue via weston_log_set_handler.
+ *
+ * `scope` is the "log" scope the frontend created on its log context
+ * (C main.c's `log_scope`).  Pass it and the handlers behave exactly
+ * like C's vlog/vlog_continue: timestamp, then into the scope, where
+ * libweston's subscribers -- the log file, the flight recorder -- pick
+ * it up.  Pass NULL and they fall back to formatting straight into
+ * wsys_rust_log_sink, which is what the R0 smoke binary, the unit
+ * harness and the panic barrier outside the compositor's lifetime
+ * need: there is no scope to print into then, and C's own vlog would
+ * silently drop the line. */
+void wsys_install_log_handlers(struct weston_log_scope *scope);
 
 #endif

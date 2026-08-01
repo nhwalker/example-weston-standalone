@@ -36,39 +36,72 @@ wsys_wl_signal_add(struct wl_signal *signal, struct wl_listener *listener)
 /* --- weston-log va_list handlers ----------------------------------- */
 
 /* One bounded stack buffer per call; long lines are truncated, which the
- * sink can see from the return value of vsnprintf if it ever matters.
- * The R2a frontend port will replace this basic pair with the scope-aware
- * handlers (flight recorder etc.); this one exists so R0/R1 code and the
- * smoke binary have working weston_log output. */
+ * sink can see from the return value of vsnprintf if it ever matters. */
 
 #define WSYS_LOG_BUF 1024
 
+/* C main.c keeps these two as file statics for the same reason: the
+ * weston_log_set_handler signature has no user-data slot. */
+static struct weston_log_scope *wsys_log_scope;
+static int wsys_cached_tm_mday = -1;
+
+static int
+wsys_sink(const char *fmt, va_list ap, bool cont)
+{
+	char buf[WSYS_LOG_BUF];
+	int n = vsnprintf(buf, sizeof buf, fmt, ap);
+
+	if (n < 0)
+		return 0;
+	return wsys_rust_log_sink(buf, (size_t)(n < WSYS_LOG_BUF ? n : WSYS_LOG_BUF - 1),
+				  cont);
+}
+
+/* C main.c vlog (214): timestamp the line and print it into the scope.
+ * The is_enabled check is C's -- with no subscriber on "log" the line
+ * is dropped rather than formatted, which is exactly what makes
+ * `--logger-scopes=drm-backend` remove ordinary log output. */
 static int
 wsys_vlog(const char *fmt, va_list ap)
 {
+	char timestr[128];
 	char buf[WSYS_LOG_BUF];
-	int n = vsnprintf(buf, sizeof buf, fmt, ap);
+	int n;
 
-	if (n < 0)
+	if (!wsys_log_scope)
+		return wsys_sink(fmt, ap, false);
+
+	if (!weston_log_scope_is_enabled(wsys_log_scope))
 		return 0;
-	return wsys_rust_log_sink(buf, (size_t)(n < WSYS_LOG_BUF ? n : WSYS_LOG_BUF - 1),
-				  false);
+
+	n = vsnprintf(buf, sizeof buf, fmt, ap);
+	if (n < 0)
+		return weston_log_scope_printf(wsys_log_scope, "%s %s",
+					       weston_log_timestamp(timestr,
+								    sizeof timestr,
+								    &wsys_cached_tm_mday),
+					       "Out of memory");
+	return weston_log_scope_printf(wsys_log_scope, "%s %s",
+				       weston_log_timestamp(timestr, sizeof timestr,
+							    &wsys_cached_tm_mday),
+				       buf);
 }
 
+/* C main.c vlog_continue (241): no timestamp, straight into the scope
+ * -- this is how multi-line weston_log_continue blocks stay attached to
+ * the line above them. */
 static int
 wsys_vlog_continue(const char *fmt, va_list ap)
 {
-	char buf[WSYS_LOG_BUF];
-	int n = vsnprintf(buf, sizeof buf, fmt, ap);
+	if (!wsys_log_scope)
+		return wsys_sink(fmt, ap, true);
 
-	if (n < 0)
-		return 0;
-	return wsys_rust_log_sink(buf, (size_t)(n < WSYS_LOG_BUF ? n : WSYS_LOG_BUF - 1),
-				  true);
+	return weston_log_scope_vprintf(wsys_log_scope, fmt, ap);
 }
 
 void
-wsys_install_log_handlers(void)
+wsys_install_log_handlers(struct weston_log_scope *scope)
 {
+	wsys_log_scope = scope;
 	weston_log_set_handler(wsys_vlog, wsys_vlog_continue);
 }

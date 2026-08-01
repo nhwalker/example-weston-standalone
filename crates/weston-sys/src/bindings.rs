@@ -11925,7 +11925,7 @@ unsafe extern "C" {
     ) -> ::std::os::raw::c_int;
 }
 unsafe extern "C" {
-    pub fn wsys_install_log_handlers();
+    pub fn wsys_install_log_handlers(scope: *mut weston_log_scope);
 }
 unsafe extern "C" {
     pub fn wsys_test_signal_create() -> *mut wl_signal;

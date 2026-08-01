@@ -143,6 +143,10 @@ pub struct Core {
     /// DRM only, since it is the only backend whose outputs can fail
     /// to come up (main.c:4644).
     pub require_outputs: Option<String>,
+    /// `[core] wait-for-debugger=`: log the pid and SIGSTOP at
+    /// startup.  The CLI flag wins; this only applies when it is
+    /// absent (main.c:4585).
+    pub wait_for_debugger: bool,
     /// `[core] repaint-window=` (ms; C validates -10..=1000).
     pub repaint_window: Option<i32>,
     /// `[core] modules=` / `--modules`: extra wet_module_init plugins.
@@ -169,6 +173,7 @@ impl Default for Core {
             pageflip_timeout: None,
             pixman_shadow: None,
             require_outputs: None,
+            wait_for_debugger: false,
             repaint_window: None,
             modules: Vec::new(),
             shell: None,

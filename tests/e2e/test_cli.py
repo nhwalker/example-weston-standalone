@@ -13,7 +13,9 @@ are mode-gated.
 import pytest
 
 import os
+import pathlib
 import re
+import signal
 import subprocess
 
 from support.compositor import CONFIG_FORMAT, CONFIG_NAME, wait_until
@@ -261,3 +263,80 @@ def test_libinput_bad_values_are_startup_errors(tmp_path, section, expected):
             env_extra={"XDG_RUNTIME_DIR": str(tmp_path)})
     assert r.returncode != 0
     assert expected in log.read_text(), log.read_text()
+
+
+# ---------------------------------------------------------------------
+# Logging: scopes, subscribers, the flight recorder (R2f).
+#
+# Shared with the C oracle -- these are libweston's own machinery and
+# both frontends wire it the same way, which is the point of the tests.
+# ---------------------------------------------------------------------
+
+TIMESTAMP = r"^\[\d\d:\d\d:\d\d\.\d\d\d\] "
+
+
+def test_log_lines_are_timestamped(westonite):
+    """Every line goes through the "log" scope, and the scope handler
+    timestamps it.  Was not true of the Rust frontend before R2f: it
+    wrote to the file directly and produced bare lines, so this is the
+    parity check that the port did not merely add a prefix."""
+    w = westonite()
+    w.wait_for_log(r"Command line:")
+    stamped = [ln for ln in w.log().splitlines() if re.match(TIMESTAMP, ln)]
+    assert stamped, w.log()
+    # Continuation lines (weston_log_continue) deliberately have none --
+    # that is how a multi-line block stays visually attached.
+    assert any(ln.startswith(" ") for ln in w.log().splitlines()), w.log()
+
+
+def test_flight_recorder_is_on_by_default(westonite):
+    """C creates the recorder from a default scope list whenever
+    --flight-rec-scopes is absent (main.c:4515) and says so at
+    startup."""
+    w = westonite()
+    w.wait_for_log(r"Flight recorder: enabled")
+
+
+def test_empty_flight_rec_scopes_disables_the_recorder(westonite):
+    """The one way to turn it off: an explicitly empty list.  Absent and
+    empty are different values, which is why this is worth pinning."""
+    w = westonite(extra_args=["--flight-rec-scopes="])
+    w.wait_for_log(r"Flight recorder: disabled")
+
+
+def test_logger_scopes_redirect_the_log_file(westonite):
+    """--logger-scopes replaces the logger's default "log" subscription
+    rather than adding to it, so pointing it elsewhere empties the log
+    file of ordinary output.  The compositor still starts -- the
+    fixture waits on the *socket*, not on a log line, which is what
+    makes this testable at all."""
+    w = westonite(extra_args=["--logger-scopes=drm-backend"])
+    assert "Command line:" not in w.log(), w.log()
+
+
+def test_logger_scopes_log_keeps_the_default(westonite):
+    """The other half: naming "log" explicitly is the default spelled
+    out, so ordinary output survives.  Without this the test above
+    would also pass if the flag simply broke logging."""
+    w = westonite(extra_args=["--logger-scopes=log"])
+    w.wait_for_log(r"Command line:")
+
+
+def test_wait_for_debugger_stops_the_process(westonite):
+    """C raises SIGSTOP on itself after loading the config and before
+    creating anything (main.c:4589).  Assert the real thing: the
+    process is in state T, and SIGCONT gets it running."""
+    w = westonite(extra_args=["--wait-for-debugger"], wait=False)
+    w.wait_for_log(r"waiting for debugger, send SIGCONT to continue")
+
+    def stopped():
+        stat = pathlib.Path(f"/proc/{w.proc.pid}/stat").read_text()
+        # The comm field can contain spaces/parens; state is the field
+        # right after the closing paren.
+        return stat.rsplit(")", 1)[1].split()[0] == "T"
+
+    wait_until(stopped, message="the compositor to stop for the debugger")
+    # Nothing exists yet: the socket comes long after this point.
+    assert w._sockets() == []
+    os.kill(w.proc.pid, signal.SIGCONT)
+    w.wait_ready()

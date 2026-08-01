@@ -73,6 +73,7 @@ pub use host::{ActivateFlags, ActivateTarget, OutputInfo, Rect, ResizeEdges, She
 pub use ids::{CurtainId, DesktopSurfaceId, HeadId, LayerId, OutputId, SeatId, SurfaceId, ViewId};
 pub use layoutput::RequireOutputs;
 pub use libinput::{AccelProfile, InputConfig, ScrollButton, ScrollMethod};
+pub use log::wait_for_debugger;
 pub use output_policy::{ColorCharacteristics, ColorSetup, ColorimetryMode, EotfMode};
 pub use output_policy::{
     OutputCliOverrides, OutputPolicy, OutputRule, OutputSetup, OutputTransform, VncOutputSetup,

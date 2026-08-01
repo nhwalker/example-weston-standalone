@@ -39,6 +39,11 @@
 # what `-o shell.background-color=0xff002244` produces.
 #background-color = "0xff002244"
 
+# Log the pid and stop (SIGSTOP) at startup, before anything is
+# created, so a debugger can attach.  Send SIGCONT to continue.  The
+# --wait-for-debugger flag wins; this only applies when it is absent.
+#wait-for-debugger = false
+
 [keyboard]
 #keymap-layout = "us"
 #repeat-rate = 40

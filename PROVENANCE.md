@@ -20,6 +20,43 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2f-logging (2026-08-01)** — the log-scope/subscriber stack, and
+  with it the last two flags that were still warn-and-ignore.  Those
+  were the only remaining exceptions to the fail-loud rule; there are
+  none now.
+  - Ported: `weston_log_ctx_add_log_scope("log")`, the file subscriber,
+    the flight recorder and its Super+D dump binding, and the
+    `vlog`/`vlog_continue` pair (main.c:214/241, 4380, 4499-4534,
+    4633).  `--logger-scopes` / `-l` and `--flight-rec-scopes` / `-f`
+    now do what they say; `--wait-for-debugger` (and `[core]
+    wait-for-debugger`, which was missing from the config model) logs
+    the pid and raises SIGSTOP.
+  - **The Rust frontend's log was not going through libweston at all.**
+    It formatted in the shim and wrote to a Rust `File`, which is why
+    its lines had no timestamps where the C oracle's did — a divergence
+    nobody had noticed because every test matched with `re.search`.
+    Routing through the scope fixes the format *and* is what makes
+    subscribers possible: a log file, a flight recorder, or both, is
+    libweston's decision to make, not ours.
+  - Ownership moved: the log context now belongs to the **frontend**,
+    not to `Compositor`.  C creates it before the first log line and
+    destroys it after the display (main.c:4499/4822), and the
+    subscribers have to outlive the compositor that logs into them.
+    `CompositorBuilder::with_log_context` borrows it; `build()` fails
+    without one, because C has no path to a compositor without a log
+    context either.
+  - Teardown order is main.c:4817-4823 exactly — scope, subscribers,
+    context, file.  Getting it wrong is not silent: libweston prints
+    "debug scope 'log' has not been destroyed" and leaks it, which is
+    how the valgrind smoke caught the first attempt.
+  - Two values C distinguishes and the model now does too: an *absent*
+    `--flight-rec-scopes` means the default list ("log,drm-backend"),
+    an *empty* one disables the recorder.
+  - All six new e2e tests are shared with the C oracle rather than
+    `toml_only`: this is libweston's own machinery and both frontends
+    wire it identically, so the oracle passing them is the parity
+    proof.
+
 - **R2c-input (2026-08-01)** — `[libinput]`, the last item in R2's
   config surface, in two slices: the weston-sys bindings first, then
   the port.
