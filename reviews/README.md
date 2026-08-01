@@ -29,7 +29,7 @@ Ground rules used throughout:
 | [#16](https://github.com/nhwalker/example-weston-standalone/pull/16) | R0: workspace + weston-sys bindings | [pr-016](pr-016-r0-workspace-weston-sys.md) | 11 / 6 — incl. 1 major fixed in #26, 1 major fixed in #20 |
 | [#17](https://github.com/nhwalker/example-weston-standalone/pull/17) | R1: desktop shell in Rust (hybrid) | [pr-017](pr-017-r1-rust-shell.md) | 9 / 5 — high-fidelity port; fixes two real C defects; findings mostly at doc/tier seams |
 | [#18](https://github.com/nhwalker/example-weston-standalone/pull/18) | Post-merge review fixes (#11, #13–#16) | [pr-018](pr-018-post-merge-review-fixes.md) | 4 / 1 — high-quality remedial round; RPM-ships-C-shell catch + verified pointer-destroy guard |
-| [#19](https://github.com/nhwalker/example-weston-standalone/pull/19) | R2a: frontend core — config, spawn, headless | *pending* | |
+| [#19](https://github.com/nhwalker/example-weston-standalone/pull/19) | R2a: frontend core — config, spawn, headless | [pr-019](pr-019-r2a-frontend-core.md) | 11 / 2 — 1 major latent (no background curtain under westonite-rs, fixed #20); config-surface holes closed piecemeal through #36 |
 | [#20](https://github.com/nhwalker/example-weston-standalone/pull/20) | R2b: output policy (headless slice) | *pending* | |
 | [#22](https://github.com/nhwalker/example-weston-standalone/pull/22) | R2c: VNC backend + multi-backend | *pending* | |
 | [#23](https://github.com/nhwalker/example-weston-standalone/pull/23) | R2c-mirror: mirror-of machinery | *pending* | |
@@ -67,3 +67,7 @@ reviewed range — i.e. still live on `main`:
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
   current main.
+* **Color parsing base mismatch** (PR19-C6): C's
+  `weston_config_section_get_color` is always base-16 (unprefixed
+  `ff002244` works); the Rust `parse_color` treats unprefixed values
+  as decimal. Not mentioned in `docs/config-migration.md`.
