@@ -46,7 +46,7 @@ bare thread-locals.
 
 ## Findings — correctness
 
-### PR17-C1 (moderate): `dispatch_sync`'s A3-violation fallback is silent — the comment promises a debug assertion that does not exist
+### PR17-C1 (moderate): `dispatch_sync`'s A3-violation fallback is silent — the comment promises a debug assertion that does not exist — **fixed in #41**
 
 `crates/weston/src/ctx.rs:225-248`. The doc comment says a sync-tier
 event arriving while the app borrow is held "falls back to enqueueing
@@ -64,8 +64,11 @@ there is no `debug_assert!`, no log line. Two consequences:
 
 The mid-drain case is legitimately quiet (the test at ctx.rs:396 pins
 it) — so the fix is to distinguish "mid-drain" (`draining` flag; quiet)
-from "borrow held outside drain" (assert/log). As merged, the two are
-indistinguishable.
+from "borrow held outside drain" (assert/log). As merged, the two were
+indistinguishable. **#41 landed exactly this split** (plus a third
+quiet case this review missed: builder-phase dispatch before
+`set_app`), keyed on an `in_sync_handler` flag, with the three shapes
+pinned by unit tests.
 
 ### PR17-C2 (minor): callback-inventory tier cells contradict the implementation they were just updated for
 
@@ -304,6 +307,7 @@ client-controlled" rationale one home.
 * #18 (post-merge review) hardens the fence-check for the new crates
   (transitive walk), makes the RPM actually ship this Rust shell, and
   adds the per-seat pointer-destroy guard listener — reviewed there.
-* PR17-C1/C2 (dispatch_sync assert, inventory tiers): checked against
-  current `main` — the missing debug-assert and the L27/L28 "deferred"
-  cells are still present; live findings.
+* PR17-C1 (dispatch_sync assert): was verified still missing on
+  `main` at review time — since **fixed in #41**.
+* PR17-C2 (inventory tiers): checked against current `main` — the
+  L27/L28 "deferred" cells are still present; live finding.
