@@ -146,7 +146,10 @@ main.c removes its signals[] sources" comment directly above). Related:
 exactly this failure and never constructed — `run()` returns a bare `1`
 with a log line instead. Either build the sources in `build()` (where
 `?` works, and closer to C, which installs signals before anything else)
-or drop the dead variant.
+or drop the dead variant. **Leak half fixed in #18** (partial-failure
+path removes the installed source); the dead variant went live later
+when the signal install moved into a fallible `install_signal_sources`
+(present on current main, `compositor.rs:1370`).
 
 ### PR16-C6 (minor divergence): socket is bound before the heads flush; C flushes first
 
