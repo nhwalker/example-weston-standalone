@@ -38,7 +38,7 @@ Ground rules used throughout:
 | [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | [pr-026](pr-026-deferred-drain.md) | 3 / 0 — the right fix, red-first proof, exemplary entry-point audit; closes PR16-C1 |
 | [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | [pr-027](pr-027-r2c-nested.md) | 3 / 0 — probe-first porting; 1 live divergence (wayland default-head numbering) |
 | [#28](https://github.com/nhwalker/example-weston-standalone/pull/28) | DRM CI probe / VM harness | [pr-028](pr-028-drm-vm-harness.md) | 3 / 0 (nits) — exceptional test infra; kmsg-sentinel + no-privilege design; title undersells scope |
-| [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | *pending* | |
+| [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | [pr-029](pr-029-r2c-drm.md) | 3 / 0 — layoutput machinery verified faithful; **1 moderate live divergence: non-desktop head handling inverted vs C, unreachable on vkms** |
 | [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | *pending* | |
 | [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | *pending* | |
 | [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | *pending* | |
@@ -78,3 +78,9 @@ reviewed range — i.e. still live on `main`:
   live on main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
+* **DRM non-desktop head handling inverted vs C** (PR29-C1, moderate):
+  C stages a sectionless non-desktop head and skips a
+  section-without-`mode` one; the port does the opposite in both
+  cases, while its comment cites C parity. Invisible on vkms (heads
+  are never non-desktop) — will first bite on the real-hardware R3
+  validation. Verified live on main.
