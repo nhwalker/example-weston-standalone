@@ -866,4 +866,64 @@ mod tests {
         assert_eq!(p.decide_drm("DP-2", true, false), DrmHeadPlan::Off);
         assert_eq!(p.decide_drm("DP-2", false, false), DrmHeadPlan::Off);
     }
+
+    /// The non-desktop skip reads the CONTROLLING section's mode= —
+    /// C's check runs on the section
+    /// drm_config_find_controlling_output_section returned, i.e. after
+    /// clone-of resolution, not on the head's own section.
+    #[test]
+    fn drm_non_desktop_follows_the_controlling_section() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        p.rules.push(OutputRule {
+            name: "DP-1".into(),
+            mode_string: Some("preferred".into()),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-1".into(), // a section with no mode= key
+            scale: Some(2),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-2".into(),
+            clone_of: Some("DP-1".into()), // controller HAS a mode=
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-3".into(),
+            clone_of: Some("HDMI-A-1".into()), // controller has none
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "DP-3".into(),
+            clone_of: Some("nope".into()), // dangling clone-of
+            ..OutputRule::default()
+        });
+
+        // clone-of a moded section: explicitly enabled — a non-desktop
+        // clone head is staged, on the CONTROLLER's layoutput.
+        match p.decide_drm("HDMI-A-2", true, false) {
+            DrmHeadPlan::Enable(plan) => assert_eq!(plan.output_name, "DP-1"),
+            other => panic!("expected Enable, got {other:?}"),
+        }
+        // clone-of a mode-less section: "not explicitly enabled" — the
+        // non-desktop skip applies through the resolution.
+        assert_eq!(
+            p.decide_drm("HDMI-A-3", true, false),
+            DrmHeadPlan::NonDesktop
+        );
+        // Dangling clone-of is its own plan regardless of non-desktop:
+        // the caller logs C's message and stages the head sectionless —
+        // which, per the matrix above, means staged even when
+        // non-desktop (C's controlling-section lookup returns NULL and
+        // the head takes the else branch).
+        assert!(matches!(
+            p.decide_drm("DP-3", true, false),
+            DrmHeadPlan::BadCloneOf(_)
+        ));
+        assert!(matches!(
+            p.decide_drm("DP-3", false, false),
+            DrmHeadPlan::BadCloneOf(_)
+        ));
+    }
 }
