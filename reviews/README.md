@@ -43,8 +43,8 @@ Ground rules used throughout:
 | [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | [pr-031](pr-031-drop-remoting.md) | 2 / 0 — honest product decision; closes the silent-no-op sections |
 | [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | [pr-032](pr-032-drop-pipewire-output.md) | 0 / 0 — model negative-space test for the backend/plugin line |
 | [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | [pr-033](pr-033-r2c-color.md) | 3 / 0 (nits) — faithful; closes final PR19-C4 items; grouping rule + refcount protocol verified |
-| [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | *pending* | |
-| [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | *pending* | |
+| [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | [pr-034](pr-034-r2c-input-bindings.md) | 1 / 0 — minimal; the link-test pattern highlighted |
+| [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | [pr-035](pr-035-libinput-config-logging.md) | 3 / 0 — punctuation-faithful libinput port; RAII LogContext; deprecated enable_tap spelling dropped undocumented |
 | [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | *pending* | |
 
 ## Cross-PR open items (running list)
@@ -78,6 +78,10 @@ reviewed range — i.e. still live on `main`:
   live on main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
+* **Deprecated `enable_tap` ini spelling dropped silently** (PR35-C1):
+  C honors it with a deprecation warning; the TOML model rejects it
+  with a generic unknown-field error and `config-migration.md` is
+  silent. Live on main.
 * **DRM non-desktop head handling inverted vs C** (PR29-C1, moderate):
   C stages a sectionless non-desktop head and skips a
   section-without-`mode` one; the port does the opposite in both
