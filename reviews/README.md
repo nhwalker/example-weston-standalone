@@ -49,7 +49,7 @@ Ground rules used throughout:
 
 ## Resolved since the review
 
-The two high-priority findings were fixed after the review landed:
+Findings fixed after the review series landed:
 
 * **PR36-C1** (`--debug` authority listener never `mark_attached` —
   latent UAF at teardown): **fixed in #38**, which also added the
@@ -63,6 +63,12 @@ The two high-priority findings were fixed after the review landed:
   `drm_non_desktop_follows_the_controlling_section` unit tests (the
   only possible guard until the real-hardware R3 validation, since
   vkms never reports non-desktop heads).
+* **PR19-C6** (color parsing base mismatch — C is always base-16, the
+  port read unprefixed values as decimal): **fixed in #42** — C's
+  grammar restored (`"ff002244"` works, `"12345678"` is hex), the
+  bare-TOML-integer `-o` path preserved by value via a dedicated
+  deserializer, loud-failure divergences documented, migration doc
+  updated.
 
 ## Cross-PR open items (running list)
 
@@ -87,10 +93,6 @@ still live on `main`:
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
   current main.
-* **Color parsing base mismatch** (PR19-C6): C's
-  `weston_config_section_get_color` is always base-16 (unprefixed
-  `ff002244` works); the Rust `parse_color` treats unprefixed values
-  as decimal. Not mentioned in `docs/config-migration.md`.
 * **Nested-wayland default head numbering** (PR27-C1): C numbers
   default heads `wayland0..` regardless of named WL-sections; the port
   numbers them after the named count (`waylandN..`). An `[[output]]`

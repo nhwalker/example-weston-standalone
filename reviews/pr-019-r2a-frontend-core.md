@@ -143,7 +143,7 @@ other half — Rust rejecting non-positive dimensions that C would pass
 through to the backend — is a safer-side divergence that stayed, and
 deserves the one-line comment it never got.
 
-### PR19-C6 (minor divergence, undocumented): color parsing — C is always base-16, the Rust model is base-10 unless `0x`-prefixed
+### PR19-C6 (minor divergence, undocumented): color parsing — C is always base-16, the Rust model is base-10 unless `0x`-prefixed — **fixed in #42**
 
 `resolve.rs:160-168` vs `weston_config_section_get_color`
 (`strtoul(value, &end, 16)`): an ini `background-color=ff002244`
@@ -152,7 +152,10 @@ as "invalid color"; a bare digit string is decimal here, hex in C. The
 `0x` spelling behaves identically in both, and the harness only emits
 that spelling — but `docs/config-migration.md` doesn't mention that
 unprefixed hex, the C default notation, does not survive the
-migration. Still live on main as far as this review traced it.
+migration. Was still live on main as far as this review traced it;
+**fixed in #42** (C's always-base-16 grammar restored, with the
+bare-TOML-integer override path preserved by value, unit-tested, and
+the migration doc updated).
 
 ### PR19-C7 (minor divergence): the Rust frontend's log lines have no timestamps — **fixed in #35 (R2f)**
 
