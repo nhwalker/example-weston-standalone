@@ -778,8 +778,10 @@ interface is re-specified rather than ported:
   immutable `Settings` resolved once at startup. No lazy config
   reads anywhere; consumers receive typed slices (`ShellConfig`,
   `XwaylandConfig`, per-backend structs). The shell never sees the
-  file or the CLI. Third-party `modules=` plugins get only their
-  argv — the `wet_get_config` contract ends at R3.
+  file or the CLI.  (This clause originally also promised third-party
+  `modules=` plugins their argv and nothing else; `modules=` is
+  dropped as of 2026-08-01 — see D2 — so the `wet_get_config`
+  contract simply ends at R3 with no consumer to carry.)
 - **Don't over-model**: values that are really weston/libweston
   string grammars (modelines `1920x1080@60`, XKB rule names,
   `gbm-format`, ICC paths, transform names) stay strings or thin
@@ -1014,7 +1016,16 @@ halves can be mixed and smoke-tested at every phase boundary.
   through the scope fixes that and is what makes subscribers possible
   at all.  The log context moved from `Compositor` to the **frontend**,
   since C creates it before the first log line and destroys it after
-  the display.  **Virtual-output probe (2026-07-31)**, run with the C
+  the display.
+  *R2g* ✅ *(done — see PROVENANCE.md log)*: the last three gaps, found
+  by a mechanical audit of every `weston_config_section_get_*` key (67)
+  and `WESTON_OPTION_*` flag (48) in main.c against the config model
+  and the clap struct.  `--debug` (weston-debug protocol, allow-all
+  screenshot authority, and the always-on `proto` protocol dump),
+  `[core] output-decorations`, and `[core] use-gl`/`use-pixman` are
+  ported; `[libinput] touchscreen-calibrator` is dropped by product
+  decision.  **The Rust frontend now reads every config key and CLI
+  flag the C frontend does.**  **Virtual-output probe (2026-07-31)**, run with the C
   oracle before porting as usual: both plugins are gated on the DRM
   backend (`load_additional_modules`, main.c:1066), so the VM harness
   is the only place they can run at all.  Remoting *works there today*
@@ -1164,10 +1175,20 @@ Scoping decisions (2026-07 plan review):
   capabilities, not to the configuration interface, which D9–D12
   re-specify — every option survives, its spelling changes.)*
 - **D2 — Shell linkage: cdylib during migration, static at R3.**
-  `modules=` dlopen for third-party C modules survives; `--shell`
-  swapping of our own shell does not (document in README at R3).
-  The hybrid-phase cdylib is produced by the R1-only
+  `--shell` swapping of our own shell does not survive (document in
+  README at R3).  The hybrid-phase cdylib is produced by the R1-only
   `westonite-shell-plugin` packaging crate (§2), deleted at R3.
+  - **Amended 2026-08-01 — `modules=` dlopen does *not* survive
+    either.**  D2 originally kept third-party `wet_module_init`
+    loading.  Reversed by product decision: nothing westonite ships
+    uses it (the shell is linked in, and the two plugins that loaded
+    this way — remoting and pipewire-output — are themselves dropped),
+    and keeping it would mean a stable `wet_module_init` ABI, a dlopen
+    path through the fence for arbitrary C, and resolving the
+    `wet_get_config` contract D9 deliberately ends at R3.  `--modules`
+    and `[core] modules` are now a fail-loud refusal in their own
+    words.  Not permanent — revisit if a real plugin need appears —
+    but out of scope for R3, which it no longer blocks.
 - **D3 — superseded by D9–D12.** The ini/`weston_config` machinery
   is not ported; a minimal binding exists only during R1 (§2, §7)
   and is deleted at R3. The known 14.0.1 `binding-modifier none`

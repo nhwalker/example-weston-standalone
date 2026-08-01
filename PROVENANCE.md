@@ -20,6 +20,85 @@ Rebase procedure on an EPEL weston bump: plan §8.
 
 ## Migration log
 
+- **R2g (2026-08-01)** — the three gaps the completeness audit found,
+  closed: two ported, one dropped.  The Rust frontend now reads every
+  config key and CLI flag the C frontend does.
+  - **`--debug` ported** (main.c:4626): `weston_compositor_enable_debug_
+    protocol` plus the allow-all screenshot authority, in
+    `crates/weston/src/debug.rs`.  The authority is a `Listener` rather
+    than a bare `extern "C"` fn, because `weston_compositor_add_
+    screenshot_authority` just writes `listener->notify` and would
+    overwrite the primitive's trampoline — the same reason
+    screenshooter.rs attaches by hand.
+  - **The `proto` scope and its `wl_protocol_logger` came with it**, and
+    like C they are installed **unconditionally** — `--debug` does not
+    gate them.  That is free: the handler returns on an unsubscribed
+    scope, so the dump only costs anything under
+    `--logger-scopes=proto`.  `protocol_log_fn` formats Rust-side and
+    hands C a length-delimited byte string, so a client-controlled
+    class name or string argument can never reach a format string
+    (§3i) where C builds the same line with `open_memstream` +
+    `fprintf`.  Verified against the oracle by running both frontends
+    with `--logger-scopes=proto`: the lines match character for
+    character apart from pointer, pid and timestamp.
+    - One C quirk preserved rather than fixed: `types[]` is indexed by
+      *argument* index, not by position in the signature.  They agree
+      for every message that has a new-id, and diverging would make our
+      dumps disagree with weston's for no gain.
+  - **`[core] output-decorations` ported** — headless-only in C too (a
+    field of `weston_headless_backend_config`).
+  - **`[core] use-gl` / `use-pixman` ported**, with a deliberate
+    divergence: C reads these keys **only** in `load_headless_backend`
+    (main.c:3490), so on any other backend the file spelling is
+    silently inert while the identically named CLI flags work
+    everywhere.  That asymmetry is an accident of where the read sits;
+    here the keys apply on every backend, like the flags.
+  - **Touch calibration dropped** — `[libinput] touchscreen-calibrator`
+    and `calibration-helper`.  Product decision, not a deferral:
+    westonite ships no calibrator client (upstream's
+    `weston-touch-calibrator` is not in our package) and without a
+    touchscreen there is nothing to test against.
+  - Removed a refusal that could no longer fire: the catch-all
+    "backend not yet ported" filter had been dead since R2c-drm, and a
+    guard that cannot trigger reads like a live one.
+  - `test_unported_feature_fails_loudly` is renamed
+    `test_unsupported_feature_fails_loudly` and points at the
+    calibrator.  It has moved three times as the migration ate its
+    targets; the gate is the *principle*, not any one feature.
+  - All six new e2e tests are shared with the C oracle (oracle suite
+    65 → 71).
+
+- **`modules=` dropped (2026-08-01)** — `--modules` / `[core] modules`,
+  third-party `wet_module_init` plugin loading, is a product decision
+  now rather than a gap.  **This reverses plan D2**, which had kept
+  `modules=` dlopen while dropping `--shell` swapping; D2 is amended in
+  place with the date and the reasoning rather than quietly rewritten.
+  - Why: nothing westonite ships uses it.  The shell is linked into the
+    binary (D2), and the only two plugins that loaded this way —
+    remoting and pipewire-output — are themselves dropped.  Keeping it
+    would mean committing to a stable `wet_module_init` ABI, a dlopen
+    path through the fence for arbitrary C, and settling the
+    `wet_get_config` contract D9 deliberately ends at R3.
+  - Not permanent: revisit if a real plugin need turns up.  The config
+    key stays in the model *on purpose*, so the refusal can say what
+    happened instead of producing the generic unknown-field error a
+    removed field would give.
+  - **This was the last R3 blocker.**  R3 is now gated only on the
+    one-time DRM validation on real hardware (docs/drm-testing.md §3).
+  - Found while auditing the port for completeness: a mechanical diff
+    of every `weston_config_section_get_*` key (67) and every
+    `WESTON_OPTION_*` flag (48) in `frontend/main.c` against the config
+    model and the clap struct.  The CLI surface is complete; the audit
+    also turned up `[core] output-decorations`, `use-gl` and
+    `use-pixman` as config keys with no model field — they fail loudly
+    as unknown fields, but with a generic message, and remain open.
+  - Fixed in passing: `wait-for-debugger` was documented under
+    `[shell]` in `westonite.toml.example` (a `[core]` key, misplaced in
+    R2f).  A new unit test uncomments every key in the example and
+    parses it through the real `deny_unknown_fields` model, which
+    catches exactly that class of mistake — verified by reintroducing
+    the bug and watching the test fail.
+
 - **R2f-logging (2026-08-01)** — the log-scope/subscriber stack, and
   with it the last two flags that were still warn-and-ignore.  Those
   were the only remaining exceptions to the fail-loud rule; there are

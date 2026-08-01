@@ -313,11 +313,19 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         }
     }
 
-    // C load_headless_backend/load_x11_backend: use-gl and use-pixman
-    // are mutually exclusive, and neither may be combined with an
-    // explicit --renderer.  Wording kept from the C frontend.
-    if (cli.use_gl && cli.use_pixman) || (cli.renderer.is_some() && (cli.use_gl || cli.use_pixman))
-    {
+    // C load_headless_backend: use-gl and use-pixman are mutually
+    // exclusive, and neither may be combined with an explicit
+    // renderer.  Wording kept from the C frontend.
+    //
+    // Flag OR config key, because that is what C's parse_options does
+    // to the variable it already read the key into: the flag can only
+    // turn the switch on, never cancel a `use-pixman = true` in the
+    // file.  See the model for why the keys apply on every backend
+    // here where C honours them only on headless.
+    let use_gl = cli.use_gl || config.core.use_gl;
+    let use_pixman = cli.use_pixman || config.core.use_pixman;
+    let renderer_given = cli.renderer.is_some() || config.core.renderer.is_some();
+    if (use_gl && use_pixman) || (renderer_given && (use_gl || use_pixman)) {
         return Err(ConfigError::Invalid(
             "Conflicting renderer specifications".to_string(),
         ));
@@ -326,9 +334,9 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         .renderer
         .clone()
         .or_else(|| {
-            if cli.use_gl {
+            if use_gl {
                 Some("gl".into())
-            } else if cli.use_pixman {
+            } else if use_pixman {
                 Some("pixman".into())
             } else {
                 None
@@ -503,6 +511,63 @@ mod tests {
 
     fn no_env() -> HashMap<String, String> {
         HashMap::new()
+    }
+
+    /// Every key in `westonite.toml.example` must be a real key, in
+    /// the right section.
+    ///
+    /// The example ships fully commented out, so nothing else ever
+    /// parses it -- which is how `wait-for-debugger` (a `[core]` key)
+    /// came to sit under `[shell]` for a slice without anyone
+    /// noticing.  Uncommenting every `#key = value` line and feeding
+    /// the result to the same `deny_unknown_fields` model the real
+    /// loader uses turns the example into something the compiler
+    /// checks.
+    ///
+    /// Commented section headers (`#[[output]]`) are restored along
+    /// with the keys; prose comments keep their `#` and are dropped.
+    #[test]
+    fn example_config_is_valid() {
+        let path = concat!(env!("CARGO_MANIFEST_DIR"), "/../../westonite.toml.example");
+        let text =
+            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("cannot read {path}: {e}"));
+        let uncommented: String = text
+            .lines()
+            .filter_map(|line| {
+                let t = line.trim_start();
+                match t.strip_prefix('#') {
+                    // A commented section header: `#[[output]]`.  These
+                    // must come back too, or the keys under them float
+                    // up into the previous section and the check fails
+                    // for the wrong reason.
+                    Some(rest) if rest.starts_with('[') && rest.trim_end().ends_with(']') => {
+                        Some(rest.to_string())
+                    }
+                    // A commented key: `#name = value`.  Prose comments
+                    // have a space or punctuation after the `#`.
+                    Some(rest)
+                        if rest.contains(" = ")
+                            && rest.split(" = ").next().is_some_and(|k| {
+                                !k.is_empty()
+                                    && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
+                            }) =>
+                    {
+                        Some(rest.to_string())
+                    }
+                    Some(_) => None,
+                    // Section headers and blank lines pass through.
+                    None => Some(line.to_string()),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let parsed: Result<Config, _> = toml::from_str(&uncommented);
+        assert!(
+            parsed.is_ok(),
+            "westonite.toml.example does not match the config model: {}\n\
+             --- reconstructed ---\n{uncommented}",
+            parsed.unwrap_err()
+        );
     }
 
     #[test]

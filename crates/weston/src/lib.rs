@@ -49,6 +49,7 @@ pub mod output_policy;
 
 pub(crate) mod ctx;
 pub(crate) mod curtain;
+pub(crate) mod debug;
 pub(crate) mod desktop;
 pub(crate) mod grab;
 pub(crate) mod input_bindings;

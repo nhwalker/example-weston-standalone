@@ -148,6 +148,7 @@ fn main() -> ExitCode {
         builder = builder.with_repaint_window_msec(msec);
     }
     builder = builder.color_management(settings.color_management);
+    builder = builder.debug_protocol(settings.debug_protocol);
     if let Some(r) = &settings.config.core.require_outputs {
         match weston::RequireOutputs::parse(r) {
             Some(r) => builder = builder.require_outputs(r),
@@ -164,6 +165,7 @@ fn main() -> ExitCode {
             Backend::Headless => builder.add_headless(weston::HeadlessOptions {
                 no_outputs: settings.no_outputs,
                 refresh_mhz: settings.refresh_rate,
+                decorate: settings.config.core.output_decorations,
             }),
             Backend::Vnc => builder.add_vnc(weston::VncOptions {
                 bind_address: settings.vnc_bind_address.clone(),
@@ -347,29 +349,11 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
              is supported",
         ));
     }
-    let unported: Vec<&str> = settings
-        .backends
-        .iter()
-        .filter(|b| {
-            !matches!(
-                b,
-                Backend::Headless
-                    | Backend::Vnc
-                    | Backend::X11
-                    | Backend::Wayland
-                    | Backend::Pipewire
-                    | Backend::Drm
-            )
-        })
-        .map(|b| b.name())
-        .collect();
-    if !unported.is_empty() {
-        return Some(fatal(&format!(
-            "backend \"{}\" is not yet ported to the Rust frontend (drm lands with its \
-             own slice); use the C westonite",
-            unported.join("\", \"")
-        )));
-    }
+    // (There used to be a catch-all "backend not yet ported" refusal
+    // here.  Every Backend variant is now either loaded or refused by
+    // name above -- Rdp returns early with its own message -- so the
+    // filter could never match, and a refusal that cannot fire is worse
+    // than none: it reads like a live guard.)
 
     // C consumes CLI options per backend loader; anything left over is
     // `fatal: unhandled option`.  Same contract here, as a table: a
@@ -464,12 +448,17 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
             return Some(unhandled_option(flag));
         }
     }
-    // [libinput] touchscreen-calibrator is not the device-config hook
-    // (that is ported, see build_input_config); it is the separate
-    // weston_touch_calibration protocol, enabled from
-    // weston_compositor_init_config and saved through a helper C runs
-    // with system().  Unported, so requesting it is an error.  Not
-    // gated on DRM: C enables the calibrator whatever the backend.
+    // [libinput] touchscreen-calibrator / calibration-helper --
+    // libweston's weston_touch_calibration protocol plus a helper C
+    // runs through system() (main.c:1075/1214) -- dropped by product
+    // decision (2026-08-01), not deferred.  It is a different feature
+    // from the per-device settings around it, and westonite ships no
+    // client that could drive it: upstream's weston-touch-calibrator
+    // is not in our package, and without a touchscreen there is
+    // nothing to test against either.
+    //
+    // Not gated on DRM: C enables the calibrator from
+    // weston_compositor_init_config, whatever the backend.
     if settings
         .config
         .libinput
@@ -477,9 +466,9 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         .unwrap_or(false)
     {
         return Some(fatal(
-            "[libinput] touchscreen-calibrator is not yet ported to the Rust frontend \
-             (the weston_touch_calibration protocol is a separate feature from the \
-             per-device libinput settings); use the C westonite",
+            "[libinput] touchscreen-calibrator is not supported by westonite (the touch \
+             calibration protocol is deliberately dropped; no calibrator client ships \
+             with it)",
         ));
     }
     if settings
@@ -490,18 +479,27 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
         .is_some_and(|h| !h.is_empty())
     {
         return Some(fatal(
-            "[libinput] calibration-helper is only consulted by the unported \
-             touchscreen-calibrator; use the C westonite",
+            "[libinput] calibration-helper is only consulted by touchscreen-calibrator, \
+             which is not supported by westonite",
         ));
     }
+    // `--modules` / `[core] modules` — third-party `wet_module_init`
+    // plugins — dropped by product decision (2026-08-01), reversing
+    // plan D2's "modules= dlopen survives".  Nothing westonite ships
+    // uses it: the shell is linked in (D2), and the two plugins that
+    // did load this way (remoting, pipewire-output) are themselves
+    // dropped.  What it would cost is the whole reason to say no —
+    // a stable `wet_module_init` ABI, a dlopen path through the fence
+    // for arbitrary C, and a decision about the `wet_get_config`
+    // contract D9 deliberately ends at R3.
+    //
+    // "For now": the door is not nailed shut, and the key stays in the
+    // config model so this message can be a real one instead of a
+    // generic unknown-field error.
     if !settings.modules.is_empty() {
         return Some(fatal(
-            "--modules is not yet ported to the Rust frontend; use the C westonite",
-        ));
-    }
-    if settings.debug_protocol {
-        return Some(fatal(
-            "--debug is not yet ported to the Rust frontend; use the C westonite",
+            "--modules / [core] modules is not supported by westonite (third-party \
+             plugin loading is deliberately dropped); the shell is built in",
         ));
     }
     // R2b: outputs (mode/scale/transform/off, --no-outputs,
