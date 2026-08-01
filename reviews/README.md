@@ -38,25 +38,36 @@ Ground rules used throughout:
 | [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | [pr-026](pr-026-deferred-drain.md) | 3 / 0 — the right fix, red-first proof, exemplary entry-point audit; closes PR16-C1 |
 | [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | [pr-027](pr-027-r2c-nested.md) | 3 / 0 — probe-first porting; 1 live divergence (wayland default-head numbering) |
 | [#28](https://github.com/nhwalker/example-weston-standalone/pull/28) | DRM CI probe / VM harness | [pr-028](pr-028-drm-vm-harness.md) | 3 / 0 (nits) — exceptional test infra; kmsg-sentinel + no-privilege design; title undersells scope |
-| [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | [pr-029](pr-029-r2c-drm.md) | 3 / 0 — layoutput machinery verified faithful; **1 moderate live divergence: non-desktop head handling inverted vs C, unreachable on vkms** |
+| [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | [pr-029](pr-029-r2c-drm.md) | 3 / 0 — layoutput machinery verified faithful; the non-desktop inversion (PR29-C1) **fixed in #39** |
 | [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | [pr-030](pr-030-drm-max-bpc.md) | 1 / 0 — correct minimal fix; names the refusal-table drift pattern |
 | [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | [pr-031](pr-031-drop-remoting.md) | 2 / 0 — honest product decision; closes the silent-no-op sections |
 | [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | [pr-032](pr-032-drop-pipewire-output.md) | 0 / 0 — model negative-space test for the backend/plugin line |
 | [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | [pr-033](pr-033-r2c-color.md) | 3 / 0 (nits) — faithful; closes final PR19-C4 items; grouping rule + refcount protocol verified |
 | [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | [pr-034](pr-034-r2c-input-bindings.md) | 1 / 0 — minimal; the link-test pattern highlighted |
 | [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | [pr-035](pr-035-libinput-config-logging.md) | 3 / 0 — punctuation-faithful libinput port; RAII LogContext; deprecated enable_tap spelling dropped undocumented |
-| [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | [pr-036](pr-036-close-port-surface.md) | 2 / 0 — completes the PR19-C4 audit; **1 live soundness bug: --debug authority listener never mark_attached, box freed while linked** |
+| [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | [pr-036](pr-036-close-port-surface.md) | 2 / 0 — completes the PR19-C4 audit; the mark_attached soundness bug (PR36-C1) **fixed in #38** |
+
+## Resolved since the review
+
+The two high-priority findings were fixed after the review landed:
+
+* **PR36-C1** (`--debug` authority listener never `mark_attached` —
+  latent UAF at teardown): **fixed in #38**, which also added the
+  drop-time attached assert in `Compositor::drop` and rust-smoke
+  leg 9 (`--debug` under valgrind, debug build) so the bug class
+  fails loudly.
+* **PR29-C1** (DRM non-desktop head handling inverted vs C in both
+  directions): **fixed in #39** — C's letter restored for both
+  branches with corrected `main.c` citations, pinned by the
+  `drm_non_desktop_matrix_matches_c` and
+  `drm_non_desktop_follows_the_controlling_section` unit tests (the
+  only possible guard until the real-hardware R3 validation, since
+  vkms never reports non-desktop heads).
 
 ## Cross-PR open items (running list)
 
-Issues found in one PR that were **not** fixed by any later PR in the
-reviewed range — i.e. still live on `main`:
-
-* **`--debug` authority listener never `mark_attached`** (PR36-C1,
-  moderate→major, soundness): `debug::enable` violates the Listener
-  contract; at teardown under `--debug` the pinned box is freed while
-  its node is still linked on `output_capture.ask_auth`. Latent UAF —
-  one-line fix (match `screenshooter.rs`). Verified live on main.
+Issues found in one PR that were **not** fixed by any later PR — i.e.
+still live on `main`:
 
 * **Signal-handling divergence** (PR16-C4): SIGINT caught via signalfd
   (C uses `sigaction`→`raise(SIGUSR2)` so gdb Ctrl+C works), no SIGUSR2
@@ -91,9 +102,3 @@ reviewed range — i.e. still live on `main`:
   C honors it with a deprecation warning; the TOML model rejects it
   with a generic unknown-field error and `config-migration.md` is
   silent. Live on main.
-* **DRM non-desktop head handling inverted vs C** (PR29-C1, moderate):
-  C stages a sectionless non-desktop head and skips a
-  section-without-`mode` one; the port does the opposite in both
-  cases, while its comment cites C parity. Invisible on vkms (heads
-  are never non-desktop) — will first bite on the real-hardware R3
-  validation. Verified live on main.

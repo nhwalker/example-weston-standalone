@@ -46,7 +46,7 @@ harness by construction.
 
 ## Findings — correctness
 
-### PR29-C1 (moderate divergence, live on main, claims parity it doesn't have): non-desktop DRM head handling is inverted relative to C in both directions
+### PR29-C1 (moderate divergence, claims parity it doesn't have): non-desktop DRM head handling is inverted relative to C in both directions — **fixed in #39**
 
 C `drm_head_prepare_enable` (main.c:2764-2796), verified:
 
@@ -73,7 +73,8 @@ a section with a (non-off) `mode` stages it. The Rust `decide_drm`:
   `!mode && non_desktop` skip is **missing**, so a section that merely
   sets `scale=` on an HMD stages it where C would leave it off.
 
-Both directions verified still present on current `main`. Impact
+Both directions were verified present on `main` at review time
+(since fixed by #39). Impact
 analysis: vkms heads are never non-desktop, so the VM suite cannot see
 this; it becomes live exactly on the real-hardware validation that is
 the declared R3 gate (an HMD/VR panel is the standard non-desktop
@@ -137,8 +138,9 @@ loud signal instead of a silently default-configured output.
 
 ## Cross-references
 
-* PR29-C1 added to the cross-PR open-items list (live on main; only
-  reachable on real hardware — flag it for the R3 DRM validation
-  pass in `docs/drm-testing.md` §3).
+* PR29-C1 **fixed in #39** (C's letter restored for both branches,
+  comments corrected, unit matrices added — the only possible guard,
+  since vkms never reports non-desktop heads; the R3 real-hardware
+  pass remains the end-to-end confirmation).
 * The max-bpc refusal interaction is #30's subject.
 * `[libinput]`/`configure_device` lands in #34/#35.

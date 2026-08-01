@@ -36,7 +36,7 @@ the fence, and it is this review's most concrete new finding.
 
 ## Findings — correctness
 
-### PR36-C1 (moderate→major, live on main): `debug::enable` attaches its authority listener without `mark_attached()` — under `--debug`, the pinned box is freed while still linked in the compositor's signal list
+### PR36-C1 (moderate→major, soundness): `debug::enable` attaches its authority listener without `mark_attached()` — under `--debug`, the pinned box is freed while still linked in the compositor's signal list — **fixed in #38**
 
 `debug.rs::enable` hands `auth.raw_ptr()` to `wsys_wl_signal_add`
 (onto `compositor->output_capture.ask_auth`) and returns the
@@ -64,11 +64,12 @@ exists to enforce (the R2c-mirror lesson) is silently defeated for
 this one node.
 
 Fix is one line (`auth.mark_attached();` before returning — matching
-`screenshooter.rs`). Verified missing on current `main`
-(`debug.rs`, tail of `enable`). Worth pairing with a debug assertion
-or fence-check grep: every `raw_ptr()` handed to an attach API should
-be followed by `mark_attached` — the contract exists, this shows it
-isn't mechanically enforced.
+`screenshooter.rs`); it was verified missing on `main` at review time.
+**#38 landed the line**, plus the mechanical enforcement this paragraph
+asked for: a drop-time `debug_assert!(l.is_attached())` in
+`Compositor::drop` and rust-smoke leg 9 (`--debug` under valgrind in a
+debug build), so any future `raw_ptr()` hand-attach that forgets
+`mark_attached` fails loudly.
 
 ### PR36-C2 (nit): `format_argument`'s `h` arm prints the compositor-side fd number — same as C, worth its one-line note
 
@@ -119,5 +120,6 @@ elsewhere in this file (`types[]`) is a stated comment.
 
 * Completes PR19-C4 (the mechanical audit this review kept asking
   for), and with it the last R3 blocker per the migration log.
-* **PR36-C1 added to the cross-PR open-items list** — the only
-  soundness-class finding currently live on `main`.
+* **PR36-C1 fixed in #38** — the missing `mark_attached()`, plus the
+  drop-time attached assert and rust-smoke leg 9 that make the bug
+  class fail loudly in every debug-build run.
