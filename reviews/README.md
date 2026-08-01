@@ -36,7 +36,7 @@ Ground rules used throughout:
 | [#24](https://github.com/nhwalker/example-weston-standalone/pull/24) | R2d: xwayland | [pr-024](pr-024-r2d-xwayland.md) | 3 / 0 — cleanest FFI file; fixes 3 C fd-hygiene defects (documented); drain gap discovered here but deferred to #26 |
 | [#25](https://github.com/nhwalker/example-weston-standalone/pull/25) | R2e: screenshooter + wcap recorder | [pr-025](pr-025-r2e-screenshooter.md) | 4 / 0 — faithful; fixes C's no-outputs wild pointer; drain-gap leak measured here, fixed #26 |
 | [#26](https://github.com/nhwalker/example-weston-standalone/pull/26) | Deferred-drain fix | [pr-026](pr-026-deferred-drain.md) | 3 / 0 — the right fix, red-first proof, exemplary entry-point audit; closes PR16-C1 |
-| [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | *pending* | |
+| [#27](https://github.com/nhwalker/example-weston-standalone/pull/27) | R2c-nested: x11 / wayland / pipewire | [pr-027](pr-027-r2c-nested.md) | 3 / 0 — probe-first porting; 1 live divergence (wayland default-head numbering) |
 | [#28](https://github.com/nhwalker/example-weston-standalone/pull/28) | DRM CI probe / VM harness | *pending* | |
 | [#29](https://github.com/nhwalker/example-weston-standalone/pull/29) | R2c-drm: DRM backend + layoutput | *pending* | |
 | [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | *pending* | |
@@ -71,3 +71,10 @@ reviewed range — i.e. still live on `main`:
   `weston_config_section_get_color` is always base-16 (unprefixed
   `ff002244` works); the Rust `parse_color` treats unprefixed values
   as decimal. Not mentioned in `docs/config-migration.md`.
+* **Nested-wayland default head numbering** (PR27-C1): C numbers
+  default heads `wayland0..` regardless of named WL-sections; the port
+  numbers them after the named count (`waylandN..`). An `[[output]]`
+  section targeting `wayland0` can silently match nothing. Verified
+  live on main.
+* **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
+  multi-backend layouts; still f64 on main.
