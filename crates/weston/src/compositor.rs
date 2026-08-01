@@ -1726,8 +1726,11 @@ fn drm_prepare_enable(
         DrmHeadPlan::Enable(plan) => {
             crate::layoutput::add_head(ctx, &plan.output_name, name, head);
         }
-        // mode=off, or a non-desktop head with no section: C returns
-        // without staging and lets the backend turn the head off.
+        // mode=off, or a non-desktop head whose section has no mode=
+        // key ("not explicitly enabled"): C returns without staging and
+        // lets the backend turn the head off.  A sectionless
+        // non-desktop head is NOT skipped — C stages it (see
+        // DrmHeadPlan::NonDesktop's doc for the two main.c branches).
         DrmHeadPlan::Off | DrmHeadPlan::NonDesktop => {}
         DrmHeadPlan::BadCloneOf(message) => {
             // C logs and treats the head as having no section at all.

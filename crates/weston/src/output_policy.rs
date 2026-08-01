@@ -522,8 +522,11 @@ pub enum DrmHeadPlan {
     /// `mode=off`: pruned before it ever reaches a layoutput
     /// (drm_head_prepare_enable, main.c:2777).
     Off,
-    /// A non-desktop head with no section at all — C skips it and lets
-    /// the backend turn it off (main.c:2780).
+    /// A non-desktop head whose controlling section has no `mode=`
+    /// key — C's "non-desktop and not explicitly enabled" skip
+    /// (main.c:2779-2781); the backend turns the head off.  A
+    /// non-desktop head with NO section at all is *staged* in C
+    /// (main.c:2792-2794) and therefore returns `Enable` here.
     NonDesktop,
     /// `clone-of` pointed at a missing section, or nested too deep.
     /// C logs and returns NULL, which lands the head in the
@@ -580,12 +583,13 @@ impl OutputPolicy {
             Err(message) => return DrmHeadPlan::BadCloneOf(message),
         };
         let Some(rule) = rule else {
-            // No section: C enables the head under its own name, with
-            // every default.  A non-desktop head is skipped instead —
-            // the backend turns it off (main.c:2780).
-            if non_desktop {
-                return DrmHeadPlan::NonDesktop;
-            }
+            // No section: C stages the head under its own name, with
+            // every default, non-desktop or not (main.c:2792-2794 —
+            // the `else` branch of drm_head_prepare_enable has no
+            // non_desktop check; the skip at 2780 belongs to the
+            // has-section arm below).  Preserved to the letter: the
+            // oracle is 14.0.1, and quietly skipping here would change
+            // which connectors get outputs on real hardware.
             return DrmHeadPlan::Enable(Box::new(DrmEnablePlan {
                 output_name: head_name.to_string(),
                 setup: self.drm_setup(None, current_mode_cli),
@@ -593,6 +597,14 @@ impl OutputPolicy {
         };
         if rule.off {
             return DrmHeadPlan::Off;
+        }
+        // C main.c:2779-2781: "non-desktop and not explicitly enabled"
+        // — a controlling section WITHOUT a mode= key does not count as
+        // explicitly enabling a non-desktop head (merely setting
+        // scale= on an HMD must not light it up); any mode= value that
+        // is not "off" does.
+        if non_desktop && rule.mode_string.is_none() {
+            return DrmHeadPlan::NonDesktop;
         }
         // C keys the layoutput on the *section's* name=, which is how
         // several heads land on one output (clone mode).
@@ -803,5 +815,115 @@ mod tests {
             assert_eq!(OutputTransform::parse(s), Some(t));
         }
         assert_eq!(OutputTransform::parse("rotate-45"), None);
+    }
+
+    /// C `drm_head_prepare_enable`'s non-desktop matrix, to the letter
+    /// (main.c:2764-2796).  vkms never reports non-desktop heads, so
+    /// the e2e suite cannot pin these four branches — this test is the
+    /// only guard until the real-hardware R3 validation.
+    #[test]
+    fn drm_non_desktop_matrix_matches_c() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        p.rules.push(OutputRule {
+            name: "HDMI-A-1".into(),
+            // A section that merely tweaks the head, with no mode= key:
+            // "not explicitly enabled".
+            scale: Some(2),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "DP-1".into(),
+            mode_string: Some("preferred".into()),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "DP-2".into(),
+            off: true,
+            mode_string: Some("off".into()),
+            ..OutputRule::default()
+        });
+
+        let is_enable = |plan: &DrmHeadPlan| matches!(plan, DrmHeadPlan::Enable(_));
+
+        // No section at all: staged regardless of non-desktop
+        // (main.c:2792-2794 — the else branch has no non_desktop check).
+        assert!(is_enable(&p.decide_drm("eDP-1", true, false)));
+        assert!(is_enable(&p.decide_drm("eDP-1", false, false)));
+
+        // Section without mode=: skipped for a non-desktop head
+        // (main.c:2779-2781), staged for a desktop one.
+        assert_eq!(
+            p.decide_drm("HDMI-A-1", true, false),
+            DrmHeadPlan::NonDesktop
+        );
+        assert!(is_enable(&p.decide_drm("HDMI-A-1", false, false)));
+
+        // Section with a non-off mode=: "explicitly enabled" — staged
+        // even when non-desktop.
+        assert!(is_enable(&p.decide_drm("DP-1", true, false)));
+
+        // mode=off wins over everything, desktop or not.
+        assert_eq!(p.decide_drm("DP-2", true, false), DrmHeadPlan::Off);
+        assert_eq!(p.decide_drm("DP-2", false, false), DrmHeadPlan::Off);
+    }
+
+    /// The non-desktop skip reads the CONTROLLING section's mode= —
+    /// C's check runs on the section
+    /// drm_config_find_controlling_output_section returned, i.e. after
+    /// clone-of resolution, not on the head's own section.
+    #[test]
+    fn drm_non_desktop_follows_the_controlling_section() {
+        let mut p = OutputPolicy::defaults(1024, 640);
+        p.rules.push(OutputRule {
+            name: "DP-1".into(),
+            mode_string: Some("preferred".into()),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-1".into(), // a section with no mode= key
+            scale: Some(2),
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-2".into(),
+            clone_of: Some("DP-1".into()), // controller HAS a mode=
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "HDMI-A-3".into(),
+            clone_of: Some("HDMI-A-1".into()), // controller has none
+            ..OutputRule::default()
+        });
+        p.rules.push(OutputRule {
+            name: "DP-3".into(),
+            clone_of: Some("nope".into()), // dangling clone-of
+            ..OutputRule::default()
+        });
+
+        // clone-of a moded section: explicitly enabled — a non-desktop
+        // clone head is staged, on the CONTROLLER's layoutput.
+        match p.decide_drm("HDMI-A-2", true, false) {
+            DrmHeadPlan::Enable(plan) => assert_eq!(plan.output_name, "DP-1"),
+            other => panic!("expected Enable, got {other:?}"),
+        }
+        // clone-of a mode-less section: "not explicitly enabled" — the
+        // non-desktop skip applies through the resolution.
+        assert_eq!(
+            p.decide_drm("HDMI-A-3", true, false),
+            DrmHeadPlan::NonDesktop
+        );
+        // Dangling clone-of is its own plan regardless of non-desktop:
+        // the caller logs C's message and stages the head sectionless —
+        // which, per the matrix above, means staged even when
+        // non-desktop (C's controlling-section lookup returns NULL and
+        // the head takes the else branch).
+        assert!(matches!(
+            p.decide_drm("DP-3", true, false),
+            DrmHeadPlan::BadCloneOf(_)
+        ));
+        assert!(matches!(
+            p.decide_drm("DP-3", false, false),
+            DrmHeadPlan::BadCloneOf(_)
+        ));
     }
 }
