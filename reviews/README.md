@@ -42,7 +42,7 @@ Ground rules used throughout:
 | [#30](https://github.com/nhwalker/example-weston-standalone/pull/30) | fix(drm): max-bpc refusal | [pr-030](pr-030-drm-max-bpc.md) | 1 / 0 — correct minimal fix; names the refusal-table drift pattern |
 | [#31](https://github.com/nhwalker/example-weston-standalone/pull/31) | Drop remoting plugin | [pr-031](pr-031-drop-remoting.md) | 2 / 0 — honest product decision; closes the silent-no-op sections |
 | [#32](https://github.com/nhwalker/example-weston-standalone/pull/32) | Drop pipewire virtual-output plugin | [pr-032](pr-032-drop-pipewire-output.md) | 0 / 0 — model negative-space test for the backend/plugin line |
-| [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | *pending* | |
+| [#33](https://github.com/nhwalker/example-weston-standalone/pull/33) | R2c-color: colour management | [pr-033](pr-033-r2c-color.md) | 3 / 0 (nits) — faithful; closes final PR19-C4 items; grouping rule + refcount protocol verified |
 | [#34](https://github.com/nhwalker/example-weston-standalone/pull/34) | R2c-input 1/2: libinput/libevdev bindings | *pending* | |
 | [#35](https://github.com/nhwalker/example-weston-standalone/pull/35) | R2c-input 2/2 + R2f: logging stack | *pending* | |
 | [#36](https://github.com/nhwalker/example-weston-standalone/pull/36) | Close the port surface | *pending* | |
