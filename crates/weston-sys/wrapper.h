@@ -24,5 +24,14 @@
 #include <libweston/backend-wayland.h>
 #include <libweston/backend-x11.h>
 
+/* libinput + libevdev: the DRM backend's configure_device hook hands us a
+ * `struct libinput_device *` and the frontend applies [libinput] to it
+ * (C configure_input_device, main.c:2239).  These are the only two
+ * libraries outside weston/wayland the fence talks to, and they enter
+ * here rather than through libweston because libweston's headers only
+ * forward-declare libinput_device. */
+#include <libinput.h>
+#include <libevdev/libevdev.h>
+
 #include "shim/shim.h"
 #include "shim/testsupport.h"

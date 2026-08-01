@@ -28,3 +28,28 @@ pub const XWAYLAND_LISTEN_ARG: &str = match env!("WSYS_XWAYLAND_LISTENFD").as_by
     [b'1'] => "-listenfd",
     _ => "-listen",
 };
+
+#[cfg(test)]
+mod link_tests {
+    //! The one thing a bindings commit can get wrong without any
+    //! compile error: producing declarations the linker cannot resolve.
+    //!
+    //! `cargo build` does not catch it, because with `--as-needed` a
+    //! library nothing references is dropped from DT_NEEDED entirely —
+    //! so weston-sys built clean against libinput/libevdev while the
+    //! binary linked against neither.  Taking the addresses forces the
+    //! symbols to resolve, which is all these assert: that the
+    //! pkg-config probes in build.rs emitted the right `-l` flags.
+
+    #[test]
+    fn libinput_and_libevdev_symbols_resolve() {
+        let addrs: [*const (); 5] = [
+            super::libinput_device_config_tap_get_finger_count as *const (),
+            super::libinput_device_config_accel_set_speed as *const (),
+            super::libinput_device_config_scroll_set_method as *const (),
+            super::libinput_device_get_name as *const (),
+            super::libevdev_event_code_from_name as *const (),
+        ];
+        assert!(addrs.iter().all(|p| !p.is_null()));
+    }
+}
