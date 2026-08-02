@@ -121,5 +121,14 @@ Findings fixed after the review series landed:
 Issues found in one PR that were **not** fixed by any later PR — i.e.
 still live on `main`:
 
-*(none — every open item has been fixed; see "Resolved since the
-review" above)*
+*(none from the PR-by-PR series — every open item has been fixed; see
+"Resolved since the review" above)*
+
+## Gestalt review (whole-port pass)
+
+A follow-up whole-system review — [gestalt-review.md](gestalt-review.md)
+(2026-08-02, at `4fc7ae6`) — re-verified the series' claims by execution
+and audited the port *across* slices. It confirms the paper trail above
+but opens a new finding set (`GES-*`), including one blocker
+(`compositor->exit` never installed) and two soundness-fence holes; its
+§7 is the current open-items list for the port as a whole.
