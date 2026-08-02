@@ -84,6 +84,11 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR20-C1** (`lazy_align` kept `f64` where C truncates the sum
+  through `int`): **fixed in #48** — C's truncation restored with the
+  residual `as`-saturation difference documented, pinned by unit
+  tests over hand-wired list structs (the fractional-peer case and
+  the untouched integer case).
 * **PR27-C1** (nested-wayland default heads numbered after the named
   count instead of C's from-zero): **fixed in #44** — the asymmetry
   between C's x11 and wayland loops is now a named
@@ -105,5 +110,5 @@ still live on `main`:
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
   current main.
-* **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
-  multi-backend layouts; still f64 on main.
+*(none — every open item has been fixed; see "Resolved since the
+review" above)*
