@@ -84,6 +84,13 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR16-C6** (socket bound before the heads flush, inverting C's
+  bring-up order): **fixed in #47** — the socket now binds after the
+  flush + init_failed check as in C (main.c:4706), so its existence
+  implies configured outputs; the full order is documented at the
+  flush, the one remaining divergence (shell before flush) is
+  deliberate with its rationale at `with_shell`, and an e2e test pins
+  the log ordering.
 * **PR27-C1** (nested-wayland default heads numbered after the named
   count instead of C's from-zero): **fixed in #44** — the asymmetry
   between C's x11 and wayland loops is now a named
@@ -95,12 +102,6 @@ Findings fixed after the review series landed:
 Issues found in one PR that were **not** fixed by any later PR — i.e.
 still live on `main`:
 
-* **Bring-up ordering** (PR16-C6): final shape (post-#36) is
-  backends_loaded → shell attach → socket → flush → xwayland → wake,
-  vs C's flush → socket → shell → xwayland → wake. The shell-before-
-  flush half is documented (with rationale) at `with_shell`; the
-  socket-before-flush half is acknowledged only in a smoke-script
-  comment. Live divergence, low impact.
 * **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
