@@ -483,6 +483,18 @@ fn reject_unported(cli: &Cli, settings: &Settings) -> Option<ExitCode> {
              which is not supported by westonite",
         ));
     }
+    // C's deprecated `enable_tap` underscore spelling — honored there
+    // behind a "!!DEPRECATION WARNING!!" (main.c:2260-2267) — is
+    // dropped in the re-spec: one spelling, `enable-tap`.  The key
+    // stays in the model so this can say what to type instead of
+    // pointing a generic unknown-field error at a spelling the C docs
+    // never used (the user typed what their old weston.ini had).
+    if settings.config.libinput.enable_tap_deprecated.is_some() {
+        return Some(fatal(
+            "[libinput] enable_tap is C's deprecated spelling and is not supported by \
+             westonite; spell it enable-tap",
+        ));
+    }
     // `--modules` / `[core] modules` — third-party `wet_module_init`
     // plugins — dropped by product decision (2026-08-01), reversing
     // plan D2's "modules= dlopen survives".  Nothing westonite ships
