@@ -283,6 +283,15 @@ pub struct Keyboard {
 #[serde(rename_all = "kebab-case", deny_unknown_fields, default)]
 pub struct Libinput {
     pub enable_tap: Option<bool>,
+    /// C's deprecated underscore spelling of `enable-tap`, which C
+    /// still honors behind a `!!DEPRECATION WARNING!!`
+    /// (main.c:2260-2267).  Dropped in the re-spec — one spelling —
+    /// but kept in the model so the frontend's refusal can name the
+    /// rename: the user typed what their old weston.ini had, and a
+    /// generic unknown-field error would point at a spelling the C
+    /// docs never used.  See docs/config-migration.md.
+    #[serde(rename = "enable_tap")]
+    pub enable_tap_deprecated: Option<bool>,
     pub tap_and_drag: Option<bool>,
     pub tap_and_drag_lock: Option<bool>,
     /// `[libinput] disable-while-typing=` (touchpads).

@@ -63,7 +63,7 @@ distinction (default list vs. disabled) matches C.
 
 ## Findings
 
-### PR35-C1 (minor divergence, undocumented, live on main): C's deprecated `enable_tap` spelling is dropped without a migration note
+### PR35-C1 (minor divergence, undocumented, live on main): C's deprecated `enable_tap` spelling is dropped without a migration note — **fixed in #43**
 
 C honors the underscore spelling with a `!!DEPRECATION WARNING!!` and
 then applies it (main.c:2261-2271). The kebab-case model has no alias,
@@ -73,7 +73,10 @@ TOML migration with a generic unknown-field error — and
 key is a fine re-spec decision; the migration doc is exactly where it
 needs one sentence. (This is also the only `[libinput]` key where the
 generic error names a key the C docs never used — the user typed what
-their old weston.ini had.)
+their old weston.ini had.) **Fixed in #43**: the key stays in the
+model (the `modules=` precedent from #36) so the refusal names the
+rename, `config-migration.md` gained the row, and unit + e2e tests
+pin both halves.
 
 ### PR35-C2 (documented divergence, for the ledger): the no-scope logging fallback
 
