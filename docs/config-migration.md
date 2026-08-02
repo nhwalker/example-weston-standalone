@@ -37,7 +37,7 @@ An annotated example lives at the repo root:
 | `[color_characteristics]` | `[[color-characteristics]]` | the one ini section spelled with an underscore; kebab-case like every other key |
 | booleans `true`/`false` | bare `true` / `false` | unquoted |
 | numbers | bare numbers | unquoted |
-| `background-color=0xff002244` | `background-color = "0xff002244"` | quoted string, hex spelling kept; a bare `0xff002244` or a decimal number also works, so `-o shell.background-color=0xff002244` needs no quoting |
+| `background-color=0xff002244` | `background-color = "0xff002244"` | quoted string, hex spelling kept — **always base-16** like the ini (`"ff002244"` unprefixed works; `"12345678"` means 0x12345678, not twelve million). A bare TOML integer also works by value, so `-o shell.background-color=0xff002244` needs no quoting. Where the ini silently falls back to the default color on a bad value, this is a startup error |
 | unknown/typo'd keys silently ignored | **startup error** with line/column | D9: `deny_unknown_fields` |
 | `WESTON_CONFIG_FILE` exported to clients | **dropped** | D12: no shipped client reads it, and no stock client parses TOML |
 | `weston.ini` never read | unchanged (`westonite.toml` only) | P2 behavior kept |
