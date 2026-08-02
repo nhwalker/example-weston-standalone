@@ -51,8 +51,9 @@
 
 [shell]
 # Background color, 0xAARRGGBB.  A quoted string keeps the hex spelling
-# the ini used; a bare 0xff002244 (TOML integer) works too, which is
-# what `-o shell.background-color=0xff002244` produces.
+# the ini used and is ALWAYS base-16, prefixed or not, exactly like the
+# ini ("ff002244" works).  A bare 0xff002244 (TOML integer) works too,
+# which is what `-o shell.background-color=0xff002244` produces.
 #background-color = "0xff002244"
 
 [keyboard]
