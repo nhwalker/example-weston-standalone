@@ -1993,12 +1993,24 @@ pub(crate) fn lazy_align(
     unsafe {
         let list: *mut weston_sys::wl_list = &raw mut (*compositor).output_list;
         let prev = (*list).prev;
-        let mut next_x = 0.0_f64;
+        let mut next_x = 0_i32;
         if !prev.is_null() && prev != list {
             let peer = crate::container_of!(prev, weston_sys::weston_output, link);
-            next_x = (*peer).pos.c.x + f64::from((*peer).width);
+            // C: `int next_x = peer->pos.c.x + peer->width`
+            // (main.c:1994-2001) — the double sum is truncated through
+            // the int before reuse, so a peer at a fractional x aligns
+            // the next output on the integer grid.  Keeping the
+            // fraction (the obvious "improvement") is the kind of
+            // divergence that shows up as a one-pixel seam in a
+            // multi-output layout years later (PR20-C1).  Rust's `as`
+            // saturates where C's out-of-range cast is UB; identical
+            // for any coordinate either can actually reach.
+            next_x = ((*peer).pos.c.x + f64::from((*peer).width)) as i32;
         }
-        (*output.as_ptr()).pos.c = weston_sys::weston_coord { x: next_x, y: 0.0 };
+        (*output.as_ptr()).pos.c = weston_sys::weston_coord {
+            x: f64::from(next_x),
+            y: 0.0,
+        };
     }
 }
 
@@ -2625,5 +2637,69 @@ pub(crate) fn untrack_surface(ctx: &Ctx, id: crate::ids::SurfaceId) {
     if last {
         ctx.inner.surfaces.borrow_mut().invalidate_ptr(p);
         ctx.retire_listener(p.as_ptr() as usize);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // lazy_align reads only the compositor's output_list and the tail
+    // peer's pos/width, and writes only the subject's pos — zeroed
+    // bindgen structs with a hand-wired wl_list are the whole harness;
+    // no C code runs.
+
+    fn zeroed_output() -> Box<weston_sys::weston_output> {
+        // SAFETY: bindgen C struct of ints/floats/raw pointers; an
+        // all-zero value is a valid (if meaningless) instance for the
+        // two fields lazy_align touches.
+        unsafe { Box::new(std::mem::zeroed()) }
+    }
+
+    #[test]
+    fn lazy_align_places_first_output_at_origin() {
+        // SAFETY: as zeroed_output; only output_list is read.
+        let mut comp: Box<weston_sys::weston_compositor> = unsafe { Box::new(std::mem::zeroed()) };
+        let list: *mut weston_sys::wl_list = &raw mut comp.output_list;
+        // wl_list_init: an empty list points at itself.
+        comp.output_list.prev = list;
+        comp.output_list.next = list;
+
+        let mut out = zeroed_output();
+        out.pos.c.x = 777.0; // must be overwritten
+        lazy_align(&raw mut *comp, NonNull::from(&mut *out));
+        assert_eq!(out.pos.c.x, 0.0);
+        assert_eq!(out.pos.c.y, 0.0);
+    }
+
+    #[test]
+    fn lazy_align_truncates_through_int_like_c() {
+        // C (main.c:1994-2001): `int next_x = peer->pos.c.x +
+        // peer->width` — the double sum truncates through the int, so
+        // a peer at a fractional x aligns the next output on the
+        // integer grid: (int)(100.75 + 100) == 200, not 200.75
+        // (PR20-C1: the port used to keep the fraction).
+        // SAFETY: as zeroed_output; only output_list is read.
+        let mut comp: Box<weston_sys::weston_compositor> = unsafe { Box::new(std::mem::zeroed()) };
+        let mut peer = zeroed_output();
+        peer.pos.c.x = 100.75;
+        peer.width = 100;
+        let list: *mut weston_sys::wl_list = &raw mut comp.output_list;
+        let plink: *mut weston_sys::wl_list = &raw mut peer.link;
+        comp.output_list.next = plink;
+        comp.output_list.prev = plink;
+        peer.link.next = list;
+        peer.link.prev = list;
+
+        let mut out = zeroed_output();
+        lazy_align(&raw mut *comp, NonNull::from(&mut *out));
+        assert_eq!(out.pos.c.x, 200.0);
+
+        // Integer peers are untouched by the truncation: 0 + 1024.
+        peer.pos.c.x = 0.0;
+        peer.width = 1024;
+        let mut out2 = zeroed_output();
+        lazy_align(&raw mut *comp, NonNull::from(&mut *out2));
+        assert_eq!(out2.pos.c.x, 1024.0);
     }
 }

@@ -55,7 +55,7 @@ deviations found beyond those listed below.
 
 ## Findings — correctness
 
-### PR20-C1 (nit divergence): `lazy_align` keeps `f64` where C truncates through `int`
+### PR20-C1 (nit divergence): `lazy_align` keeps `f64` where C truncates through `int` — **fixed in #48**
 
 C: `int next_x = peer->pos.c.x + peer->width;` — the peer's double x
 is truncated to int before reuse (`main.c:1994-2003`). Rust:
@@ -64,7 +64,10 @@ two differ only when a peer output sits at a fractional x, which no
 current frontend path produces — but this function exists precisely
 for the multi-output future, and the divergence is the kind that shows
 up as a one-pixel seam years later. Either truncate to match C or
-leave a comment stating the deliberate improvement.
+leave a comment stating the deliberate improvement. **#48 took the
+first option**: C's truncation restored (with the residual
+`as`-saturation difference documented at the cast), pinned by unit
+tests over hand-wired list structs.
 
 ### PR20-C2 (nit): `parse_mode`'s positivity check is a third undocumented strictness
 
