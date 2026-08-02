@@ -1338,18 +1338,24 @@ impl Compositor {
         Ok(())
     }
 
-    /// Install the SIGTERM/SIGINT/SIGCHLD event-loop sources (main.c
-    /// signals[]).  Called from build() BEFORE backend load — the
-    /// sigprocmask that backs the signalfd must be in place before any
-    /// backend spawns threads (they inherit the mask; see the call
-    /// site) — which also puts it before any client spawn (SIGCHLD
-    /// reaping/watch never misses an early exit).
+    /// Install the SIGTERM/SIGUSR2/SIGCHLD event-loop sources (main.c
+    /// signals[]) and the sigaction-routed SIGINT (main.c:4552-4567).
+    /// Called from build() BEFORE backend load — the sigprocmask that
+    /// backs the signalfd must be in place before any backend spawns
+    /// threads (they inherit the mask; see the call site) — which also
+    /// puts it before any client spawn (SIGCHLD reaping/watch never
+    /// misses an early exit).
     fn install_signal_sources(&mut self) -> Result<(), CompositorError> {
         let display = self.ctx.inner.display.get();
         // SAFETY: display live; loop borrowed for source installation.
         let ev_loop = unsafe { weston_sys::wl_display_get_event_loop(display) };
 
-        // Signal-driven termination, as main.c installs for SIGTERM/INT.
+        // Signal-driven termination, as main.c installs for
+        // SIGTERM/SIGUSR2.  SIGINT is deliberately NOT a loop source:
+        // C's comment (main.c:4552) — a signalfd-caught SIGINT is
+        // invisible to gdb, so Ctrl+C in a debugger would "stop"
+        // weston by exiting it cleanly.  Instead a plain sigaction
+        // handler re-raises SIGUSR2 (below), which IS on the loop.
         // SAFETY: display stays valid while the loop runs; the sources
         // are destroyed with the display.
         let s1 = unsafe {
@@ -1364,7 +1370,7 @@ impl Compositor {
         let s2 = unsafe {
             weston_sys::wl_event_loop_add_signal(
                 ev_loop,
-                libc::SIGINT,
+                libc::SIGUSR2,
                 Some(on_term_signal),
                 display.cast(),
             )
@@ -1397,6 +1403,22 @@ impl Compositor {
         self.signal_sources.push(s2);
         self.signal_sources.push(s3);
 
+        // C main.c:4562-4567: SIGINT through plain sigaction, handler
+        // re-raises SIGUSR2 ("xwayland uses SIGUSR1") — the one signal
+        // gdb can still catch.  C ignores sigaction's return; so do
+        // we.  Never restored, as in C: after teardown a SIGINT still
+        // raises SIGUSR2, whose disposition is then the default again.
+        // SAFETY: installs an async-signal-safe handler (bare raise);
+        // the zeroed struct + explicit fields match C's
+        // sa_handler/empty-mask/flags-0 setup exactly.
+        unsafe {
+            let mut action: libc::sigaction = std::mem::zeroed();
+            action.sa_sigaction = sigint_helper as *const () as libc::sighandler_t;
+            libc::sigemptyset(&mut action.sa_mask);
+            action.sa_flags = 0;
+            libc::sigaction(libc::SIGINT, &action, std::ptr::null_mut());
+        }
+
         // C main.c:4570: block SIGUSR1 up front, unconditionally —
         // "Xwayland uses SIGUSR1 for communicating with weston" — so
         // that (a) a stray SIGUSR1 can't kill the process with its
@@ -1413,7 +1435,8 @@ impl Compositor {
         Ok(())
     }
 
-    /// Run until terminated (SIGTERM/SIGINT).  Returns the process exit
+    /// Run until terminated (SIGTERM/SIGUSR2, or SIGINT via the
+    /// sigaction reroute).  Returns the process exit
     /// code (0 on clean signal-driven shutdown — the Phase-1 contract).
     pub fn run(&mut self) -> i32 {
         let display = self.ctx.inner.display.get();
@@ -1447,7 +1470,10 @@ impl Compositor {
         //     an entry point on C's schedule at all: we hand it to
         //     weston_desktop_client_for_each_surface from inside an
         //     already-wrapped trampoline, and it only appends to a
-        //     caller-owned Vec.
+        //     caller-owned Vec;
+        //   - sigint_helper, which is not a loop entry point at all
+        //     but a REAL async-signal handler (sigaction): nothing is
+        //     allowed in its body but the one raise().
         // (Re-derive with a body-scoped scan for extern "C" fns whose
         // bodies contain no with_depth/with_ctx/guard_ctx, not a
         // fixed-size window — the window version missed two of these.)
@@ -1587,10 +1613,12 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
     1
 }
 
-extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
+extern "C" fn on_term_signal(signal: c_int, data: *mut c_void) -> c_int {
     // Async-safe enough: wl_event_loop signal sources deliver via
-    // signalfd on the main loop, not in async signal context.
-    //
+    // signalfd on the main loop, not in async signal context — which
+    // is also why the weston_log below is safe, exactly as it is in
+    // C's on_term_signal (main.c:831).
+    crate::log::log_line(&format!("caught signal {signal}"));
     // Wrapped like on_sigchld now that the loop's base depth is zero
     // (see `run`).  wl_display_terminate only clears the loop's run
     // flag — it emits nothing and cannot re-enter us — so this is A4
@@ -1608,6 +1636,18 @@ extern "C" fn on_term_signal(_signal: c_int, data: *mut c_void) -> c_int {
         unsafe { weston_sys::wl_display_terminate(data.cast()) };
     });
     1
+}
+
+/// C sigint_helper (main.c:4406): runs in REAL async-signal context —
+/// unlike every other extern "C" fn in this crate, which the event
+/// loop calls synchronously.  No panic barrier, no logging, no Ctx:
+/// nothing here but the one async-signal-safe raise(), exactly like C.
+/// The re-raised SIGUSR2 is blocked by the loop source's sigprocmask,
+/// so it lands in the signalfd and terminates via on_term_signal.
+extern "C" fn sigint_helper(_sig: c_int) {
+    // SAFETY: raise is async-signal-safe; SIGUSR2's route is the
+    // event-loop source installed in install_signal_sources.
+    unsafe { libc::raise(libc::SIGUSR2) };
 }
 
 /// The registry side of head/output tracking (§3b): registration and

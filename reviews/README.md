@@ -63,6 +63,11 @@ Findings fixed after the review series landed:
   `drm_non_desktop_follows_the_controlling_section` unit tests (the
   only possible guard until the real-hardware R3 validation, since
   vkms never reports non-desktop heads).
+* **PR16-C4** (signal-handling shape diverged from C: SIGINT via
+  signalfd instead of the gdb-friendly sigaction→SIGUSR2 reroute, no
+  SIGUSR2 termination route, no `caught signal %d` line): **fixed in
+  #45** — C's shape restored and pinned by three e2e tests run
+  against the C oracle too.
 * **PR17-C1** (`dispatch_sync`'s A3-violation fallback silent despite
   the comment's "loud in debug builds" promise): **fixed in #41** —
   the loud path keys on a sync handler being on the stack outside a
@@ -90,10 +95,6 @@ Findings fixed after the review series landed:
 Issues found in one PR that were **not** fixed by any later PR — i.e.
 still live on `main`:
 
-* **Signal-handling divergence** (PR16-C4): SIGINT caught via signalfd
-  (C uses `sigaction`→`raise(SIGUSR2)` so gdb Ctrl+C works), no SIGUSR2
-  termination route, no `caught signal %d` log line. Verified still
-  present on current main.
 * **Bring-up ordering** (PR16-C6): final shape (post-#36) is
   backends_loaded → shell attach → socket → flush → xwayland → wake,
   vs C's flush → socket → shell → xwayland → wake. The shell-before-
