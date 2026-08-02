@@ -29,6 +29,14 @@ is a deferred event.
 Port status legend: `—` not yet ported · `R0` implemented in the R0
 foundation · statuses advance to `R1`/`R2x` as phases land.
 
+**Correction (2026-08-02, PR17-C2):** L27 and L28's create half were
+recorded *deferred* while the implementation has dispatched both sync
+since R1 (`register_seat` / `register_output_shell` both end in
+`dispatch_sync`).  The rows now carry the sync proofs; `events.rs`'s
+section grouping is corrected to match.  This inventory is the audit
+surface for exactly that class of drift — trust the Tier cells only as
+far as the named dispatch sites confirm them.
+
 **R1 status note (2026-07-25):** every shell-side row is live — the
 desktop-shell listener set (L11–L28) is implemented in
 `crates/weston/src/shell_init.rs` (seat/output/session/transform/
@@ -81,11 +89,12 @@ per cell; `git log` on the named modules is the per-row audit trail.
 | L24 | `desktop_shell.destroy_listener` | `shell_destroy` (2087) | `shell.c:2184` (`weston_compositor_add_destroy_listener_once`) | compositor destroy | **sync** (teardown; proof: emitted from `weston_compositor_destroy`, which the frontend calls at exit outside any app borrow) | full teardown; queue discarded after (§3e) | — |
 | L25 | `desktop_shell.session_listener` | `desktop_shell_notify_session` (2133) | `shell.c:2231` | `session_signal` | deferred | VT switch / lock policy | — |
 | L26 | `desktop_shell.pointer_focus_listener` | *(none — vestigial)* | never attached (field declared shell.h:62, unreferenced in shell.c) | — | n/a | dead field; busy-cursor policy is driven by `ping_timeout` + the per-seat L18 path; not ported | n/a |
-| L27 | `desktop_shell.seat_create_listener` | `handle_seat_created` (2162) | `shell.c:2225` | `seat_created_signal` | deferred | registers shell_seat (registry insert on the Rust side is sync-in-trampoline, policy deferred) | — |
-| L28 | `desktop_shell.output_create_listener` / `output_move_listener` | `handle_output_create` (1991) / `handle_output_move` (2020) | `shell.c:2040/2044` | `output_created/moved_signal` | deferred | background curtain creation / view move | — |
+| L27 | `desktop_shell.seat_create_listener` | `handle_seat_created` (2162) | `shell.c:2225` | `seat_created_signal` | **sync** (proof: emitted from `weston_seat_init` during backend input bring-up / device hotplug — the shell makes no outbound call that creates a seat, so the emission can never nest under the app borrow; the handler registers wrapper seat state, then `dispatch_sync(SeatCreated)` — shell_init.rs `register_seat`) | registers shell_seat; the registry insert is sync-in-trampoline like every §3b registration | — |
+| L28 | `desktop_shell.output_create_listener` / `output_move_listener` | `handle_output_create` (1991) / `handle_output_move` (2020) | `shell.c:2040/2044` | `output_created/moved_signal` | **sync** (create) / deferred (move).  Create proof: `output_created_signal` is emitted inside `weston_compositor_add_output` during output enable, reached only from heads-changed processing (wrapper/policy state, no app borrow — the L4 argument); the shell makes no outbound call that enables an output.  Handler: shell_init.rs `register_output_shell` → `dispatch_sync(OutputCreated)` | background curtain creation must happen **inside** the `output_created` emission — load-bearing since R2b (the curtain-missing bug PR19-C1) — which is why create is sync while move stays a plain deferred notification | — |
 
-*(L28 folds two sibling fields into one row for brevity; both are
-plain deferred notifications.  Field count: 7 + 3 + 19 = 29.)*
+*(L28 folds two sibling fields into one row for brevity; unlike the
+original plan the two halves are no longer the same tier — see the
+Tier cell.  Field count: 7 + 3 + 19 = 29.)*
 
 ## 2. Bindings (6 registrations — B3–B6 are R1; B1/B2 are R2e)
 

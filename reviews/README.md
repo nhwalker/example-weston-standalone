@@ -84,6 +84,11 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR17-C2** (inventory tier drift: L27/L28-create recorded
+  *deferred* while dispatched sync since R1): **fixed in #46** — the
+  rows carry the sync tiers with their A3 proofs, L28's note records
+  why create is sync while move stays deferred, a dated correction
+  note marks the drift, and `events.rs`'s section grouping matches.
 * **PR20-C1** (`lazy_align` kept `f64` where C truncates the sum
   through `int`): **fixed in #48** — C's truncation restored with the
   residual `as`-saturation difference documented, pinned by unit
@@ -106,9 +111,9 @@ still live on `main`:
   flush half is documented (with rationale) at `with_shell`; the
   socket-before-flush half is acknowledged only in a smoke-script
   comment. Live divergence, low impact.
-* **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
-  L28 (`output_create`) are marked *deferred* in the inventory while
-  the implementation dispatches both sync. Verified still wrong on
-  current main.
-*(none — every open item has been fixed; see "Resolved since the
-review" above)*
+* **Bring-up ordering** (PR16-C6): final shape (post-#36) is
+  backends_loaded → shell attach → socket → flush → xwayland → wake,
+  vs C's flush → socket → shell → xwayland → wake. The shell-before-
+  flush half is documented (with rationale) at `with_shell`; the
+  socket-before-flush half is acknowledged only in a smoke-script
+  comment. Live divergence, low impact. (Fix open as #47.)
