@@ -153,7 +153,7 @@ path removes the installed source); the dead variant went live later
 when the signal install moved into a fallible `install_signal_sources`
 (present on current main, `compositor.rs:1370`).
 
-### PR16-C6 (minor divergence): socket is bound before the heads flush; C flushes first
+### PR16-C6 (minor divergence): socket is bound before the heads flush; C flushes first — **fixed in #47**
 
 `build()` order (`compositor.rs:196-214`): `backends_loaded` → **add
 socket** → `flush_heads_changed` → `wake`. C's order
@@ -168,6 +168,11 @@ round found `rust-smoke` leg 7 waiting on the socket as a proxy for
 invalidates. `wake` before any shell exists is also a (benign at R0)
 reordering relative to C, where wake happens after shell + autolaunch
 setup. Worth normalizing to C's order when there's no reason not to.
+**#47 did exactly that**: the socket now binds after the flush +
+`init_failed` check, the full bring-up order is documented at the
+flush, and the only remaining reorder (shell before flush) is the
+deliberate one with its rationale at `with_shell`; an e2e test pins
+the socket-after-outputs log ordering.
 
 ### PR16-C7 (minor): fence-check claims more than it checks — **fixed in #18**
 
