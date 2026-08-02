@@ -758,6 +758,31 @@ impl CompositorBuilder {
             comp.frontend_listeners.push(auth);
         }
 
+        // Bring-up order from here matches C (main.c:4671-4767): flush
+        // → init_failed check → socket → xwayland → wake.  The one
+        // deliberate divergence is above, documented at `with_shell`:
+        // the shell attaches BEFORE the flush (C: after the socket) so
+        // its output listeners see every output creation.  The socket
+        // deliberately binds AFTER the flush, as in C (main.c:4706) —
+        // PR16-C6 had it the other way around, which made the socket's
+        // on-disk existence a false proxy for "outputs are configured"
+        // (exactly the inference test harnesses want to draw).
+
+        // The C frontend flushes heads once after backend setup
+        // (main.c:4671); our sync-tier listener enables outputs here.
+        ctx.with_depth(|| {
+            // SAFETY: compositor is live.
+            unsafe { weston_sys::weston_compositor_flush_heads_changed(compositor) };
+        });
+
+        // C wet_main: `if (wet.init_failed) goto out` immediately after
+        // the flush — an output that could not be created, configured
+        // or enabled is a startup failure, never a compositor that
+        // comes up quietly short of outputs.
+        if ctx.inner.init_failed.get() {
+            return Err(CompositorError::OutputInit);
+        }
+
         if self.socket {
             let bound = match &self.socket_name {
                 Some(name) => {
@@ -789,21 +814,6 @@ impl CompositorBuilder {
             };
             crate::log::log_line(&format!("westonite: wayland socket {bound}"));
             comp.socket_bound = Some(bound);
-        }
-
-        // The C frontend flushes heads once after backend setup
-        // (main.c:4671); our sync-tier listener enables outputs here.
-        ctx.with_depth(|| {
-            // SAFETY: compositor is live.
-            unsafe { weston_sys::weston_compositor_flush_heads_changed(compositor) };
-        });
-
-        // C wet_main: `if (wet.init_failed) goto out` immediately after
-        // the flush — an output that could not be created, configured
-        // or enabled is a startup failure, never a compositor that
-        // comes up quietly short of outputs.
-        if ctx.inner.init_failed.get() {
-            return Err(CompositorError::OutputInit);
         }
 
         // C wet_main loads xwayland after the socket and shell, before

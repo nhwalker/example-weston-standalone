@@ -89,6 +89,13 @@ Findings fixed after the review series landed:
   rows carry the sync tiers with their A3 proofs, L28's note records
   why create is sync while move stays deferred, a dated correction
   note marks the drift, and `events.rs`'s section grouping matches.
+* **PR16-C6** (socket bound before the heads flush, inverting C's
+  bring-up order): **fixed in #47** — the socket now binds after the
+  flush + init_failed check as in C (main.c:4706), so its existence
+  implies configured outputs; the full order is documented at the
+  flush, the one remaining divergence (shell before flush) is
+  deliberate with its rationale at `with_shell`, and an e2e test pins
+  the log ordering.
 * **PR20-C1** (`lazy_align` kept `f64` where C truncates the sum
   through `int`): **fixed in #48** — C's truncation restored with the
   residual `as`-saturation difference documented, pinned by unit
@@ -105,15 +112,5 @@ Findings fixed after the review series landed:
 Issues found in one PR that were **not** fixed by any later PR — i.e.
 still live on `main`:
 
-* **Bring-up ordering** (PR16-C6): final shape (post-#36) is
-  backends_loaded → shell attach → socket → flush → xwayland → wake,
-  vs C's flush → socket → shell → xwayland → wake. The shell-before-
-  flush half is documented (with rationale) at `with_shell`; the
-  socket-before-flush half is acknowledged only in a smoke-script
-  comment. Live divergence, low impact.
-* **Bring-up ordering** (PR16-C6): final shape (post-#36) is
-  backends_loaded → shell attach → socket → flush → xwayland → wake,
-  vs C's flush → socket → shell → xwayland → wake. The shell-before-
-  flush half is documented (with rationale) at `with_shell`; the
-  socket-before-flush half is acknowledged only in a smoke-script
-  comment. Live divergence, low impact. (Fix open as #47.)
+*(none — every open item has been fixed; see "Resolved since the
+review" above)*
