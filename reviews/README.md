@@ -68,6 +68,12 @@ Findings fixed after the review series landed:
   the loud path keys on a sync handler being on the stack outside a
   drain, so mid-drain requeueing and builder-phase dispatch stay
   quiet; pinned by three unit tests (loud / mid-drain / pre-app).
+* **PR19-C6** (color parsing base mismatch — C is always base-16, the
+  port read unprefixed values as decimal): **fixed in #42** — C's
+  grammar restored (`"ff002244"` works, `"12345678"` is hex), the
+  bare-TOML-integer `-o` path preserved by value via a dedicated
+  deserializer, loud-failure divergences documented, migration doc
+  updated.
 * **PR35-C1** (C's deprecated `enable_tap` spelling dropped with a
   generic unknown-field error and no migration note): **fixed in
   #43** — the key stays in the model (the `modules=` precedent) so
@@ -93,10 +99,6 @@ still live on `main`:
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
   current main.
-* **Color parsing base mismatch** (PR19-C6): C's
-  `weston_config_section_get_color` is always base-16 (unprefixed
-  `ff002244` works); the Rust `parse_color` treats unprefixed values
-  as decimal. Not mentioned in `docs/config-migration.md`.
 * **Nested-wayland default head numbering** (PR27-C1): C numbers
   default heads `wayland0..` regardless of named WL-sections; the port
   numbers them after the named count (`waylandN..`). An `[[output]]`
