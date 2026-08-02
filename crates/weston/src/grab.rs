@@ -48,8 +48,10 @@ pub(crate) enum PointerGrabKind {
 
 /// `raw` MUST remain first (§3f: offset math in exactly one place —
 /// the trampolines' cast).  `UnsafeCell`: C writes `grab->pointer`
-/// through the handed-out pointer; `repr(transparent)` keeps the
-/// offset-0 cast valid.
+/// through the handed-out pointer.  The offset-0 cast is valid
+/// because this struct is `repr(C)` with `raw` first; `UnsafeCell`
+/// being `repr(transparent)` only keeps the field's own layout
+/// identical to the C struct (PR16-S3).
 #[repr(C)]
 pub(crate) struct PointerGrabInner {
     raw: UnsafeCell<weston_sys::weston_pointer_grab>,
@@ -522,6 +524,10 @@ fn end_pointer_grab(ctx: &Ctx, grab: *mut weston_sys::weston_pointer_grab) {
     if let Some(a) = taken {
         ctx.defer_drop(Box::new(a));
     }
+    // No consumer yet (PR17-C8): the shell's catch-all arm swallows
+    // this, and C has no analogue (grab end is invisible to policy).
+    // Kept as the deferred-tier hook a grab-end policy would need —
+    // deliberate API surface, not a leftover.
     ctx.enqueue(Event::GrabEnded { surface });
 }
 
@@ -550,6 +556,7 @@ fn end_touch_grab(ctx: &Ctx, grab: *mut weston_sys::weston_touch_grab) {
     if let Some(a) = taken {
         ctx.defer_drop(Box::new(a));
     }
+    // Unconsumed on purpose, as above (PR17-C8).
     ctx.enqueue(Event::GrabEnded { surface });
 }
 

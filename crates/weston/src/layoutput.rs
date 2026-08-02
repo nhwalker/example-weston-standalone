@@ -238,6 +238,14 @@ fn process_one(ctx: &Ctx, lo_index: usize, policy: &OutputPolicy, current_mode: 
             remove_output(ctx, lo_index, &entry);
             continue;
         };
+        // C asserts every surviving output here is enabled
+        // (drm_process_layoutput's assert(output->output->enabled)).
+        // The invariant genuinely holds — an entry only lands in
+        // `outputs` after try_attach_enable succeeded, and death nulls
+        // the cell above — and the assert documents it at the point of
+        // use (PR29-C2).
+        // SAFETY: output live; `enabled` is a bound POD field.
+        debug_assert!(unsafe { (*output.as_ptr()).enabled });
         let mut add = ctx.inner.layoutputs.borrow()[lo_index].add.clone();
         let mut failed = Vec::new();
         try_attach(output, &mut add, &mut failed);
@@ -291,8 +299,20 @@ fn process_one(ctx: &Ctx, lo_index: usize, policy: &OutputPolicy, current_mode: 
         let setup = match policy.decide_drm(&section_head, false, current_mode) {
             crate::output_policy::DrmHeadPlan::Enable(plan) => plan.setup,
             // Unreachable: a group only exists because a head reached
-            // Enable.  Fall back to defaults rather than skip config.
-            _ => policy.drm_defaults(current_mode),
+            // Enable.  Fall back to defaults rather than skip config —
+            // but loudly in debug builds (PR29-C3): passing
+            // `non_desktop: false` above hard-codes the assumption
+            // that head-level non-desktopness can't matter at group
+            // level, and decide_drm's non-desktop semantics have been
+            // subtle before (PR29-C1) — a future violation should be
+            // a signal, not a silently default-configured output.
+            other => {
+                debug_assert!(
+                    false,
+                    "layoutput {lo_name}: decide_drm returned {other:?} for a staged group"
+                );
+                policy.drm_defaults(current_mode)
+            }
         };
         if !try_attach_enable(ctx, output, lo_index, &setup) {
             destroy_output(ctx, lo_index, &entry);

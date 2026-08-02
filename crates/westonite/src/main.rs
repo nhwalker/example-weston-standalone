@@ -942,10 +942,12 @@ fn build_output_policy(settings: &Settings) -> Result<weston::OutputPolicy, Stri
 /// framerate conversion; a trailing `@rate` still parses because
 /// sscanf stops after its two conversions).
 ///
-/// Stricter than that sscanf on two shapes it would wave through:
-/// embedded spaces (`1024 x 640`) and trailing junk (`1024x640junk`,
-/// where sscanf stops happily after two conversions).  Both are typos,
-/// and C silently running at 1024x640 is what makes them expensive.
+/// Stricter than that sscanf on three shapes it would wave through:
+/// embedded spaces (`1024 x 640`), trailing junk (`1024x640junk`,
+/// where sscanf stops happily after two conversions), and
+/// non-positive dimensions (`-100x480`, `0x0` — C hands them straight
+/// to output_set_size).  All are typos, and C silently running at
+/// 1024x640 is what makes them expensive.
 fn parse_mode(mode: &str) -> Option<(i32, i32)> {
     let core = mode.split('@').next().unwrap_or(mode);
     let (w, h) = core.split_once('x')?;

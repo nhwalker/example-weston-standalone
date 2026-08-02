@@ -347,6 +347,11 @@ impl Device {
 }
 
 /// C `configure_input_device`.
+/// Log lines below mirror C's configure_input_device wording AND
+/// punctuation exactly — the device line ends with a period while the
+/// section lines echo it inconsistently, and that inconsistency is
+/// C's own, load-bearing for oracle log parity (PR35-C3).  Do not
+/// "normalize" it.
 fn apply(dev: &Device, cfg: &InputConfig) {
     log::log_line(&format!("libinput: configuring device \"{}\".", dev.name()));
 

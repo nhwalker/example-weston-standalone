@@ -207,6 +207,14 @@ impl Ctx {
         });
         CURRENT.with(|c| {
             let mut slot = c.borrow_mut();
+            // Debug-only by decision (PR16-C10): in release a second
+            // live Ctx would silently steal the trampoline slot from
+            // the first (wrong registries, wrong queue), but the only
+            // callers are CompositorBuilder::build and the hybrid
+            // attach, each of which the frontend runs exactly once.
+            // A hard error would need a fallible Ctx::new for a path
+            // that cannot happen; the debug assert keeps the invariant
+            // checked where tests run.
             debug_assert!(slot.is_none(), "second live Ctx on one thread");
             *slot = Some(Rc::clone(&inner));
         });

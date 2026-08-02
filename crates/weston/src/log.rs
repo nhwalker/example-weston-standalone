@@ -294,7 +294,8 @@ impl Drop for LogContext {
 }
 
 /// Public logging entry for the safe frontend crates: one line through
-/// weston_log (reaches the file/stderr sink installed above).
+/// weston_log (reaches the file/stderr sink installed above).  No
+/// trailing newline in `msg` — it is appended here (see [`log_line`]).
 pub fn message(msg: &str) {
     log_line(msg);
 }
@@ -302,6 +303,11 @@ pub fn message(msg: &str) {
 /// Emit one line through weston_log (goes to the handlers installed via
 /// the shim; before a compositor/log context exists it still reaches the
 /// handler pair, which is why the panic barrier can use it early).
+///
+/// No trailing newline — the `%s\n` below appends it.  This is the
+/// OPPOSITE of the C convention, where every weston_log call site
+/// writes its own `\n`: porting a C log line verbatim produces a blank
+/// line (PR16-S6).
 pub(crate) fn log_line(msg: &str) {
     // Sanitize interior NULs rather than fail: this is the logging path
     // the panic barrier depends on.
