@@ -84,6 +84,11 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR17-C2** (inventory tier drift: L27/L28-create recorded
+  *deferred* while dispatched sync since R1): **fixed in #46** — the
+  rows carry the sync tiers with their A3 proofs, L28's note records
+  why create is sync while move stays deferred, a dated correction
+  note marks the drift, and `events.rs`'s section grouping matches.
 * **PR27-C1** (nested-wayland default heads numbered after the named
   count instead of C's from-zero): **fixed in #44** — the asymmetry
   between C's x11 and wayland loops is now a named
@@ -101,9 +106,5 @@ still live on `main`:
   flush half is documented (with rationale) at `with_shell`; the
   socket-before-flush half is acknowledged only in a smoke-script
   comment. Live divergence, low impact.
-* **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
-  L28 (`output_create`) are marked *deferred* in the inventory while
-  the implementation dispatches both sync. Verified still wrong on
-  current main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
