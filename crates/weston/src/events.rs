@@ -81,6 +81,20 @@ pub enum Event {
         via: ActivateVia,
     },
 
+    // ---- object lifecycle: creation (sync; inventory L27/L28) ----
+    /// Delivered via `dispatch_sync` from inside the `output_created`
+    /// emission (`register_output_shell`): the shell creates the
+    /// background curtain here, and that in-emission creation has been
+    /// load-bearing since R2b (PR19-C1 was this curtain missing).
+    OutputCreated {
+        output: OutputId,
+    },
+    /// Delivered via `dispatch_sync` from inside the `seat_created`
+    /// emission (`register_seat`).
+    SeatCreated {
+        seat: SeatId,
+    },
+
     // ---- object lifecycle (deferred policy halves) ----
     /// A weston_surface we tracked (keyboard focus) died; the id is
     /// already stale.  The shell runs the C focus-replacement hunt
@@ -90,9 +104,6 @@ pub enum Event {
     TrackedSurfaceGone {
         surface: SurfaceId,
         main: Option<DesktopSurfaceId>,
-    },
-    OutputCreated {
-        output: OutputId,
     },
     /// Output died (id already stale).
     OutputGone {
@@ -108,9 +119,6 @@ pub enum Event {
         output: OutputId,
         dx: f64,
         dy: f64,
-    },
-    SeatCreated {
-        seat: SeatId,
     },
     /// Seat died (id already stale).
     SeatGone {
