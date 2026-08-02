@@ -70,7 +70,7 @@ quiet case this review missed: builder-phase dispatch before
 `set_app`), keyed on an `in_sync_handler` flag, with the three shapes
 pinned by unit tests.
 
-### PR17-C2 (minor): callback-inventory tier cells contradict the implementation they were just updated for
+### PR17-C2 (minor): callback-inventory tier cells contradict the implementation they were just updated for — **fixed in #46**
 
 `docs/callback-inventory.md`. The R1 note says every shell-side row is
 live, and the PR did update `surface_removed` and `set_parent` to sync
@@ -309,5 +309,6 @@ client-controlled" rationale one home.
   adds the per-seat pointer-destroy guard listener — reviewed there.
 * PR17-C1 (dispatch_sync assert): was verified still missing on
   `main` at review time — since **fixed in #41**.
-* PR17-C2 (inventory tiers): checked against current `main` — the
-  L27/L28 "deferred" cells are still present; live finding.
+* PR17-C2 (inventory tiers): the L27/L28 "deferred" cells were still
+  present on `main` at review time — since **fixed in #46** (sync
+  tiers with A3 proofs, dated correction note, `events.rs` grouping).

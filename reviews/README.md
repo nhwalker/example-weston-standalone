@@ -84,6 +84,11 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR17-C2** (inventory tier drift: L27/L28-create recorded
+  *deferred* while dispatched sync since R1): **fixed in #46** — the
+  rows carry the sync tiers with their A3 proofs, L28's note records
+  why create is sync while move stays deferred, a dated correction
+  note marks the drift, and `events.rs`'s section grouping matches.
 * **PR16-C6** (socket bound before the heads flush, inverting C's
   bring-up order): **fixed in #47** — the socket now binds after the
   flush + init_failed check as in C (main.c:4706), so its existence
@@ -102,9 +107,5 @@ Findings fixed after the review series landed:
 Issues found in one PR that were **not** fixed by any later PR — i.e.
 still live on `main`:
 
-* **Callback-inventory tier drift** (PR17-C2): L27 (`seat_created`) and
-  L28 (`output_create`) are marked *deferred* in the inventory while
-  the implementation dispatches both sync. Verified still wrong on
-  current main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.
