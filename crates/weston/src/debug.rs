@@ -240,6 +240,10 @@ unsafe fn format_argument(
             }
             // C prints the word, not the contents.
             Some(b'a') => "array".to_string(),
+            // Same as C: after libwayland's demarshalling this is the
+            // RECEIVING (compositor-side) fd number, not the number
+            // the client passed (PR36-C2) — the dump line just reads
+            // like it is the client's.
             Some(b'h') => format!("fd {}", a.h),
             _ => String::new(),
         }

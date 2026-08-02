@@ -87,7 +87,7 @@ branches (oracle parity), or document the intent-based behavior and
 fix the missing has-section skip — either way the `main.c:2780`
 citation needs correcting.
 
-### PR29-C2 (nit): `process_one` drops C's `assert(output->output->enabled)` on existing outputs
+### PR29-C2 (nit): `process_one` drops C's `assert(output->output->enabled)` on existing outputs — **fixed in #49**
 
 C asserts every surviving `wet_output` in the existing-outputs loop is
 enabled before re-attaching to it; the Rust loop just uses the live
@@ -97,7 +97,7 @@ cell) — but the C assert is documentation of that invariant at the
 point of use, and this port has been diligent about keeping exactly
 such things (`debug_assert` would be the idiomatic spelling).
 
-### PR29-C3 (nit): `decide_drm`'s unreachable-fallback arm papers over a would-be logic error
+### PR29-C3 (nit): `decide_drm`'s unreachable-fallback arm papers over a would-be logic error — **fixed in #49**
 
 `process_one` re-derives the group's setup via
 `decide_drm(&section_head, false, …)` and on any non-`Enable` plan

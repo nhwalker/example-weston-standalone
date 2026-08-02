@@ -35,8 +35,9 @@ wsys_wl_signal_add(struct wl_signal *signal, struct wl_listener *listener)
 
 /* --- weston-log va_list handlers ----------------------------------- */
 
-/* One bounded stack buffer per call; long lines are truncated, which the
- * sink can see from the return value of vsnprintf if it ever matters. */
+/* One bounded stack buffer per call; long lines are silently truncated
+ * (the sink receives only buf/len/cont -- vsnprintf's return value is
+ * not forwarded, so truncation is invisible to it; PR16-S5). */
 
 #define WSYS_LOG_BUF 1024
 

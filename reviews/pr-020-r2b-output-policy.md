@@ -69,7 +69,7 @@ first option**: C's truncation restored (with the residual
 `as`-saturation difference documented at the cast), pinned by unit
 tests over hand-wired list structs.
 
-### PR20-C2 (nit): `parse_mode`'s positivity check is a third undocumented strictness
+### PR20-C2 (nit): `parse_mode`'s positivity check is a third undocumented strictness — **fixed in #49**
 
 The doc comment enumerates two shapes the C `sscanf` waves through
 that Rust rejects (embedded spaces, trailing junk) — but the `w > 0 &&

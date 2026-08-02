@@ -208,7 +208,7 @@ metadata`): none pass `--locked`, so CI could silently float
 dependencies past `Cargo.lock`. #18 added `--locked` everywhere and
 pinned the bindgen version in `regen-bindings.sh`.
 
-### PR16-C10 (nit): a second `Ctx::new()` on one thread silently orphans the first in release builds
+### PR16-C10 (nit): a second `Ctx::new()` on one thread silently orphans the first in release builds — **fixed in #49**
 
 `crates/weston/src/ctx.rs:95-99`: the one-live-`Ctx` invariant is a
 `debug_assert!`, but the slot is overwritten unconditionally, so in
@@ -218,7 +218,7 @@ leave the first compositor's trampolines resolving to the *new* context
 path, but the invariant deserves a hard error (or documented refusal) at
 the `CompositorBuilder::build` boundary rather than a debug-only check.
 
-### PR16-C11 (nit, theoretical): registry generation counter can wrap
+### PR16-C11 (nit, theoretical): registry generation counter can wrap — **fixed in #17 (generations start at 1 and skip 0 on wrap, with a test)**
 
 `crates/weston/src/registry.rs:85`: `generation.wrapping_add(1)` — after
 2³² invalidations of one slot, a hoarded stale id would resolve to a
@@ -229,7 +229,7 @@ resolve.
 
 ## Findings — style / understandability
 
-### PR16-S1: `grab.rs` `dispatch()` takes a `what_suffix` parameter it explicitly discards
+### PR16-S1: `grab.rs` `dispatch()` takes a `what_suffix` parameter it explicitly discards — **resolved organically: `what_suffix` no longer exists on current `main` (verified at the #49 sweep)**
 
 `crates/weston/src/grab.rs:62-72`: every trampoline passes a suffix
 (`"focus"`, `"motion"`, …) and `dispatch` does `let _ = what_suffix;`.
@@ -239,7 +239,7 @@ context but doesn't. Either fold the suffix into the barrier label or
 remove the parameter; the current shape makes the reader hunt for a use
 that doesn't exist.
 
-### PR16-S2: `PointerGrabInner.ended` is written twice and never read
+### PR16-S2: `PointerGrabInner.ended` is written twice and never read — **resolved organically: `ended` is read by the busy-grab path on current `main` (verified at the #49 sweep)**
 
 `grab.rs:42,121,164`: both `tramp_cancel` and `PointerGrab::end` set
 `ended`, but nothing reads it in this PR. Other R0-forward-declarations
@@ -248,7 +248,7 @@ invisible dead state — a reader auditing the grab lifecycle has to
 discover on their own that the flag is (presumably) for R1. Deserves the
 same explicit marker, or deletion until R1 needs it.
 
-### PR16-S3: misleading `repr(transparent)` comments on the offset-0 casts
+### PR16-S3: misleading `repr(transparent)` comments on the offset-0 casts — **fixed in #49**
 
 `listener.rs:26-28` and `grab.rs:39-41` justify the
 `wl_listener*`→`ListenerInner*` cast with "`repr(transparent)` keeps the
@@ -270,7 +270,7 @@ share a named constant; duplicated magic strings + duplicated
 `size_of` arguments is the sort of thing that goes wrong silently when
 v3 arrives.
 
-### PR16-S5: shim truncation comment promises information the sink never gets
+### PR16-S5: shim truncation comment promises information the sink never gets — **fixed in #49**
 
 `crates/weston-sys/shim/shim.c:39-41`: "long lines are truncated, which
 the sink can see from the return value of vsnprintf if it ever matters"
@@ -279,7 +279,7 @@ is not forwarded, so the sink *cannot* see truncation. The truncation
 math itself is correct (`n < 1024 ? n : 1023` matches the written
 bytes); only the comment is wrong.
 
-### PR16-S6: `log_line` appends `\n` implicitly — an easy double-newline trap
+### PR16-S6: `log_line` appends `\n` implicitly — an easy double-newline trap — **fixed in #49**
 
 `crates/weston/src/log.rs:22`: `weston_log(c"%s\n", …)` appends the
 newline, so every future caller must remember *not* to include one —

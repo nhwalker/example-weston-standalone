@@ -187,7 +187,7 @@ are requested; C's loaders each read their own section, so
 VNC here. Academic at R2a (both refused), semi-academic later (RDP
 dropped in #27), but the field name advertises the smell.
 
-### PR19-C10 (nit): `Settings.log_file` is dead
+### PR19-C10 (nit): `Settings.log_file` is dead — **fixed in #49**
 
 `main.rs` opens the log from `cli.log` before resolution (correctly —
 config errors must reach the sink); `Settings.log_file` is populated

@@ -87,7 +87,7 @@ somewhere. Documented in the module doc; recorded here because it
 means the Rust log can contain lines a C log never would, which a
 strict log-diff oracle run would flag.
 
-### PR35-C3 (nit): `apply`'s device log line ends with a period the section lines echo inconsistently — matched to C, worth one comment
+### PR35-C3 (nit): `apply`'s device log line ends with a period the section lines echo inconsistently — matched to C, worth one comment — **fixed in #49**
 
 Precisely *because* the punctuation is faithfully inconsistent, a
 future cleanup ("normalize log punctuation") would silently break

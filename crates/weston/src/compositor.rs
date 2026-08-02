@@ -1056,6 +1056,12 @@ impl Compositor {
         let mut made = 0;
         // C walks the config sections in file order and takes those
         // whose `name` starts with the backend's prefix, up to count.
+        // (One subtlety the shapes hide, PR27-C3: C checks the count
+        // BEFORE examining each section and stops SCANNING entirely,
+        // while this prefilter has already collected every match by
+        // the time the loop breaks.  Created heads are identical
+        // either way — create_head is the only effect — but the loops
+        // are less equivalent than they look.)
         let named: Vec<String> = self
             .policy_names
             .iter()
@@ -1128,6 +1134,11 @@ impl Compositor {
             .borrow_mut()
             .push((backend, BackendKind::X11));
 
+        // C passes --output-count through literally (0 → zero heads,
+        // arguably useless but honored); the clamp to 1 is a chosen
+        // repair (PR27-C2) — of honor/reject/clamp, a compositor with
+        // no outputs is never what --output-count=0 meant, and a
+        // startup error over a flag C accepts felt like inventing one.
         let count = opts.output_count.max(1);
         self.create_windowed_heads(
             backend,
@@ -1200,6 +1211,8 @@ impl Compositor {
         if opts.sprawl {
             return Ok(());
         }
+        // Clamped for the same chosen-repair reason as load_x11's
+        // output_count (PR27-C2).
         let count = opts.output_count.max(1);
         self.create_windowed_heads(
             backend,
@@ -1236,6 +1249,8 @@ impl Compositor {
         config.gbm_format = fmt
             .as_ref()
             .map_or(std::ptr::null_mut(), |c| c.as_ptr().cast_mut());
+        // Clamped for the same chosen-repair reason as load_x11's
+        // output_count (PR27-C2).
         config.num_outputs = opts.num_outputs.max(1);
 
         // SAFETY: compositor live; config + strings outlive the call.
@@ -1592,6 +1607,11 @@ extern "C" fn on_sigchld(_signal: c_int, data: *mut c_void) -> c_int {
                 if pid <= 0 {
                     break;
                 }
+                // Redundant with the outer match by construction (ctx
+                // is resolved once above and never changes mid-call);
+                // kept deliberately (PR26-C2) so the loop body stands
+                // alone — reaping must continue even when bookkeeping
+                // is impossible, and this spells that out per pid.
                 let Some(ctx) = ctx.as_ref() else { continue };
                 if let Some((watched, watch)) = ctx.inner.autolaunch.get()
                     && pid == watched
@@ -2441,6 +2461,10 @@ fn apply_mirror_modeline(
             ctx.inner.init_failed.set(true);
             return;
         };
+        // Deviation from C, absent from this function's list until
+        // PR23-C2: C divides by current_scale raw (main.c:2547).  The
+        // clamp can never fire — libweston asserts scale != 0 at
+        // set-scale time — it is pure division-by-zero insurance.
         let remote_scale = (*output.as_ptr()).current_scale.max(1);
         let mut mode: weston_sys::weston_mode = std::mem::zeroed();
         mode.width = src_w / remote_scale;

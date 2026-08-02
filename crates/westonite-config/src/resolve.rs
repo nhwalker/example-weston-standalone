@@ -94,7 +94,9 @@ pub struct Settings {
     pub backends: Vec<Backend>,
     pub renderer: Renderer,
     pub socket: Option<String>,
-    pub log_file: Option<PathBuf>,
+    // No log_file field (PR19-C10): the frontend opens the log from
+    // `cli.log` BEFORE resolution runs — config errors must reach the
+    // sink — so a resolved copy here was populated and never read.
     pub debug_protocol: bool,
 
     pub wait_for_debugger: bool,
@@ -437,7 +439,6 @@ pub fn resolve_from(cli: &Cli, env: &HashMap<String, String>) -> Result<Settings
         backends,
         renderer,
         socket: cli.socket.clone(),
-        log_file: cli.log.clone().map(PathBuf::from),
         debug_protocol: cli.debug,
         // C main.c:4585: the flag wins, and only when it is absent is
         // the config consulted -- so `[core] wait-for-debugger = false`

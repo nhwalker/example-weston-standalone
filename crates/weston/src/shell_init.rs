@@ -555,6 +555,13 @@ fn wire_common(
     crate::layer::create_shell_layers(&ctx);
 
     if !crate::desktop::create_desktop(&ctx) {
+        // Intentionally safe half-initialized state (PR17-C9): the
+        // destroy listener, Ctx, and layers already exist, and the
+        // frontend exits — weston_compositor_destroy then runs the
+        // full teardown with no app installed, which is fine ON
+        // PURPOSE: dispatch_sync(Shutdown) finding no app quietly
+        // enqueues into a queue teardown discards.  Not an accident
+        // of the None arm; relied on here.
         return false;
     }
 

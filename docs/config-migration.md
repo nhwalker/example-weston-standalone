@@ -42,6 +42,7 @@ An annotated example lives at the repo root:
 | unknown/typo'd keys silently ignored | **startup error** with line/column | D9: `deny_unknown_fields` |
 | `WESTON_CONFIG_FILE` exported to clients | **dropped** | D12: no shipped client reads it, and no stock client parses TOML |
 | `weston.ini` never read | unchanged (`westonite.toml` only) | P2 behavior kept |
+| — (no ini ancestor) | `[vnc] address = "…"` | re-spec extension for CLI/file symmetry (`--address` had no ini partner); reproducing a TOML config on the C oracle needs the CLI flag instead |
 
 ## CLI
 

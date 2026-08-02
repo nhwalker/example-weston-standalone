@@ -24,8 +24,10 @@ pub(crate) struct ListenerInner {
     /// MUST remain the first field: the trampoline recovers
     /// `ListenerInner` by casting the `wl_listener *` C hands back.
     /// `UnsafeCell`: both C (list surgery during signal add/emit) and
-    /// the wrapper mutate the node through shared references —
-    /// `repr(transparent)` keeps the offset-0 cast valid.
+    /// the wrapper mutate the node through shared references.  The
+    /// offset-0 cast is valid because this struct is `repr(C)` with
+    /// `raw` first; `UnsafeCell` being `repr(transparent)` only keeps
+    /// the field's own layout identical to `wl_listener` (PR16-S3).
     raw: UnsafeCell<weston_sys::wl_listener>,
     attached: Cell<bool>,
     /// One-shot listeners (destroy signals) self-detach inside the

@@ -65,7 +65,7 @@ time; **fixed in #44** (the asymmetry became a named
 mixed named+default e2e tests for both backends, run against the C
 oracle too).
 
-### PR27-C2 (nit): `output_count.max(1)` / `num_outputs.max(1)` silently repair what C would take literally
+### PR27-C2 (nit): `output_count.max(1)` / `num_outputs.max(1)` silently repair what C would take literally — **fixed in #49**
 
 C passes `--output-count=0` through (`option_count` 0 → zero heads for
 x11 — arguably useless but honored); the port clamps to 1. Defensible
@@ -74,7 +74,7 @@ project's answer to useless values is a startup error, not a silent
 repair. One of the three treatments (honor, reject, clamp) should be
 chosen on purpose and written down.
 
-### PR27-C3 (nit): `create_windowed_heads` consumes named sections even when `made >= count` differs subtly from C's break placement
+### PR27-C3 (nit): `create_windowed_heads` consumes named sections even when `made >= count` differs subtly from C's break placement — **fixed in #49**
 
 C checks `output_count >= option_count` *before* examining each
 section; Rust filters the names first and breaks inside the loop —

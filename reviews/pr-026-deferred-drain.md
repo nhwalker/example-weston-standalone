@@ -71,7 +71,7 @@ bug. The counter-argument (fix-with-proof beats fix-on-suspicion) is
 also real; the risk is the two slices shipped in between were built
 against the broken timing.
 
-### PR26-C2 (nit): the per-iteration Ctx re-check inside `reap` duplicates the outer match
+### PR26-C2 (nit): the per-iteration Ctx re-check inside `reap` duplicates the outer match — **fixed in #49**
 
 `on_sigchld` resolves `ctx` once, chooses wrapped-or-bare, and the
 loop still does `let Some(ctx) = ctx.as_ref() else { continue }` per
