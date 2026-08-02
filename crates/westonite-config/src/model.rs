@@ -15,16 +15,14 @@ fn default_true() -> bool {
 }
 
 /// Accept a quoted string *or* a bare number for keys whose value is
-/// really a numeric string in weston's grammars (`[shell]
-/// background-color`, `[libinput] scroll-button`).
+/// really a numeric string in weston's grammars (`[libinput]
+/// scroll-button`; colors use [`de_opt_color_string`]).
 ///
 /// Needed because `-o` overrides are parsed as TOML values before
 /// deserialization (`overrides.rs`), and TOML reads `0xff002244` as an
-/// integer — so the very spelling the docs advertise,
-/// `-o shell.background-color=0xff002244`, would otherwise die as
+/// integer — a bare-number spelling would otherwise die as
 /// "invalid type: integer, expected a string".  Numbers are handed on
-/// in decimal; `resolve::parse_color` accepts decimal as well as the
-/// `0x` spelling.
+/// in decimal.
 fn de_opt_scalar_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
 where
     D: de::Deserializer<'de>,
@@ -43,6 +41,52 @@ where
         }
         fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
             Ok(Some(v.to_string()))
+        }
+        fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
+            Ok(None)
+        }
+        fn visit_some<D2: de::Deserializer<'de>>(self, d: D2) -> Result<Self::Value, D2::Error> {
+            d.deserialize_any(V)
+        }
+    }
+    d.deserialize_any(V)
+}
+
+/// The color-key variant of [`de_opt_scalar_string`]: a bare TOML
+/// number is handed on as `0x…` **hex**, not decimal, because the
+/// key's string grammar is C's `weston_config_section_get_color`
+/// (shared/config-parser.c:232) — ALWAYS base-16, prefix or no prefix.
+/// A decimal rendering of the integer would be re-read as hex and
+/// silently change the value; formatting it as hex preserves it
+/// exactly (`-o shell.background-color=0xff002244` arrives as the
+/// TOML integer 4278199876 and leaves as `"0xff002244"`).  A value
+/// that doesn't fit in 32 bits formats to more than 8 digits and is
+/// rejected by `resolve::parse_color`'s C length gate; a negative
+/// number is refused here, where the span still points at the key.
+fn de_opt_color_string<'de, D>(d: D) -> Result<Option<String>, D::Error>
+where
+    D: de::Deserializer<'de>,
+{
+    struct V;
+    impl<'de> de::Visitor<'de> for V {
+        type Value = Option<String>;
+        fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            f.write_str("a color string or a non-negative number")
+        }
+        fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+            Ok(Some(v.to_string()))
+        }
+        fn visit_i64<E: de::Error>(self, v: i64) -> Result<Self::Value, E> {
+            match u64::try_from(v) {
+                Ok(u) => self.visit_u64(u),
+                Err(_) => Err(E::invalid_value(
+                    de::Unexpected::Signed(v),
+                    &"a non-negative color value",
+                )),
+            }
+        }
+        fn visit_u64<E: de::Error>(self, v: u64) -> Result<Self::Value, E> {
+            Ok(Some(format!("0x{v:08x}")))
         }
         fn visit_none<E: de::Error>(self) -> Result<Self::Value, E> {
             Ok(None)
@@ -207,8 +251,8 @@ impl Default for Core {
 pub struct Shell {
     /// `[shell] background-color=`, 0xAARRGGBB (string to keep the C
     /// hex spelling; parsed at resolve time).  C default 0xff002244.
-    /// A bare TOML number is accepted too — see `de_opt_scalar_string`.
-    #[serde(default, deserialize_with = "de_opt_scalar_string")]
+    /// A bare TOML number is accepted too — see `de_opt_color_string`.
+    #[serde(default, deserialize_with = "de_opt_color_string")]
     pub background_color: Option<String>,
     /// `[shell] client=` — empty means "no helper client" (P3); kept
     /// for surface completeness.

@@ -176,14 +176,30 @@ pub struct Settings {
     pub config: Config,
 }
 
+/// C `weston_config_section_get_color` (shared/config-parser.c:232):
+/// the value is **always base-16** — `"0"` exactly, or 8 hex digits
+/// (unprefixed `ff002244` is valid ini), or 10 chars with the `0x`
+/// prefix; any other length is invalid.  Two deliberate divergences,
+/// both fail-loud where C is silent (D9): C falls back to the default
+/// color on any parse error, and C parses a 10-char *unprefixed*
+/// value as 40 bits of hex and silently truncates the `uint32_t`
+/// assignment — here both are startup errors.  (Bare TOML integers
+/// never reach this by-value ambiguity: `model::de_opt_color_string`
+/// hands them on pre-formatted as `0x…`.)
 fn parse_color(s: &str, what: &str) -> Result<u32, ConfigError> {
     let t = s.trim();
-    let parsed = if let Some(hex) = t.strip_prefix("0x").or_else(|| t.strip_prefix("0X")) {
-        u32::from_str_radix(hex, 16)
-    } else {
-        t.parse::<u32>()
-    };
-    parsed.map_err(|_| ConfigError::Invalid(format!("{what}: invalid color '{s}'")))
+    let invalid = || ConfigError::Invalid(format!("{what}: invalid color '{s}'"));
+    if t == "0" {
+        return Ok(0);
+    }
+    if t.len() != 8 && t.len() != 10 {
+        return Err(invalid());
+    }
+    let hex = t
+        .strip_prefix("0x")
+        .or_else(|| t.strip_prefix("0X"))
+        .unwrap_or(t);
+    u32::from_str_radix(hex, 16).map_err(|_| invalid())
 }
 
 fn split_list(s: &str) -> Vec<String> {
@@ -722,6 +738,50 @@ mod tests {
             let s =
                 resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
             assert_eq!(s.background_color, 0xff336699, "{body}");
+        }
+    }
+
+    #[test]
+    fn color_strings_are_base_16_like_c() {
+        // C weston_config_section_get_color is strtoul(..., 16) behind
+        // a length gate: an unprefixed 8-digit string is hex — so
+        // "ff336699" works, and all-decimal-digits "12345678" means
+        // 0x12345678, NOT twelve million (PR19-C6: the port used to
+        // read unprefixed values as decimal).  "0" alone is C's other
+        // accepted spelling.
+        let dir = tempfile::tempdir().unwrap();
+        for (i, (value, want)) in [
+            ("ff336699", 0xff336699u32),
+            ("12345678", 0x12345678),
+            ("0", 0),
+        ]
+        .iter()
+        .enumerate()
+        {
+            let path = dir.path().join(format!("h{i}.toml"));
+            std::fs::write(&path, format!("[shell]\nbackground-color = \"{value}\"\n")).unwrap();
+            let s =
+                resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env()).unwrap();
+            assert_eq!(s.background_color, *want, "{value}");
+        }
+    }
+
+    #[test]
+    fn color_rejects_what_c_rejects_but_loudly() {
+        // C's length gate (8 or 10 chars, or exactly "0") — where C
+        // silently substitutes the default color, resolution fails
+        // (D9).  The 10-digit unprefixed case is the one C accepts
+        // and silently TRUNCATES to 32 bits; that is a loud error
+        // here too.
+        let dir = tempfile::tempdir().unwrap();
+        for (i, value) in ["0x1234", "ff33669", "ff00224411", "zzzzzzzz"]
+            .iter()
+            .enumerate()
+        {
+            let path = dir.path().join(format!("b{i}.toml"));
+            std::fs::write(&path, format!("[shell]\nbackground-color = \"{value}\"\n")).unwrap();
+            let err = resolve_from(&cli(&[&format!("--config={}", path.display())]), &no_env());
+            assert!(err.is_err(), "'{value}' should be rejected");
         }
     }
 
