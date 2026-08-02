@@ -163,14 +163,14 @@ on `ec^2k`), but the scheme is undocumented cleverness where a
 two-variant key enum (`Addr(usize)` / `Slot(u8)`) would be obviously
 collision-free.
 
-### PR17-C8 (nit): `Event::GrabEnded` is emitted and consumed by no one
+### PR17-C8 (nit): `Event::GrabEnded` is emitted and consumed by no one — **fixed in #49**
 
 `grab.rs:525,553` enqueue it; the shell's `_ => {}` arm swallows it;
 no test asserts it. C has no analogue (grab end is invisible to
 policy). Either a consumer is coming (say so where it's emitted) or it
 is speculative API — at R1 it reads like a leftover plan artifact.
 
-### PR17-C9 (nit): `create_desktop` failure leaves a half-initialized shell whose destroy listener will still run
+### PR17-C9 (nit): `create_desktop` failure leaves a half-initialized shell whose destroy listener will still run — **fixed in #49**
 
 `shell_init_body` returns `false` after the destroy listener, `Ctx`,
 layers exist (shell_init.rs:424). The C frontend then exits and
@@ -248,7 +248,7 @@ sharing it. C solves this by literally calling
 Extracting the attach-if-pointer logic into a function called from
 both places would delete ~20 lines and the always-true check.
 
-### PR17-S2: the `repr(transparent)` mis-justification propagates
+### PR17-S2: the `repr(transparent)` mis-justification propagates — **fixed in #49**
 
 `grab.rs:49-52` copies R0's comment (see PR16-S3): the offset-0 cast
 is valid because of `repr(C)` + first field, not because `UnsafeCell`

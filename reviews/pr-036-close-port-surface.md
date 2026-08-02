@@ -71,7 +71,7 @@ asked for: a drop-time `debug_assert!(l.is_attached())` in
 debug build), so any future `raw_ptr()` hand-attach that forgets
 `mark_attached` fails loudly.
 
-### PR36-C2 (nit): `format_argument`'s `h` arm prints the compositor-side fd number — same as C, worth its one-line note
+### PR36-C2 (nit): `format_argument`'s `h` arm prints the compositor-side fd number — same as C, worth its one-line note — **fixed in #49**
 
 `fd {}` prints `a.h`, which after libwayland's demarshalling is the
 *receiving* side's fd. C does the same; noting only because the dump

@@ -61,7 +61,7 @@ exists) is the right call, the tests are honestly `toml_only` with the
 abort cited, and the divergence is documented in three places. This is
 the model for handling a C crash you decline to inherit.
 
-### PR23-C2 (nit): `remote_scale.max(1)` is an undocumented safety deviation
+### PR23-C2 (nit): `remote_scale.max(1)` is an undocumented safety deviation — **fixed in #49**
 
 `apply_mirror_modeline` clamps the remote's `current_scale` to ≥1
 before dividing; C divides raw (`main.c:2547-2551`). A zero scale is

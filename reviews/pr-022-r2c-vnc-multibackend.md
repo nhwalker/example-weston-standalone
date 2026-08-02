@@ -98,7 +98,7 @@ Rust's is the correct semantics; noting it only because the charter is
 to record divergences, and this one is invisible until someone diffs
 behavior with malformed input.
 
-### PR22-C4 (nit): `[vnc] address` is a re-spec extension — documented in the model, absent from config-migration
+### PR22-C4 (nit): `[vnc] address` is a re-spec extension — documented in the model, absent from config-migration — **fixed in #49**
 
 The model comment says "the section spelling is a re-spec addition for
 CLI/file symmetry" — good — but `docs/config-migration.md` (the

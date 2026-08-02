@@ -106,6 +106,15 @@ Findings fixed after the review series landed:
   between C's x11 and wayland loops is now a named
   `DefaultHeadNumbering` parameter, pinned by two mixed named+default
   e2e tests that also run against the C oracle.
+* **Nit sweep** (#49): every nit-graded finding with a concrete
+  prescribed remedy, in one pass — the PR29-C2/C3 debug asserts, the
+  dead `Settings.log_file` (PR19-C10), the `[vnc] address` migration
+  row (PR22-C4), and decision/quirk comments for PR16-C10/S3/S5/S6,
+  PR17-C8/C9/S2, PR20-C2, PR23-C2, PR26-C2, PR27-C2/C3, PR35-C3,
+  PR36-C2.  Three more had resolved organically and are annotated as
+  such (PR16-S1, PR16-S2, PR16-C11 → #17).  Remaining unaddressed
+  nits are deliberate no-churn calls, each still readable in its
+  review doc.
 
 ## Cross-PR open items (running list)
 
