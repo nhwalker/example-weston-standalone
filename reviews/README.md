@@ -79,6 +79,11 @@ Findings fixed after the review series landed:
   #43** — the key stays in the model (the `modules=` precedent) so
   the refusal names the rename, `config-migration.md` gains the row,
   unit + e2e tests pin both halves.
+* **PR27-C1** (nested-wayland default heads numbered after the named
+  count instead of C's from-zero): **fixed in #44** — the asymmetry
+  between C's x11 and wayland loops is now a named
+  `DefaultHeadNumbering` parameter, pinned by two mixed named+default
+  e2e tests that also run against the C oracle.
 
 ## Cross-PR open items (running list)
 
@@ -99,10 +104,5 @@ still live on `main`:
   L28 (`output_create`) are marked *deferred* in the inventory while
   the implementation dispatches both sync. Verified still wrong on
   current main.
-* **Nested-wayland default head numbering** (PR27-C1): C numbers
-  default heads `wayland0..` regardless of named WL-sections; the port
-  numbers them after the named count (`waylandN..`). An `[[output]]`
-  section targeting `wayland0` can silently match nothing. Verified
-  live on main.
 * **lazy_align f64 vs C int truncation** (PR20-C1): reachable now via
   multi-backend layouts; still f64 on main.

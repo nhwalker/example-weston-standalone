@@ -70,6 +70,45 @@ def test_wayland_backend_output_count_and_size(westonite):
     assert "width: 800 px, height: 500 px" in info, info
 
 
+def test_wayland_default_heads_number_from_zero_beside_named(westonite):
+    """C's wayland create_head loops (main.c:4126-4161): a WL-named
+    section consumes one slot of --output-count and the remaining
+    default heads number FROM ZERO -- WL-1 + wayland0, never wayland1.
+    The x11 loop is the opposite (defaults continue after the named
+    count); both shapes are C's, and flattening them into one is
+    exactly PR27-C1.  Running this against the C oracle proves the
+    expected names are C's, not this suite's."""
+    host = westonite(socket_name="mix-host")
+    nested = westonite(backend="wayland",
+                       socket_name="mix-child",
+                       config="[output]\nname=WL-1\n",
+                       extra_args=["--output-count=2"],
+                       runtime_dir=host.runtime_dir,
+                       env={"WAYLAND_DISPLAY": "mix-host"})
+    nested.wait_for_log(r"Output 'wayland0' enabled")
+    names = outputs_of(nested)
+    assert "WL-1" in names and "wayland0" in names, names
+    assert "wayland1" not in names, names
+
+
+def test_x11_default_heads_continue_after_named(westonite):
+    """The x11 half of the same asymmetry (main.c:4013): a named X
+    section consumes a slot and the defaults CONTINUE after the named
+    count -- X-1 + screen1, no screen0.  Pins that fixing the wayland
+    loop does not overcorrect this one."""
+    host = westonite(extra_args=["--xwayland"], socket_name="xmix-host")
+    nested = westonite(backend="x11",
+                       socket_name="xmix-child",
+                       config="[output]\nname=X-1\n",
+                       extra_args=["--output-count=2"],
+                       runtime_dir=host.runtime_dir,
+                       env={"DISPLAY": host.x_display})
+    nested.wait_for_log(r"Output 'screen1' enabled")
+    names = outputs_of(nested)
+    assert "X-1" in names and "screen1" in names, names
+    assert "screen0" not in names, names
+
+
 def test_x11_backend_under_our_own_xwayland(westonite):
     """C load_x11_backend: weston as an X client, outputs are X windows
     named screenN (main.c:4013)."""
