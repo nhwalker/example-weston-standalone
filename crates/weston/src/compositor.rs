@@ -820,6 +820,20 @@ impl CompositorBuilder {
     }
 }
 
+/// How `create_windowed_heads` numbers the default-named heads once
+/// named `[output]` sections have consumed some of `count` — the one
+/// place C's two windowed create_head loops disagree (PR27-C1):
+///
+/// * x11 (main.c:4013): `for (i = output_count; i < option_count; …)`
+///   — defaults CONTINUE after the named count (`X-1` + `screen1`);
+/// * wayland (main.c:4152): `count` is decremented per named head and
+///   the default loop runs `for (i = 0; i < count; …)` — defaults
+///   number FROM ZERO (`WL-1` + `wayland0`).
+enum DefaultHeadNumbering {
+    AfterNamed,
+    FromZero,
+}
+
 pub struct Compositor {
     ctx: Ctx,
     /// `[[output]]` section names in file order — the windowed loaders
@@ -1001,7 +1015,9 @@ impl Compositor {
     /// load_x11_backend / load_wayland_backend): create a head per
     /// matching `[[output]]` section name, then default-named heads up
     /// to `count`.  `prefix` is C's name filter ('X' for x11, "WL" for
-    /// wayland); `default_name` builds `screenN` / `waylandN`.
+    /// wayland); `default_name` builds `screenN` / `waylandN`; the two
+    /// backends number those defaults differently — see
+    /// [`DefaultHeadNumbering`].
     fn create_windowed_heads(
         &mut self,
         backend: *mut weston_sys::weston_backend,
@@ -1009,6 +1025,7 @@ impl Compositor {
         prefix: &str,
         default_name: &dyn Fn(i32) -> String,
         count: i32,
+        numbering: DefaultHeadNumbering,
     ) -> Result<(), CompositorError> {
         let compositor = self.ctx.inner.compositor.get();
         // SAFETY: compositor live; the API name/version come from the
@@ -1051,7 +1068,11 @@ impl Compositor {
             made += 1;
         }
         for i in made..count {
-            let cname = CString::new(default_name(i)).map_err(|_| CompositorError::HeadCreate)?;
+            let n = match numbering {
+                DefaultHeadNumbering::AfterNamed => i,
+                DefaultHeadNumbering::FromZero => i - made,
+            };
+            let cname = CString::new(default_name(n)).map_err(|_| CompositorError::HeadCreate)?;
             // SAFETY: as above.
             let r = self.ctx.with_depth(|| unsafe {
                 ((*api).create_head.expect("create_head"))(backend, cname.as_ptr())
@@ -1104,6 +1125,7 @@ impl Compositor {
             "X",
             &|i| format!("screen{i}"),
             count,
+            DefaultHeadNumbering::AfterNamed,
         )
     }
 
@@ -1175,6 +1197,7 @@ impl Compositor {
             "WL",
             &|i| format!("wayland{i}"),
             count,
+            DefaultHeadNumbering::FromZero,
         )
     }
 
