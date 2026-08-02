@@ -4,11 +4,35 @@ import signal
 
 import pytest
 
+from support.compositor import CONFIG_FORMAT
+
+# The socket-marker line asserted below is a Rust-frontend log line;
+# the C oracle proves the same ordering by construction (main.c:4706).
+toml_only = pytest.mark.skipif(
+    CONFIG_FORMAT != "toml",
+    reason="asserts on a Rust-frontend log marker")
+
 
 @pytest.mark.installed
 def test_clean_shutdown_sigterm(westonite):
     w = westonite()
     w.terminate(signal.SIGTERM)
+
+
+@toml_only
+def test_socket_binds_after_outputs_are_configured(westonite):
+    """C binds the wayland socket only after the heads flush and its
+    init_failed check (main.c:4671 -> 4706), so the socket's on-disk
+    existence implies the outputs are configured -- the exact inference
+    this harness's wait_ready and the smoke scripts draw.  PR16-C6 had
+    the port binding the socket before the flush, which made that
+    inference silently false."""
+    w = westonite()
+    log = w.log()
+    i_output = log.find("' enabled")
+    i_socket = log.find("westonite: wayland socket")
+    assert i_output != -1 and i_socket != -1, log
+    assert i_output < i_socket, log
 
 
 def test_clean_shutdown_sigint(westonite):
