@@ -2130,9 +2130,8 @@ markers =
     installed: also runs against the installed RPM in the pristine container (no build tree, no wtest-client)
 ```
 
-`tests/e2e/.gitignore`: `__pycache__/` and `*.pyc`. There was no root
-`.gitignore` in the C-only state (CI writes `test-results/` and `out/`
-in the workspace; add one if you prefer).
+`tests/e2e/.gitignore`: `__pycache__/` and `*.pyc`. Root `.gitignore`:
+`/test-results` and `/out` (CI writes both into the workspace).
 
 ### A.14 `tests/e2e/support/vncclient.py`
 
