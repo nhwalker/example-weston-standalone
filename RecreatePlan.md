@@ -33,7 +33,8 @@ gap is stated explicitly (see Appendix C) rather than papered over.
 `/usr/lib64/westonite/desktop-shell.so`, installs a
 `wayland-sessions/westonite.desktop` entry and an example config, packages
 all of it as `westonite-14.0.1-1.el10.x86_64.rpm`, and verifies it with a
-smoke script plus a 45-test pytest e2e suite driven over the VNC backend.
+smoke script plus a pytest e2e suite driven over the VNC backend (77
+tests in the container, 10 more for the DRM backend inside a VM).
 
 **How the plan is organised.** The work is ordered exactly as it was
 originally done, because later steps depend on earlier verification:
@@ -49,6 +50,7 @@ originally done, because later steps depend on earlier verification:
 | Trims T1–T9 | Reduce desktop-shell to a pure window manager (with two capability inventories and one deferred feature design) |
 | E2E E1–E5 | Black-box test suite over VNC, in-repo test clients, installed-RPM subset, CI artifacts |
 | Hardening | Two CI flake fixes found in the first days of CI runs |
+| E2E E6–E9 | Later additions that also test the C build: signal/logging/debug tests, screenshooter and recorder, nested backends, and the DRM backend inside a VM with its own kernel |
 
 **Rules that apply throughout.**
 
@@ -70,11 +72,11 @@ originally done, because later steps depend on earlier verification:
    Keep the `Co-Authored-By`/session trailer conventions of whatever
    harness you run under; they are not part of this plan.
 
-**Out of scope for this plan** (they happened later in the real
-repository and are deliberately not covered here): the Rust migration of
-the frontend and shell, the DRM-in-a-VM test harness, and the e2e tests
-added during that migration (screenshooter, nested backends, colour
-management, DRM, logging).
+**Out of scope for this plan**: the Rust migration of the frontend and
+shell that the real repository undertook afterwards, and the e2e tests
+that exist only for that Rust frontend (see §14 for the line between
+the two). Every e2e test that runs against the C build is in scope,
+including the DRM-in-a-VM harness (§14 E9).
 
 ---
 
@@ -204,6 +206,8 @@ example-weston-standalone/
 ├── README.md                      # §9.1
 ├── VENDOR.md                      # provenance + patch/trim log (§5.3)
 ├── containers/Containerfile.build # §4.2
+├── containers/Containerfile.drm-vm# §14 E9
+├── containers/drm-vm-init.sh      # §14 E9 (guest PID 1)
 ├── data/
 │   ├── meson.build
 │   ├── westonite.desktop
@@ -217,7 +221,8 @@ example-weston-standalone/
 │   ├── desktop-shell-capabilities.md
 │   ├── frontend-capabilities.md
 │   ├── maintenance-layer-plan.md  # deferred design (D-MAINT)
-│   └── e2e-test-plan.md
+│   ├── e2e-test-plan.md
+│   └── drm-testing.md             # §14 E9
 ├── frontend/
 │   ├── meson.build
 │   ├── config-helpers.c  executable.c  main.c  weston-screenshooter.c  xwayland.c
@@ -227,7 +232,7 @@ example-weston-standalone/
 ├── meson_options.txt
 ├── rpm/westonite.spec
 ├── scripts/
-│   ├── smoke-test.sh  e2e-test.sh  rpm-build.sh  rpm-install-test.sh
+│   ├── smoke-test.sh  e2e-test.sh  rpm-build.sh  rpm-install-test.sh  drm-vm-test.sh
 ├── shared/
 │   ├── meson.build
 │   ├── option-parser.c  os-compatibility.c  os-compatibility.h  process-util.c  process-util.h
@@ -238,6 +243,7 @@ example-weston-standalone/
     ├── support/compositor.py  client.py  image.py  vncclient.py
     └── test_lifecycle.py  test_cli.py  test_children.py  test_outputs.py
         test_shell_background.py  test_shell_windows.py  test_xwayland.py
+        test_screenshooter.py  test_backends_nested.py  test_backend_drm.py
 ```
 
 Files that exist at Phase 1 but are deleted by the trims:
@@ -285,7 +291,8 @@ Decisions recorded in that document:
 The package list below is the final one. Packages were added over time
 (`xorg-x11-server-Xwayland-devel` in Phase 3, `xdpyinfo` in Phase 5,
 `python3-pytest`/`python3-cryptography` in E1, `wayland-utils` in E2,
-`libxcb-devel` in E4); adding them all up front is fine.
+`libxcb-devel` in E4, `pipewire`/`pipewire-utils` in E8); adding them all
+up front is fine.
 
 ```dockerfile
 # Build/test image for westonite (Phase 0 deliverable).
@@ -331,6 +338,8 @@ RUN dnf -y install epel-release \
         python3-cryptography \
         wayland-utils \
         libxcb-devel \
+        pipewire \
+        pipewire-utils \
     && dnf clean all
 
 # Sanity marker used by CI/smoke scripts: fail the image build early if the
@@ -1245,7 +1254,7 @@ with `back_pixel` = colour and Exposure|StructureNotify mask, sets
 map and on every ConfigureNotify. EL10 ships no `xeyes`/`xclock`/
 `xwininfo`, so this replaces all of them.
 
-### 12.5 Test inventory (final: 45 tests; 8 marked `installed`)
+### 12.5 Test inventory (after E5: 45 tests; 8 marked `installed`; §14 adds 32 more)
 
 `tests/e2e/pytest.ini` declares one marker: `installed` ("also runs
 against the installed RPM in the pristine container (no build tree, no
@@ -1435,16 +1444,324 @@ Two commits, both in the harness only:
 
 ---
 
-## 14. Final acceptance checklist
+## 14. E2E extension phases E6–E9
+
+These tests were written later in the real repository, while its Rust
+migration was under way, but each one below runs against the **C**
+build and passed against it as the oracle. They are included here so
+the C port is covered as completely as the record allows. Tests that
+exist only for the Rust frontend (its re-specified TOML config
+interface, `mode=off`, `mirror-of` on a headless source, the colour
+management validation module, and the product-decision refusals for
+RDP / remoting / pipewire-output / `modules=`) are **not** part of this
+plan; they assert behaviour the C frontend does not have.
+
+Ordering: E6 first (harness), then E7 and E8 in either order, E9 last
+(it needs everything before it and a second container image).
+
+Totals after E9: the container suite grows from 45 to **77 collected
+tests (76 pass, 1 skip)**, and a separate 10-test DRM module runs inside
+the VM.
+
+### E6 — harness extensions and the first shared additions
+
+**`tests/e2e/conftest.py`**: tear instances down in **reverse creation
+order** (`for w in reversed(instances)`). A nested compositor (a wayland
+backend inside another westonite, an x11 backend on our own Xwayland)
+dies non-zero if its host is killed first, and that is a teardown
+artefact, not a failure.
+
+**`tests/e2e/support/compositor.py`**:
+
+- `TIMEOUT_SCALE = float(os.environ.get("WESTONITE_E2E_TIMEOUT_SCALE", "1"))`,
+  multiplied into every deadline in `wait_until`, `run_client`,
+  `wait_exit`, `terminate`. The DRM VM sets it to 4 under TCG (E9);
+  loosening the deadlines for everyone would hide real startup
+  regressions on the fast path.
+- Backend-specific argv: `wayland`, `x11`, `pipewire` →
+  `--renderer=pixman` (they default to GL and the container has no
+  GPU); `drm` → `--continue-without-input` (the VM has no seat input
+  until E9's virtio devices, and weston refuses to start without input
+  unless told to); `--width/--height` now also for `wayland` and `x11`.
+- `subprocess.Popen(..., cwd=str(self.workdir))`: files the compositor
+  creates with relative paths (`capture.wcap`) land in the test's tmp
+  dir.
+- `run_client(argv, timeout=15, check=True)`: `check=False` for clients
+  that are expected to fail.
+
+**`tests/e2e/support/vncclient.py`** — QEMU Extended Key Events. The
+server's keysym path tracks modifier state only for Ctrl/Alt (RFC 6143
+shift-state rules in `vnc_handle_key_event`), so **Super+X bindings are
+reachable only by keycode** through `vnc_handle_key_code_event`.
+Changes:
+
+```python
+QEMU_EXT_KEY = -258            # pseudo-encoding, added to SetEncodings
+
+# in _client_init(), after SetEncodings:
+self.qemu_keys = False         # set by the server's one-time ack pseudo-rect
+
+# in capture(): inside the FramebufferUpdate rect loop
+elif enc == QEMU_EXT_KEY:
+    self.qemu_keys = True
+# and after the rect loop: a pseudo-rect-only update (the one-time
+# ext-key ack) CONSUMES the update request server-side (neatvnc
+# send_ext_support_frame), so if no pixels and no resize arrived,
+# go around the outer loop and request again.
+
+def key_code(self, keysym, keycode, down):
+    """QEMU Extended Key Event (message 255, submessage 0)."""
+    self._send(struct.pack(">BBHII", 255, 0, 1 if down else 0,
+                           keysym, keycode))
+```
+
+Keycodes are **qnum** codes; neatvnc maps them through
+`code_map_qnum_to_linux` (qnum `0xdb` → `KEY_LEFTMETA`). Pairs used by
+the tests: `SUPER_L = (0xffeb, 0xdb)`, `KEY_S = (0x073, 0x1f)`,
+`KEY_R = (0x072, 0x13)`. A "Super tap" is: Super down, key down, key up,
+Super up.
+
+**New tests in existing files** (all shared with the C oracle):
+
+`test_lifecycle.py` — signal handling shape (C: `main.c` installs
+SIGTERM and SIGUSR2 on the event loop sharing `on_term_signal`, which
+logs `caught signal %d`; SIGINT is caught with plain `sigaction` so gdb
+can still trap Ctrl+C, and its handler re-raises SIGUSR2):
+
+| Test | Asserts |
+|---|---|
+| `test_clean_shutdown_sigusr2` | `terminate(SIGUSR2)` exits 0 |
+| `test_sigterm_logs_caught_signal` | after SIGTERM the log contains `caught signal 15` |
+| `test_sigint_reroutes_through_sigusr2` | after SIGINT the log contains `caught signal 12` and **not** `caught signal 2` |
+
+`test_cli.py`:
+
+| Test | Asserts |
+|---|---|
+| `test_option_for_an_unloaded_backend_is_fatal` | `--backend=headless --seat=seat1` exits non-zero; log contains `unhandled option: --seat` (C hands argv to each loaded backend's option table in turn and treats leftovers as fatal) |
+
+`test_outputs.py` (`run_to_exit()` helper: run `westonite --backend=headless --log=<f> --no-config <args>` to completion with its own `XDG_RUNTIME_DIR`, return `(returncode, log text)`):
+
+| Test | Asserts |
+|---|---|
+| `test_output_transform_from_cli` | `--transform=rotate-270` → `transform: 270` in the `wl_output` block |
+| `test_invalid_transform_is_fatal` | `--transform=bogus` → non-zero; log contains `Invalid transform "bogus"` |
+| `test_invalid_mode_falls_back_to_defaults` | `[output] name=headless mode=1024xNOPE` (no CLI size) → log `Invalid mode for output headless. Using defaults.` and the output is 1024x640 (the headless default) |
+| `test_no_outputs_advertises_no_wl_output` | `--no-outputs` → `wayland-info` shows no `interface: 'wl_output'` |
+
+`test_shell_windows.py`:
+
+| Test | Asserts |
+|---|---|
+| `test_focus_moves_to_survivor_when_focused_window_closes` | two focus-coloured windows; find which is drawn focused (map order ≠ spawn order); terminate that client; the survivor reports one more `focus: enter` and repaints in its focused colour (C `focus_state_surface_destroy`) |
+
+### E7 — logging, flight recorder, debugger, protocol dump, `--debug`, renderer aliases
+
+All in `test_cli.py`; all libweston machinery the frontend wires, so all
+run against C. `TIMESTAMP = r"^\[\d\d:\d\d:\d\d\.\d\d\d\] "`.
+
+| Test | Asserts |
+|---|---|
+| `test_log_lines_are_timestamped` | after `Command line:` appears, some lines match `TIMESTAMP` and some continuation lines start with a space (`weston_log_continue` lines carry no stamp) |
+| `test_flight_recorder_is_on_by_default` | log contains `Flight recorder: enabled` (absent `--flight-rec-scopes` → C's default list) |
+| `test_empty_flight_rec_scopes_disables_the_recorder` | `--flight-rec-scopes=` (empty) → `Flight recorder: disabled` (absent ≠ empty) |
+| `test_logger_scopes_redirect_the_log_file` | `--logger-scopes=drm-backend` → the compositor starts (fixture waits on the socket, not a log line) and `Command line:` is **absent** from the log |
+| `test_logger_scopes_log_keeps_the_default` | `--logger-scopes=log` → `Command line:` present |
+| `test_wait_for_debugger_stops_the_process` | `--wait-for-debugger` (start with `wait=False`) → log `waiting for debugger, send SIGCONT to continue`; `/proc/<pid>/stat` state (field after the last `)`) is `T`; no wayland socket exists yet; `SIGCONT` then `wait_ready()` succeeds |
+| `test_protocol_dump_scope` | `--logger-scopes=proto --socket=proto-probe`, run `wayland-info` → log matches `rq wl_display@1\.get_registry\(new id wl_registry@2\)` and `rq wl_registry@2\.bind\(\d+, "wl_\w+", \d+, new id \[unknown\]@\d+\)` (arguments decoded, not just names) |
+| `test_protocol_dump_is_silent_without_a_subscriber` | default run + `wayland-info` → `wl_display@1.get_registry` **absent** |
+| `test_debug_protocol_advertises_the_global` | `--debug` → `weston_debug_v1` in `wayland-info` output |
+| `test_debug_protocol_is_off_by_default` | default → `weston_debug_v1` absent |
+| `test_output_decorations_reach_the_backend` | `[core] output-decorations=true` on headless with pixman/noop → startup fails (non-zero) and the log mentions `decorations` (decorations need GL/Vulkan; the refusal proves the key reached the backend) |
+| `test_use_pixman_config_key_conflicts_with_renderer` | `[core] use-pixman=true` + `renderer=gl` → non-zero; log `Conflicting renderer specifications` |
+
+Why `logger-scopes` is testable at all: the fixture's readiness check
+is the wayland socket, not a log line. A readiness check that depended
+on logging could not observe logging being redirected.
+
+### E8 — screenshooter/recorder and the nested backends
+
+**Build image additions**: `pipewire`, `pipewire-utils` (the pipewire
+backend test starts a daemon).
+
+**`tests/e2e/test_screenshooter.py`** (3 tests, vnc unless noted).
+Background: Super+S spawns the stock `weston-screenshooter` client,
+gated by an in-flight-client slot, and a capture-authority listener
+authorises only that client; Super+R toggles the wcap recorder. Capture
+**completion** cannot be tested: once a VNC peer is connected, any
+weston-output-capture attempt, authorised or denied, aborts the
+compositor inside `weston-libs` (`vnc_output_repaint` reaches the
+renderer only through neatvnc's aml dispatch, so a queued capture task
+can outlive the repaint cycle and trip
+`assert(wl_list_empty(&ci->pending_capture_list))` in
+`output-capture.c`). RPM-side; reproduced with the C frontend. So the
+spawn path is exercised with the client binary **diverted** via
+`WESTON_MODULE_MAP` (the frontend resolves it through
+`weston_module_path_from_env`), and the denial test runs on headless
+where the deny is clean server-side.
+
+| Test | Asserts |
+|---|---|
+| `test_super_s_spawns_screenshooter_and_slot_recycles` | vnc; env `WESTON_MODULE_MAP=weston-screenshooter=<tmp>/absent-screenshooter` (never created); capture once; Super+S → log contains `launching '<that path>'` (use `re.escape`); keep tapping Super+S until the line appears a second time (the slot frees when the doomed client dies) |
+| `test_foreign_capture_client_is_denied` | headless; `run_client(["/usr/bin/weston-screenshooter"], check=False)` exits non-zero (the stock client dies on its own zero-size assert when denied) and the compositor is still alive |
+| `test_super_r_toggles_wcap_recorder` | vnc; capture; Super+R → `<workdir>/capture.wcap` appears; move the pointer across 10 positions 50 ms apart to produce damage; Super+R again; poll until the file has ≥ 16 bytes whose `<IIII` header is magic `0x57434150`, any format, width/height equal to the RFB geometry, and more than the header |
+
+**`tests/e2e/test_backends_nested.py`** (8 tests; `outputs_of(w)` =
+the `name:` values from `wayland-info` run as a client of that
+instance). Facts: EL10 ships **no X.org server** (only Xwayland), so
+there is no Xvfb route and the compositor under test provides the X
+server for the compositor under test; all three backends default to GL,
+hence `--renderer=pixman` from E6.
+
+| Test | Asserts |
+|---|---|
+| `test_wayland_backend_nests_in_another_westonite` | host headless with `--socket=nest-host`; nested `backend="wayland"`, `--socket=nest-child`, same runtime dir, env `WAYLAND_DISPLAY=nest-host` → log `Output 'wayland0' enabled`; `wayland0` in its outputs; a client of the nested one sees `interface: 'wl_output'` |
+| `test_wayland_backend_output_count_and_size` | nested wayland with `--output-count=2 --width=800 --height=500` → `Output 'wayland1' enabled`; both `wayland0` and `wayland1` advertised; `width: 800 px, height: 500 px` |
+| `test_wayland_default_heads_number_from_zero_beside_named` | nested wayland with `[output] name=WL-1` and `--output-count=2` → outputs `WL-1` and `wayland0`, **no** `wayland1` (C's wayland create-head loop numbers defaults from zero) |
+| `test_x11_default_heads_continue_after_named` | host headless `--xwayland`; nested `backend="x11"` with env `DISPLAY=<host.x_display>`, `[output] name=X-1`, `--output-count=2` → `X-1` and `screen1`, **no** `screen0` (C's x11 loop continues after the named count; the two loops differ) |
+| `test_x11_backend_under_our_own_xwayland` | nested x11 → `Output 'screen0' enabled`; `screen0` advertised |
+| `test_x11_backend_default_size_is_1024x600` | nested x11 with no size flags → `width: 1024 px, height: 600 px` (x11's own configure default) |
+| `test_pipewire_backend_publishes_an_output` | `skipif` no `pipewire` binary; start a `pipewire` daemon with its own `XDG_RUNTIME_DIR`, wait for `pipewire-0` socket; `backend="pipewire"` in that runtime dir → `Output 'pipewire' enabled`; `pipewire` advertised; daemon terminated in `finally` |
+| `test_pipewire_backend_is_still_supported` | `backend="pipewire"`, `wait=False`, no daemon → log matches `Loading module|initializing pipewire backend|pipewire` and never contains `is not supported by westonite` (guards a product line the Rust port drew; harmless and kept for C) |
+
+### E9 — the DRM backend in a VM
+
+DRM is the one backend that needs a kernel mode-setting device, which
+neither a container nor a GitHub-hosted runner offers. The route: a VM
+that carries **its own kernel inside our image**, loads `vkms` inside
+it, and runs `test_backend_drm.py` there. The only thing asked of the
+runner is `/dev/kvm`, and its absence falls back to TCG emulation.
+
+**What was tried first and dropped** (four throwaway CI probes; facts
+kept so nobody re-derives them): the Azure runner kernel has no
+`vkms.ko` but `linux-modules-extra-$(uname -r)` provides it; the runner
+already has `/dev/dri/card1` (`hyperv_drm`, its own console, off
+limits); `/dev/kvm` exists; since ~6.14 vkms registers on the **faux
+bus**, so `/sys/class/drm/cardN/device/driver` reads `faux_driver` and a
+driver-name match finds nothing (find the card by modprobe delta);
+EL10's libseat has only `logind` and `seatd` backends, no `builtin`, so
+run `seatd` and set `LIBSEAT_BACKEND=seatd`. Abandoned because the shape
+was wrong: apt on the runner, a module into the host kernel, a device
+passed into a container, a daemon, each failure observable one CI round
+at a time and none of it reproducible locally.
+
+**Pieces** (full contents in Appendix A.17–A.19):
+
+| Piece | Where | What |
+|---|---|---|
+| VM image | `containers/Containerfile.drm-vm` | `FROM westonite-build`; installs `qemu-kvm`, `e2fsprogs`; builds a slim guest rootfs with `dnf --installroot` (`kernel-core`, `kernel-modules-core` [has `vkms.ko`], `bash`, `coreutils`, `util-linux`, `procps-ng`, `kmod`, `e2fsprogs`, `weston-libs`, `seatd`, `systemd-udev`, `wayland-utils`, `python3-pytest`, weak deps off); lifts the kernel and the generic initramfs to `/vm/vmlinuz`, `/vm/initramfs.img`; asserts exactly one kernel and that `vkms.ko.xz` exists; copies the guest init in |
+| guest init | `containers/drm-vm-init.sh` | PID 1 (`init=/init.sh`, no systemd). Sets `PATH` (PID 1 inherits none), mounts proc/sys/devtmpfs/devpts/tmpfs, `modprobe vkms`, waits for `/dev/dri/card0`, starts `systemd-udevd --daemon` + `udevadm trigger` + `settle`, **asserts a non-zero count of `ID_INPUT=1` devices**, starts `seatd -g root` and waits for its socket, exports `LIBSEAT_BACKEND=seatd`, mounts the results disk **by label** (`mount -L drmvm-results`), runs `/opt/vm-command.sh`, then `finish`: writes `<2>DRMVM-EXIT=<n>` to **`/dev/kmsg`** and to the console, sleeps 1 s, sysrq power-off |
+| harness | `scripts/drm-vm-test.sh` | Builds westonite, copies the baked rootfs (`cp -a`, never hardlinks), installs with `DESTDIR` into it, injects the working tree's `drm-vm-init.sh`, the e2e tree and the two test clients, writes the payload script, `mkfs.ext4 -d` the root (2G) and a 64M results image, boots qemu, reads the sentinel, extracts JUnit and failure dirs with `debugfs` |
+
+Load-bearing details, each learned from a red run:
+
+1. **The verdict is the `DRMVM-EXIT=<n>` sentinel, never qemu's exit
+   status.** qemu exits 0 for a guest that panicked, hung to the
+   timeout, or never ran the tests. No sentinel is always a failure.
+2. **The sentinel goes through `/dev/kmsg`.** A userspace write to
+   `/dev/console` is tty-buffered and flushed asynchronously, so a
+   printk can land in the middle of it; the first KVM-fast run produced
+   `DRMVM: DRMVM-EXI[ 6.082274] sysrq: Power Off` / `T=0` and reported
+   "no sentinel" for seven passing tests. printk emits records whole.
+   The host takes the **first** match and requires at least one digit.
+3. **`-vga none`, not just `-display none`.** q35 gives every guest a
+   Bochs VGA; once udevd coldplugs, it gets modprobed as a second DRM
+   card, which weston picks over vkms (connector `Virtual-2`, every
+   mode assertion fails). Remove the adapter rather than pass
+   `--drm-device`, so the tests still exercise weston's own card choice.
+4. **udevd is there for input only.** devtmpfs creates `/dev/dri/cardN`;
+   but libinput's udev backend enumerates with
+   `add_match_property("ID_INPUT", "1")`, which only udevd's `input_id`
+   builtin sets. Without it the `[libinput]` tests pass vacuously, so the
+   init asserts the tagged count.
+5. **`virtio-keyboard-pci` + `virtio-mouse-pci`** (a *relative* pointer:
+   `virtio-tablet-pci` is absolute and gets a smaller libinput config
+   surface). q35 also brings PS/2 emulations and an ACPI button, so every
+   assertion is per named device.
+6. **No privileges anywhere**: `mkfs.ext4 -d` builds the image from a
+   directory without mounting; `debugfs -R dump/rdump` reads results back
+   the same way. No loop device, no `CAP_SYS_ADMIN`.
+7. `virtio_blk` and `ext4` are modules in the EL10 kernel, so the
+   distro-generated generic initramfs is required; `init=` is honoured
+   across switch-root. Root by `root=LABEL=drmvm-root`.
+8. **TCG timing**: boot ~35 s; the *first* compositor start in the VM
+   takes ~22 s (cold page cache + llvmpipe EGL init; later starts 1.3–2 s),
+   which blows the suite's 10 s deadlines. The harness exports
+   `WESTONITE_E2E_TIMEOUT_SCALE=4` under TCG and `1` under KVM.
+9. A DRM output advertises **every** connector mode over `wl_output`
+   (34 for vkms), so "the first `width:` line" is the preferred mode,
+   not the active one; read the mode whose `flags:` say `current`.
+10. Tests are gated on `WESTONITE_DRM_VM=1`, **not** on `/dev/dri`
+    existing: a developer's workstation has one, and taking DRM master
+    on it would black out their display.
+
+**`tests/e2e/test_backend_drm.py`** (10 tests; `pytestmark = skipif
+WESTONITE_DRM_VM != "1"`). vkms presents one connected connector
+`Virtual-1`, preferred mode 1024x768@60. Helpers: `output_block(w, name)`
+splits `wayland-info` output on `^interface:` and picks the one
+`wl_output` stanza whose `name:` matches; `mode_of(w)` returns the
+`(w, h)` of the single mode whose `flags:` contain `current`;
+`configured_devices(w)` = all `libinput: configuring device "<name>"`
+matches; `libinput_block(w, device)` = the settings C logs under that
+device line, i.e. following lines indented by exactly ten spaces after
+the optional `[hh:mm:ss.mmm] ` timestamp (weston's own continuations are
+indented fifteen and must not be swallowed), in log order.
+
+| Test | Asserts |
+|---|---|
+| `test_drm_backend_enables_the_connected_head` | log `DRM: head 'Virtual-1' found, connector \d+ is connected` and `Output 'Virtual-1' enabled with head(s) Virtual-1`; `wayland-info` mentions `Virtual-1` |
+| `test_drm_output_defaults_to_the_preferred_mode` | current mode is (1024, 768) |
+| `test_drm_output_mode_from_config_is_a_modeline` | `[output] name=Virtual-1 mode=1280x720` → current mode (1280, 720) (in vkms's list, wins over preferred) |
+| `test_drm_output_scale_applies` | `scale=2` → `scale: 2` in the block |
+| `test_drm_output_off_leaves_no_outputs_and_that_is_fatal` | `mode=off` on the only head → exit non-zero (default `require-outputs=any` fails an empty layoutput list) and the log never contains `was supposed to be pruned` |
+| `test_drm_device_can_be_selected` | `--drm-device=card0` → log `using /dev/dri/card0` and the output enabled |
+| `test_unknown_drm_device_is_a_startup_error` | `--drm-device=card99` → exit non-zero |
+| `test_libinput_hook_runs_for_every_device` | no `[libinput]` section → both `QEMU Virtio Keyboard` and `QEMU Virtio Mouse` appear in `configured_devices`, and both blocks are empty |
+| `test_libinput_pointer_settings_apply` | `[libinput] left-handed=true middle-button-emulation=true accel-profile=flat accel-speed=0.5 natural-scroll=true scroll-method=button scroll-button=BTN_RIGHT` → the mouse block is exactly, in order: `middle-button-emulation=true`, `left-handed=true`, `accel-profile=flat`, `accel-speed=0.500`, `natural-scroll=true`, `scroll-method=button`, `scroll-button=BTN_RIGHT` |
+| `test_libinput_unsupported_keys_are_skipped_per_device` | `[libinput] enable-tap=true left-handed=true` → mouse block is `["left-handed=true"]`, keyboard block empty, `enable-tap` nowhere in the log (capability gating is silent, per device) |
+
+**CI**: a second job `drm-vm` (Appendix A.20) builds both images and
+runs `drm-vm-test.sh /results c`, chmod-ing `/dev/kvm` 0666 when present
+and passing `--device /dev/kvm`; results uploaded as
+`test-results-drm-vm`. Locally:
+
+```sh
+docker build -f containers/Containerfile.build  -t westonite-build .
+docker build -f containers/Containerfile.drm-vm -t westonite-drm-vm .
+docker run --rm --device /dev/kvm -v "$PWD":/src -v "$PWD/test-results":/results \
+    westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+```
+
+Editing `drm-vm-init.sh` or the tests needs no image rebuild (the
+harness injects the working tree's copies); only changing the guest's
+package set does.
+
+**What this does not prove.** vkms supports atomic modesetting and GBM
+modifiers and brings a full output up with the GL renderer on llvmpipe,
+but its modes are a synthesised list, not EDID; there is no physical
+vblank, no hardware timing, no driver quirk. Passing on vkms means the
+DRM path is wired correctly and does not crash; it does not mean
+westonite drives a display. Record a one-time real-hardware validation
+as an open item in `docs/drm-testing.md`.
+
+Write `docs/drm-testing.md` (the dropped probes and their facts, the VM
+route and its pieces, why udev is there, how to run it, how to read the
+result, speed, and the "what this does not prove" section) and extend
+`docs/e2e-test-plan.md` with §2.7–2.9 for the new modules.
+
+---
+
+## 15. Final acceptance checklist
 
 - [ ] `docker build -f containers/Containerfile.build -t westonite-build .` succeeds.
 - [ ] `scripts/smoke-test.sh` passes in the image (3 checks).
-- [ ] `scripts/e2e-test.sh /results` passes: 44 passed, 1 skipped.
+- [ ] `scripts/e2e-test.sh /results` passes: 76 passed, 1 skipped (77 collected in the container; `test_backend_drm.py` is skipped there by its gate — collect it or not as you prefer, its 10 tests count as skipped either way).
+- [ ] `scripts/drm-vm-test.sh /results c` in the `westonite-drm-vm` image: sentinel `DRMVM-EXIT=0`, 10 passed.
 - [ ] `scripts/rpm-build.sh /out` produces `westonite-14.0.1-1.el10.x86_64.rpm` (+debuginfo, debugsource).
 - [ ] `scripts/rpm-install-test.sh /rpms /src /results` in a pristine `centos:stream10` container: `weston` not pulled in, session file valid, legacy smoke passes, `-m installed` subset 8 passed.
-- [ ] GitHub Actions workflow green on `main`.
+- [ ] GitHub Actions workflow green on `main`, both jobs (`build-and-test`, `drm-vm`).
 - [ ] `VENDOR.md` lists P0, P2, P3, P4, T1–T9 (with the debug-key restore noted under T5).
-- [ ] `docs/` contains `phase0-findings.md`, `desktop-shell-capabilities.md`, `frontend-capabilities.md`, `maintenance-layer-plan.md`, `e2e-test-plan.md`; `PLAN.md` has every phase ticked with its verification summary.
+- [ ] `docs/` contains `phase0-findings.md`, `desktop-shell-capabilities.md`, `frontend-capabilities.md`, `maintenance-layer-plan.md`, `e2e-test-plan.md`, `drm-testing.md`; `PLAN.md` has every phase ticked with its verification summary.
 - [ ] `desktop-shell/shell.c` has the 10-entry `shell_desktop_api`, the 4-registration `shell_add_bindings`, and reads only `background-color`.
 - [ ] `grep -r wl_global_create desktop-shell/` finds nothing.
 
@@ -2641,6 +2958,503 @@ def wait_for_solid_color(client, rgb, deadline=10.0):
     return last["fb"]
 ```
 
+### A.17 `containers/Containerfile.drm-vm`
+
+```dockerfile
+# DRM test VM image (docs/drm-testing.md).
+#
+# Derived from the build image rather than folded into it: three CI jobs
+# use westonite-build, and none of them wants an extra kernel, an
+# initramfs and a second root filesystem in their layer cache.
+#
+#   docker build -f containers/Containerfile.build   -t westonite-build .
+#   docker build -f containers/Containerfile.drm-vm  -t westonite-drm-vm .
+#   docker run --rm --device /dev/kvm \
+#       -v "$PWD":/src -v "$PWD/test-results":/results \
+#       westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+#
+# --device /dev/kvm is an optimization, not a requirement: without it
+# qemu falls back to TCG emulation, which boots this VM in about 35s.
+#
+# The guest kernel ships INSIDE this image on purpose. CentOS Stream
+# 10's kernel-modules-core has vkms, so the only thing the harness needs
+# from whatever machine runs it is (optionally) /dev/kvm -- no module
+# loading on the host, no host kernel version dependency, nothing to
+# install on the runner. See docs/drm-testing.md §1 for the on-the-runner
+# approach this replaced.
+
+ARG BUILD_IMAGE=westonite-build
+FROM ${BUILD_IMAGE}
+
+# qemu-kvm: the VMM (EL10 installs it as /usr/libexec/qemu-kvm; it is a
+#   full qemu-system-x86_64 and honours -accel tcg).
+# e2fsprogs: mkfs.ext4 -d builds the root image FROM A DIRECTORY without
+#   mounting it, and debugfs reads the results disk back out the same
+#   way -- together they are why this needs no privileges at all.
+RUN dnf -y install qemu-kvm e2fsprogs \
+    && dnf clean all
+
+# The guest root filesystem, built with the same repos as this image, so
+# the libweston the VM tests is the libweston everything else tests.
+#   kernel-core        -- /usr/lib/modules/$kver/vmlinuz
+#   kernel-modules-core-- vkms.ko  (the entire point)
+#   weston-libs        -- libweston 14 + drm-backend.so + gl-renderer.so
+#   seatd              -- EL10 libseat has only logind and seatd backends,
+#                         and logind needs a session bus we have not got
+#   systemd-udev       -- udevd + the input rules.  NOT for device nodes
+#                         (devtmpfs makes those): libinput's udev backend
+#                         enumerates with add_match_property(ID_INPUT,1),
+#                         a property only udevd's input_id builtin sets,
+#                         so without a udevd run libinput finds no devices
+#                         at all and the [libinput] hook never fires.
+#                         Pulls systemd in, but nothing makes it PID 1 --
+#                         the guest still boots init=/init.sh.
+#   python3-pytest     -- the e2e suite runs INSIDE the guest
+#   wayland-utils      -- wayland-info, the suite's do-you-really-work probe
+# install_weak_deps=False keeps this near 900 MB instead of several GB.
+RUN mkdir -p /vm/rootfs \
+    && dnf -y --installroot=/vm/rootfs --releasever=10 --enablerepo=crb \
+        --setopt=install_weak_deps=False --setopt=tsflags=nodocs \
+        install \
+            kernel-core \
+            kernel-modules-core \
+            bash \
+            coreutils \
+            util-linux \
+            procps-ng \
+            kmod \
+            e2fsprogs \
+            weston-libs \
+            seatd \
+            systemd-udev \
+            wayland-utils \
+            python3-pytest \
+    && rm -rf /vm/rootfs/var/cache/dnf/* /vm/rootfs/var/lib/dnf/history* \
+    && dnf clean all
+
+# Lift the kernel and the (generic, non-hostonly) initramfs that
+# kernel-install generated in the installroot out to a fixed path, so
+# the harness never has to know the kernel version.  Assert exactly one
+# kernel: a silently-two-kernels installroot would pick one at random.
+RUN set -eu; \
+    kver=$(ls /vm/rootfs/lib/modules); \
+    test "$(echo "$kver" | wc -l)" -eq 1; \
+    cp "/vm/rootfs/lib/modules/$kver/vmlinuz" /vm/vmlinuz; \
+    cp "/vm/rootfs/boot/initramfs-$kver.img" /vm/initramfs.img; \
+    test -e "/vm/rootfs/lib/modules/$kver/kernel/drivers/gpu/drm/vkms/vkms.ko.xz"; \
+    echo "$kver" > /vm/kver
+
+COPY containers/drm-vm-init.sh /vm/rootfs/init.sh
+RUN chmod +x /vm/rootfs/init.sh && mkdir -p /vm/rootfs/opt /vm/rootfs/results
+
+WORKDIR /src
+```
+
+### A.18 `containers/drm-vm-init.sh`
+
+```bash
+#!/bin/bash
+# Guest init for the DRM test VM (docs/drm-testing.md).
+#
+# This runs as PID 1 -- the kernel is booted with init=/init.sh, so
+# there is no systemd, no udev and no login.  Everything the tests need
+# is set up here by hand:
+#
+#   pseudo filesystems -> vkms -> udevd -> seatd -> pytest -> poweroff
+#
+# devtmpfs is what creates /dev/dri/cardN when vkms registers, so nothing
+# in the DRM path itself needs udev.  udevd runs anyway, for exactly one
+# reason: libinput's udev backend enumerates input devices with
+# `udev_enumerate_add_match_property(e, "ID_INPUT", "1")`, and that
+# property is set by udevd's input_id builtin.  With no udevd run, the
+# virtio keyboard and tablet the harness attaches exist as
+# /dev/input/eventN but are invisible to libinput -- and the
+# `[libinput]` configure_device hook never fires.
+#
+# The last line the host looks for is the DRMVM-EXIT= sentinel: a
+# kernel panic, an early exit or a hang all produce *no* sentinel, which
+# the host harness treats as failure.  Never make it unconditional.
+
+set -u
+
+# PID 1 inherits no environment at all -- not even PATH -- so bash falls
+# back to its compiled-in default, which does not include /usr/sbin.
+# modprobe and seatd both live there.
+export PATH=/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin
+
+log() { echo "DRMVM: $*" > /dev/console; }
+
+mount -t proc     proc     /proc
+mount -t sysfs    sysfs    /sys
+mount -t devtmpfs devtmpfs /dev
+mkdir -p /dev/pts /dev/shm /run /tmp
+mount -t devpts devpts /dev/pts
+mount -t tmpfs  tmpfs  /dev/shm
+mount -t tmpfs  tmpfs  /run
+mount -t tmpfs  tmpfs  /tmp
+
+exec > /dev/console 2>&1
+
+log "guest up: $(uname -r)"
+
+finish() {
+    code=$1
+    sync
+    umount /results 2>/dev/null || true
+
+    # The sentinel goes out through /dev/kmsg, not just /dev/console.
+    # A userspace write to the console is buffered by the tty layer and
+    # flushed asynchronously, so a kernel printk can be emitted into
+    # the MIDDLE of it -- which is exactly what the sysrq power-off two
+    # lines down did the first time this ran on a KVM-accelerated
+    # runner, fast enough for the race to land:
+    #
+    #   DRMVM: DRMVM-EXI[    6.082274] sysrq: Power Off
+    #   T=0
+    #
+    # and the host rightly reported no sentinel for a run whose seven
+    # tests had all passed.  printk emits records whole, so a kmsg
+    # write cannot be split that way; <2> (KERN_CRIT) makes sure it
+    # reaches the console whatever the console loglevel is.  The
+    # console copy stays as the human-readable one -- if it survives
+    # intact the host just reads the same value twice.
+    echo "<2>DRMVM-EXIT=$code" > /dev/kmsg 2>/dev/null || true
+    log "DRMVM-EXIT=$code"
+
+    # Let the tty drain before anything else prints, so the console log
+    # stays readable for whoever has to debug a failure.
+    sleep 1
+
+    # No systemd, so no `poweroff`: ask the kernel directly.  `o` is
+    # power-off; if the emulated machine ignores it the host's timeout
+    # is the backstop.
+    echo 1 > /proc/sys/kernel/sysrq 2>/dev/null || true
+    echo o > /proc/sysrq-trigger 2>/dev/null || true
+    sleep 15
+    exit "$code"
+}
+
+# -- vkms ---------------------------------------------------------------
+# The whole point of the VM: a KMS device we fully control.  Loading it
+# here rather than baking it into the initramfs keeps the failure
+# visible on the console instead of in a boot loop.
+if ! modprobe vkms; then
+    log "FATAL: modprobe vkms failed"
+    finish 90
+fi
+
+for _ in $(seq 1 50); do
+    [ -e /dev/dri/card0 ] && break
+    sleep 0.1
+done
+if [ ! -e /dev/dri/card0 ]; then
+    log "FATAL: vkms loaded but no /dev/dri/card0"
+    ls -l /dev/dri 2>&1 || true
+    finish 91
+fi
+
+log "drm devices: $(ls /dev/dri | tr '\n' ' ')"
+for con in /sys/class/drm/card*-*; do
+    [ -e "$con/status" ] || continue
+    log "connector $(basename "$con") = $(cat "$con/status")"
+done
+
+# -- udev ---------------------------------------------------------------
+# Only for the input-device properties (see the header).  --daemon
+# forks and returns; `udevadm trigger` then replays an "add" for
+# everything already in /sys, because the devices were created before
+# udevd started and the kernel does not resend those uevents.
+if ! /usr/lib/systemd/systemd-udevd --daemon > /run/udevd.log 2>&1; then
+    log "FATAL: systemd-udevd failed to start"
+    cat /run/udevd.log 2>&1 || true
+    finish 94
+fi
+udevadm trigger --type=devices --action=add > /dev/null 2>&1 || true
+# A bounded settle: a timeout here is not fatal on its own -- the check
+# below is what decides, and it says something far more useful.
+udevadm settle --timeout=30 > /dev/null 2>&1 || true
+
+# Assert the one thing udevd was installed for.  Without it the libinput
+# tests would not fail, they would pass vacuously (no devices, no hook
+# calls, no log lines to contradict).
+tagged=$(udevadm trigger --type=devices --subsystem-match=input --dry-run \
+         --property-match=ID_INPUT=1 --verbose 2>/dev/null | wc -l)
+log "udev: $tagged input devices tagged ID_INPUT"
+if [ "$tagged" -eq 0 ]; then
+    log "FATAL: no ID_INPUT devices -- libinput would see nothing"
+    ls -l /dev/input 2>&1 || true
+    finish 95
+fi
+
+# -- seat ---------------------------------------------------------------
+# libseat on EL10 is built with the logind and seatd backends only.
+# logind wants a session bus and a real login session; seatd is a
+# 200-line daemon that just hands out device fds, which is exactly what
+# a single-purpose VM wants.
+seatd -g root > /run/seatd.log 2>&1 &
+for _ in $(seq 1 50); do
+    [ -S /run/seatd.sock ] && break
+    sleep 0.1
+done
+if [ ! -S /run/seatd.sock ]; then
+    log "FATAL: seatd did not create its socket"
+    cat /run/seatd.log 2>&1 || true
+    finish 92
+fi
+export LIBSEAT_BACKEND=seatd
+
+# -- results disk -------------------------------------------------------
+# /dev/vdb is a small ext4 image the host made and reads back afterwards
+# with `debugfs -R dump` -- so the JUnit XML gets out without the host
+# ever mounting anything (no loop device, no CAP_SYS_ADMIN).
+# By label, not by /dev/vdN: there is no udev here to make
+# /dev/disk/by-label, but libblkid scans devtmpfs directly, and a label
+# does not care what order the host passed the -drive arguments in.
+mkdir -p /results
+if ! mount -L drmvm-results /results; then
+    log "WARNING: could not mount the results disk -- console only"
+fi
+
+# -- environment --------------------------------------------------------
+mkdir -p -m 0700 /run/xdg
+export XDG_RUNTIME_DIR=/run/xdg
+export HOME=/root
+export LD_LIBRARY_PATH=/usr/local/lib64
+
+# The host injects the payload here: binaries under /usr/local, the e2e
+# tree under /opt/e2e, and the command to run in /opt/vm-command.sh.
+if [ ! -x /opt/vm-command.sh ]; then
+    log "FATAL: no /opt/vm-command.sh -- host injection failed"
+    finish 93
+fi
+
+log "running payload"
+/opt/vm-command.sh
+finish $?
+```
+
+### A.19 `scripts/drm-vm-test.sh` (C-only form; the original also had a Rust leg)
+
+```bash
+#!/bin/bash
+# Run the DRM leg of the e2e suite inside a throwaway VM that has a real
+# KMS device (vkms).  See docs/drm-testing.md for why this exists and
+# what it does not prove.
+#
+# Runs inside the containers/Containerfile.drm-vm image, as root.
+# Usage: drm-vm-test.sh [results-dir] [frontend]
+#   frontend: "c" (the only value in the C-only tree; kept so the
+#   results files carry a leg name)
+#
+# The container needs no privileges.  --device /dev/kvm makes the VM
+# roughly 10x faster but its absence only costs wall-clock: qemu falls
+# back to TCG.
+set -euo pipefail
+
+RESULTS="${1:-/tmp}"
+FRONTEND="${2:-c}"
+mkdir -p "$RESULTS"
+
+# Per-frontend, because CI runs both legs into the same results dir
+# and a shared name would leave only the last one's console behind --
+# exactly the artifact you need when the *first* leg is the one that
+# failed.
+CONSOLE="$RESULTS/drm-vm-console-$FRONTEND.log"
+JUNIT="$RESULTS/e2e-drm-$FRONTEND.xml"
+
+test -d /vm/rootfs || { echo "not the drm-vm image (no /vm/rootfs)" >&2; exit 2; }
+
+# Decided up front because the guest payload needs it too: under TCG the
+# compositor takes some 7s to start (llvmpipe EGL init dominates), which
+# puts the suite's 10s deadlines right on the edge, so the guest scales
+# every deadline rather than the suite loosening them for everyone.
+# `if`, not `[ ... ] && ACCEL=kvm`: a bare test that comes out false is a
+# failing command, and under `set -e` the absence of /dev/kvm would end
+# the script instead of selecting TCG.
+ACCEL=tcg
+SCALE=4
+if [ -c /dev/kvm ] && [ -w /dev/kvm ]; then
+	ACCEL=kvm
+	SCALE=1
+fi
+
+# -- build ---------------------------------------------------------------
+cd /src
+if [ -f build/build.ninja ]; then
+	meson configure build -De2e-test-client=true >/dev/null
+else
+	meson setup build --prefix=/usr -De2e-test-client=true >/dev/null
+fi
+ninja -C build >/dev/null
+
+# -- stage the guest root ------------------------------------------------
+# A real copy, not hardlinks: the injections below would otherwise write
+# through into the baked rootfs and poison every later run.
+rm -rf /vm/run /vm/run.img /vm/results.img
+cp -a /vm/rootfs /vm/run
+
+# The C frontend and its shell plugin, installed exactly as the RPM
+# would (prefix=/usr), so the guest exercises the shipped layout.
+DESTDIR=/vm/run ninja -C build install >/dev/null
+
+# The image bakes an init.sh, but take the working tree's copy: editing
+# the guest init should not cost a 6-minute image rebuild, and in CI the
+# two are the same file from the same commit anyway.
+cp /src/containers/drm-vm-init.sh /vm/run/init.sh
+chmod +x /vm/run/init.sh
+
+mkdir -p /vm/run/opt/e2e
+cp -a /src/tests/e2e/. /vm/run/opt/e2e/
+mkdir -p /vm/run/usr/local/bin
+cp build/tests/e2e/clients/wtest-client /vm/run/usr/local/bin/ 2>/dev/null || true
+cp build/tests/e2e/clients/wtest-xclient /vm/run/usr/local/bin/ 2>/dev/null || true
+
+BIN=/usr/bin/westonite
+
+# The payload runs as root inside a single-purpose VM.  WESTONITE_DRM_VM
+# is what unskips the DRM tests: they must NEVER run on a developer's
+# machine just because it happens to have /dev/dri -- taking DRM master
+# there would black out their display.
+cat > /vm/run/opt/vm-command.sh <<EOF
+#!/bin/bash
+cd /opt/e2e
+export WESTONITE_DRM_VM=1
+export WESTONITE_E2E_TIMEOUT_SCALE=$SCALE
+export WESTONITE_BIN=$BIN
+export WTEST_CLIENT=/usr/local/bin/wtest-client
+export WTEST_XCLIENT=/usr/local/bin/wtest-xclient
+export WESTONITE_E2E_ARTIFACTS=/results/failures-drm-$FRONTEND
+mkdir -p "\$WESTONITE_E2E_ARTIFACTS"
+python3 -m pytest /opt/e2e/test_backend_drm.py -v -p no:cacheprovider \\
+	--junit-xml=/results/junit.xml
+EOF
+chmod +x /vm/run/opt/vm-command.sh
+
+# 2G: the staged guest root is ~1 GB (860 MB baked + the injected
+# binaries and e2e tree).  Sparse, but CI runners are not generous with
+# disk and the image is built alongside a 4 GB build image.
+mkfs.ext4 -q -F -L drmvm-root -d /vm/run /vm/run.img 2G
+mkfs.ext4 -q -F -L drmvm-results /vm/results.img 64M
+
+# -- boot ----------------------------------------------------------------
+echo "drm-vm: booting with -accel $ACCEL, timeout scale $SCALE (frontend: $FRONTEND)"
+
+# -no-reboot so a panic ends the process instead of looping; the guest
+# powers itself off with sysrq when it is done.  console=ttyS0 + -serial
+# stdio is the only channel out.
+#
+# -vga none, not just -display none: q35 gives every guest an emulated
+# Bochs VGA whether or not anything displays it, and once udevd runs its
+# coldplug that modalias gets modprobed -- a SECOND DRM card, which
+# weston then picked over vkms (its connector is called Virtual-2, which
+# is how this was spotted: every mode assertion here is anchored to
+# vkms).  Removing the adapter is better than teaching the harness to
+# pass --drm-device: the tests should exercise weston's own card
+# selection, and there is exactly one right answer when there is
+# exactly one card.
+#
+# The two virtio input devices are what give the `[libinput]` tests
+# something to configure: virtio-keyboard-pci and virtio-mouse-pci
+# register real evdev nodes, which udevd tags and libinput then picks
+# up.  A mouse as well as a keyboard because most of the section's keys
+# are pointer-side (accel, scroll, left-handed) and a keyboard
+# advertises none of those capabilities.  A *relative* pointer
+# specifically -- virtio-tablet-pci is absolute, and libinput offers a
+# different, smaller config surface for those.
+set +e
+timeout 900 /usr/libexec/qemu-kvm \
+	-accel "$ACCEL" -M q35 -cpu max -m 3G -smp 2 -no-reboot \
+	-display none -vga none -serial stdio \
+	-kernel /vm/vmlinuz -initrd /vm/initramfs.img \
+	-drive file=/vm/run.img,if=virtio,format=raw \
+	-drive file=/vm/results.img,if=virtio,format=raw \
+	-device virtio-keyboard-pci -device virtio-mouse-pci \
+	-append "root=LABEL=drmvm-root rw console=ttyS0,115200 init=/init.sh selinux=0 panic=10 rd.emergency=poweroff" \
+	> "$CONSOLE" 2>&1
+QEMU_RC=$?
+set -e
+
+# -- results -------------------------------------------------------------
+# debugfs reads the results filesystem without mounting it, so this stays
+# unprivileged.  `|| true` because a guest that died early leaves nothing
+# to dump and the console is then the whole story.
+debugfs -R "dump /junit.xml $JUNIT" /vm/results.img >/dev/null 2>&1 || true
+[ -s "$JUNIT" ] || rm -f "$JUNIT"
+debugfs -R "rdump /failures-drm-$FRONTEND $RESULTS" /vm/results.img \
+	>/dev/null 2>&1 || true
+
+# The sentinel, not qemu's exit status, is the verdict: qemu exits 0 for
+# a guest that panicked, hung until the timeout, or never ran the tests.
+# No sentinel is a failure, always.
+#
+# The guest prints it twice -- once through /dev/kmsg, once to the
+# console -- so take the FIRST match, which is the kmsg one: printk
+# emits records whole, while the console copy can be spliced by a
+# concurrent printk (see containers/drm-vm-init.sh).  And require at
+# least one digit, so a console copy cut off right after the `=` cannot
+# match and yield an empty verdict.
+#
+# `|| true`: with pipefail set, a grep that matches nothing -- or a
+# SIGPIPE from head -- would take the whole script down here, exactly in
+# the case whose error message below is the most useful thing this
+# script can produce.
+SENTINEL=$(grep -ao 'DRMVM-EXIT=[0-9][0-9]*' "$CONSOLE" | head -1 | cut -d= -f2 || true)
+if [ -z "$SENTINEL" ]; then
+	echo "drm-vm: FAILED -- no DRMVM-EXIT sentinel (qemu rc=$QEMU_RC)" >&2
+	tail -60 "$CONSOLE" >&2
+	exit 1
+fi
+if [ "$SENTINEL" != 0 ]; then
+	echo "drm-vm: FAILED -- guest reported exit $SENTINEL" >&2
+	tail -80 "$CONSOLE" >&2
+fi
+echo "drm-vm: guest exit $SENTINEL (console: $CONSOLE)"
+exit "$SENTINEL"
+```
+
+### A.20 `drm-vm` job for `.github/workflows/ci.yml`
+
+```yaml
+  # The DRM backend needs a KMS device, which no container and no
+  # GitHub-hosted runner offers.  This job boots a VM that carries its
+  # own kernel (ours, from the same EL10 content set as everything else)
+  # and loads vkms inside it -- so the only thing asked of the runner is
+  # /dev/kvm, and even that is optional.  docs/drm-testing.md explains
+  # the route and, importantly, what vkms does *not* prove.
+  drm-vm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the CentOS Stream 10 + EPEL build image
+        run: docker build -f containers/Containerfile.build -t westonite-build .
+
+      - name: Build the DRM VM image
+        run: docker build -f containers/Containerfile.drm-vm -t westonite-drm-vm .
+
+      - name: DRM e2e inside the VM
+        run: |
+          mkdir -p test-results
+          # The runner has /dev/kvm but it is group-owned; the container
+          # runs as root and still needs write access to it.  Falling
+          # back to TCG costs ~30s of boot, so this is best-effort.
+          KVM=
+          if [ -c /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm || true
+            KVM="--device /dev/kvm"
+          fi
+          docker run --rm $KVM -v "$PWD":/src -v "$PWD/test-results":/results \
+            westonite-drm-vm /src/scripts/drm-vm-test.sh /results c
+
+      - name: Upload DRM VM results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-drm-vm
+          path: test-results/
+          if-no-files-found: ignore
+```
+
 ---
 
 ## Appendix B — pitfalls index (things that cost time the first time)
@@ -2670,6 +3484,17 @@ def wait_for_solid_color(client, rgb, deadline=10.0):
 | 21 | CI | `push: branches: ['**']` plus `pull_request` runs every PR commit twice; restrict push to `main`. |
 | 22 | CI | Apple-DH + PAM can take > 10 s on loaded runners: 30 s socket timeout and one retry. |
 | 23 | Always | Never let the `weston` package into a test container: it brings a second `desktop-shell.so` and the helper clients. |
+| 24 | E6 | Tear nested instances down in reverse creation order; killing the host first makes the child exit non-zero. |
+| 25 | E6 | Super+X bindings over VNC work only via QEMU extended key events (keycodes); the keysym path never tracks the Super modifier. The server's one-time ack pseudo-rect consumes an update request, so re-request after a pixel-less update. |
+| 26 | E8 | Any output-capture attempt with a VNC peer connected aborts the compositor (RPM-side assert). Divert the screenshooter binary with `WESTON_MODULE_MAP`; test denial on headless. |
+| 27 | E8 | EL10 has no X.org server (no Xvfb): the x11 backend must run as a client of the Xwayland that another westonite spawns. All nested backends need `--renderer=pixman`. |
+| 28 | E9 | The verdict is the `DRMVM-EXIT` sentinel written to `/dev/kmsg`; qemu's exit code means nothing, and a console-only sentinel can be spliced by a printk. |
+| 29 | E9 | `-vga none`: otherwise udevd's coldplug modprobes the Bochs VGA and weston picks that card over vkms. |
+| 30 | E9 | Without a udevd run libinput sees no devices and the `[libinput]` tests pass vacuously; assert the `ID_INPUT` count in the guest init. |
+| 31 | E9 | vkms registers on the faux bus since ~6.14: a driver-name lookup finds nothing. In the VM there is exactly one card, so nothing needs to identify it. |
+| 32 | E9 | PID 1 inherits no `PATH`; set it before the first `modprobe`. Mount the results disk by label: there is no udev to create `/dev/disk/by-label`. |
+| 33 | E9 | Under TCG the first compositor start takes ~22 s; scale deadlines with `WESTONITE_E2E_TIMEOUT_SCALE=4` instead of loosening them globally. |
+| 34 | E9 | A DRM output advertises all 34 vkms modes; the active one is the mode whose `flags:` say `current`. |
 
 ## Appendix C — what could not be re-verified from the finished repository
 
@@ -2695,7 +3520,14 @@ Stated so you do not treat it as more certain than it is:
    by that. If your environment needs the same, do it outside the repo.
 5. Line counts for intermediate trim states are taken from commit
    messages and may be off by a few lines from what you get.
-6. `test_two_instances_share_runtime_dir` and
+6. `test_foreign_capture_client_is_denied` runs `/usr/bin/weston-screenshooter`,
+   which is present in the build image even though neither `weston` nor
+   `weston-demo` is installed there. The record does not say which
+   subpackage provides it; check with
+   `rpm -qf /usr/bin/weston-screenshooter` in the image before relying
+   on it, and if it turns out to come from a package this plan forbids,
+   drop that one test rather than install the package.
+7. `test_two_instances_share_runtime_dir` and
    `test_multi_backend_headless_plus_vnc` rely on log/socket timing that
    was tuned against 2-core GitHub runners; on much slower hosts raise
    the harness deadlines uniformly rather than per test.
