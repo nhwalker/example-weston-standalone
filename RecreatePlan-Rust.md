@@ -35,8 +35,9 @@ RPM that installs that binary as `/usr/bin/westonite`, the session file
 and `westonite.toml.example`, and no longer installs any `.so`; a CI
 pipeline whose gate is the Rust build (smoke, valgrind, ASAN, unit tests,
 fence checks, the full e2e suite in TOML mode, the DRM VM leg) while the
-C build keeps running as the oracle (its e2e leg, its DRM VM leg, and a
-hybrid C-frontend + Rust-shell stress leg); and the documents that make
+C build keeps running as the oracle (its e2e leg and its DRM VM leg; the
+hybrid C-frontend + Rust-shell configuration exists from R1 to R3 and is
+deleted at R4); and the documents that make
 the port auditable: the callback inventory, the header-fact table, the
 config migration table and `PROVENANCE.md`.
 
@@ -54,7 +55,7 @@ phase adds.
 | R2d | Xwayland |
 | R2e | The Super+R wcap recorder |
 | R3 | Ship: the RPM installs the Rust binary as `westonite`; CI gates on the Rust legs; the C build becomes the oracle-only configuration; docs |
-| R4 | Hardening: the `cargo public-api` snapshot, `cargo doc` leg, feature-complete fence walk, the known wrapper-internal debts, clippy pedantic triage, SAFETY audit |
+| R4 | Deletion of the hybrid scaffolding (first task), then hardening: the `cargo public-api` snapshot, `cargo doc` leg, feature-complete fence walk, the known wrapper-internal debts, clippy pedantic triage, SAFETY audit |
 
 **Rules that apply throughout.**
 
@@ -89,7 +90,7 @@ phase adds.
    running the same tests; where the C build cannot run a case (it
    aborts, or the case is TOML-only), the plan says so.
 8. Commit messages describe what changed and what verification passed;
-   `PROVENANCE.md` gets an entry per slice (§11.4).
+   `PROVENANCE.md` gets an entry per slice (§11.5).
 
 **On the verbatim files.** Appendix A reproduces the Rust sources and
 scripts that are load-bearing. Their comments mention identifiers such as
@@ -112,7 +113,7 @@ maintenance layer (`docs/maintenance-layer-plan.md` stays a design).
 | D-PORT-1 | Port everything the C `westonite` does after F1–F6, 1:1 in capability: all six remaining backends and their options, multi-backend `--backends`, clone-of and mirror-of, colour management, `[keyboard]`/`[libinput]`, autolaunch, logging and debug scopes, Xwayland, the Super+R recorder. The product drops of the C plan carry over as refusals with the same test wording (§5.4). |
 | D-PORT-2 | libweston 14.0.1 stays the engine, consumed from the EPEL RPMs; libwayland stays the event loop. Only the language of *our* layer changes. |
 | D-PORT-3 | **Strangler fig, shell first.** R1 ships the Rust shell as a cdylib loaded by the C frontend; R2 replaces the frontend slice by slice with the C frontend as oracle. At every phase boundary a working compositor exists in at least two configurations. |
-| D-PORT-4 | **Shell linkage: cdylib during R1–R2, static at R3.** The shipped binary links `westonite-shell` statically; `--shell` accepts only the default spelling. The `westonite-shell-plugin` cdylib is kept after R3 **as a test artifact only** (it is what the hybrid oracle leg and the destroy-storm stress test load); it is never packaged. |
+| D-PORT-4 | **Shell linkage: cdylib during R1–R3, static from R3, hybrid deleted at R4.** The shipped binary links `westonite-shell` statically; `--shell` accepts only the default spelling. The `westonite-shell-plugin` cdylib, the `hybrid-r1` feature and every script and CI leg that exists only for the C-frontend + Rust-shell configuration are transitional: they are exercised by CI on every commit from R1 until the commit that deletes them, which is the first task of R4 (§11.1). They are never dormant and never packaged. The end state has two test configurations (C oracle, Rust), not three. |
 | D-PORT-5 | **The C tree stays.** `frontend/`, `desktop-shell/`, `shared/`, the meson files and the C test clients remain in the repository and in CI as the oracle. `VENDOR.md` continues to govern them; `PROVENANCE.md` governs the translated Rust. The RPM stops packaging the C artifacts at R3. |
 | D-PORT-6 | Binary name in cargo is `westonite-rs`; the RPM installs it as `%{_bindir}/westonite`. Test scripts refer to the cargo name; users see `westonite`. |
 | D-PORT-7 | No custom Wayland protocol code, no wayland-rs, no `wayland-scanner` integration: the trimmed shell creates no globals, and libwayland is reached only through the types embedded in libweston's API. |
@@ -167,7 +168,7 @@ maintenance layer (`docs/maintenance-layer-plan.md` stays a design).
 | D-VAL-1 | Sanitizers and stress tests land at R0/R1, not at the end: nightly ASAN for the pure-Rust legs, valgrind memcheck for the hybrid (ASAN cannot instrument the C half) and for every pure-Rust smoke leg, a destroy-storm stress test under valgrind, fake-C-object unit tests for every primitive, registry `debug_assert`s on in CI builds. |
 | D-VAL-2 | The shell is unit-tested against a mock `ShellHost` (focus churn, child activation, replacement hunt, teardown ordering); only the deep half gets a mock boundary, the frontend's plumbing does not. |
 | D-VAL-3 | The e2e harness gets exactly one new dimension, `WESTONITE_CONFIG_FORMAT` (`ini` for the C binary, `toml` for the Rust one), selected by the runner; tests written in the ini dialect are translated for the TOML binary; interface details that changed by design are mode-gated; everything else asserts the same thing in both modes. |
-| D-VAL-4 | The C oracle keeps running in CI until the end of this plan and beyond: the C e2e leg, the C DRM VM leg, the C-oracle smoke leg (`WESTONITE_C_ORACLE=1`), and the hybrid stress leg. |
+| D-VAL-4 | The C oracle keeps running in CI until the end of this plan and beyond: the C e2e leg and the C DRM VM leg. The hybrid legs (the C-oracle smoke switch `WESTONITE_C_ORACLE=1`, the hybrid e2e run, the hybrid destroy-storm stress) run from R1 through R3 and are deleted at R4 with the hybrid itself (D-PORT-4). The value of the hybrid ends at a fixed event, not a judgement: the day the RPM ships the Rust binary (R3's gate), after which the cdylib guards nothing that ships and every shell bug is reproducible in the Rust binary and comparable against the C oracle as a separate process. |
 | D-VAL-5 | Every `Compositor` outbound entry point that deliberately does **not** take the depth wrap is enumerated in a comment on `run()`; re-derive that list with a body-scoped scan for `extern "C"` functions lacking `with_depth`/`with_ctx`/`guard_ctx`, never with a fixed-size window. |
 | D-VAL-6 | The DRM VM leg runs the Rust frontend **first**, then the C oracle, into per-frontend result files. |
 
@@ -237,7 +238,7 @@ Additions this plan makes to the platform:
 example-weston-standalone/
 ├── Cargo.toml  Cargo.lock              # workspace (A.1)
 ├── PLAN-Rust.md                        # this document
-├── PROVENANCE.md                       # Rust module → C source map + slice log (§11.4)
+├── PROVENANCE.md                       # Rust module → C source map + slice log (§11.5)
 ├── westonite.toml.example              # annotated example config (A.25)
 ├── crates/
 │   ├── weston-sys/                     # UNSAFE: bindgen + shim (A.2–A.8)
@@ -252,7 +253,7 @@ example-weston-standalone/
 │   │           layer.rs curtain.rs desktop.rs grab.rs input_bindings.rs
 │   │           shell_init.rs log.rs debug.rs libinput.rs xwayland.rs screenshooter.rs
 │   ├── westonite-shell/                # SAFE: shell.c policy, src/lib.rs + src/tests.rs
-│   ├── westonite-shell-plugin/         # UNSAFE (cdylib entry point only): desktop-shell.so for the hybrid
+│   ├── westonite-shell-plugin/         # UNSAFE (cdylib entry point only): desktop-shell.so for the hybrid — R1–R3 only, deleted at R4
 │   ├── westonite-config/               # SAFE: model.rs cli.rs overrides.rs resolve.rs
 │   ├── westonite-spawn/                # UNSAFE (one audited module): process spawning
 │   └── westonite/                      # SAFE: the frontend binary, src/main.rs → westonite-rs
@@ -262,7 +263,7 @@ example-weston-standalone/
 │   └── config-migration.md             # A.28 — ini → TOML table
 ├── scripts/
 │   ├── regen-bindings.sh  rust-fence-check.sh  rust-smoke.sh  rust-asan-smoke.sh
-│   ├── rust-stress-test.sh  rust-e2e-test.sh  rust-shell-install.sh
+│   ├── rust-stress-test.sh  rust-e2e-test.sh  rust-shell-install.sh   # rust-shell-install.sh: R1–R3 only
 │   ├── valgrind-upstream-vnc.supp
 │   └── drm-vm-test.sh                  # gains the `rust` frontend argument
 ├── rpm/westonite.spec                  # cargo-only %files from R3 (A.21)
@@ -365,8 +366,9 @@ results.
 - **Public-API rule**: `weston`'s and `westonite-spawn`'s public APIs
   contain no raw pointers, no `NonNull`, no `weston_sys::*` types.
   Review-enforced until R4 wires the `cargo public-api` snapshot. One
-  exception: the `hybrid-r1` feature's `shell_init(*mut c_void, …)`
-  bootstrap consumed by the plugin crate.
+  exception, R1–R3 only: the `hybrid-r1` feature's `shell_init(*mut
+  c_void, …)` bootstrap consumed by the plugin crate; it disappears with
+  the R4 deletion, and the snapshot is taken after it.
 - **Unsafe hygiene**: `unsafe_op_in_unsafe_fn = "deny"` and
   `clippy::undocumented_unsafe_blocks = "deny"` in `weston`,
   `westonite-shell-plugin`, `westonite-spawn`; every `unsafe` block has a
@@ -798,7 +800,7 @@ section points at both.
    level-triggered pipe forever; exactly one watch may exist.
 10. `Pong` from a client with no surfaces left ends no busy grab (C
     matches on client identity); the grab self-heals on the next focus.
-    Closed at R4 (§11.2).
+    Closed at R4 (§11.3).
 11. Output move: the curtain moves synchronously in the trampoline, the
     windows on the drain; output resize: the curtain is recreated on the
     drain. Not observable while the drain follows in the same dispatch.
@@ -841,15 +843,19 @@ env; toml: absent). `toml_only = pytest.mark.skipif(CONFIG_FORMAT !=
 | Configuration | Binary | Shell | Config | From |
 |---|---|---|---|---|
 | C oracle | `/usr/bin/westonite` (meson) | C `desktop-shell.so` | ini | exists |
-| Hybrid | `/usr/bin/westonite` (meson) | Rust cdylib installed as `desktop-shell.so` | ini | R1 |
+| Hybrid | `/usr/bin/westonite` (meson) | Rust cdylib installed as `desktop-shell.so` | ini | R1, deleted at R4 |
 | Rust | `target/release/westonite-rs` | static | toml | R2a |
 
-Scripts: `smoke-test.sh` runs the hybrid (or the oracle with
-`WESTONITE_C_ORACLE=1`); `e2e-test.sh` runs the full suite against the
-hybrid; `rust-smoke.sh` (nine legs, A.18), `rust-asan-smoke.sh`,
-`rust-stress-test.sh` (hybrid by default, `WESTONITE_BIN=target/release/westonite-rs`
-for the Rust frontend), `rust-e2e-test.sh` (Rust binary, TOML mode),
-`drm-vm-test.sh /results rust|c`.
+Scripts, R1 through R3: `smoke-test.sh` runs the hybrid (or the oracle
+with `WESTONITE_C_ORACLE=1`); `e2e-test.sh` runs the full suite against
+the hybrid; `rust-stress-test.sh` targets the hybrid by default and the
+Rust frontend with `WESTONITE_BIN=target/release/westonite-rs`. Scripts
+that outlive R4: `smoke-test.sh` and `e2e-test.sh` (plain C oracle again),
+`rust-smoke.sh` (nine legs, A.18), `rust-asan-smoke.sh`,
+`rust-stress-test.sh` (Rust binary by default; `WESTONITE_BIN` keeps
+pointing it at the C oracle for an RPM-side valgrind baseline),
+`rust-e2e-test.sh` (Rust binary, TOML mode), `drm-vm-test.sh /results
+rust|c`.
 
 ### 6.3 Where the oracle cannot run a case
 
@@ -1025,7 +1031,8 @@ Unit tests that exist at the gate: `registry.rs`
   **after** the destroy emission, so those boxes must outlive it.
 - **`westonite-shell-plugin`** (A.34 manifest, A.36 `lib.rs`): the
   `#[unsafe(no_mangle)] extern "C" fn wet_shell_init(ec, argc, argv)`
-  entry point, returning 0/−1.
+  entry point, returning 0/−1. Transitional (D-PORT-4): lives R1–R3,
+  deleted at R4 (§11.1).
 - **`scripts/rust-shell-install.sh`** (A.18c); `smoke-test.sh` calls it
   after `ninja install` and asserts the Rust marker (absent under
   `WESTONITE_C_ORACLE=1`); `e2e-test.sh` inherits the same install.
@@ -1115,8 +1122,14 @@ R2d the Rust binary runs the entire suite).
    log context.
 4. **Fence additions**: `attach_shell_native` (shares `wire_common`
    with the hybrid path; fails `build()` if the compositor already has
-   the destroy listener), `with_shell`, `with_socket_name`,
-   `set_autolaunch`, the SIGCHLD source's autolaunch branch
+   the destroy listener). **Split `shell_init.rs` here**: `wire_common`,
+   `attach_shell_native` and everything the native binary uses are
+   unconditional; only the dlsym half (`shell_init`, `read_background_color`,
+   `create_screenshooter`, the hand-declared config-parser externs) sits
+   behind `#[cfg(feature = "hybrid-r1")]`, and the `westonite` binary's
+   manifest does **not** enable the feature (delta to A.38). This is what
+   makes the R4 deletion a pure removal instead of a refactor. Also
+   `with_shell`, `with_socket_name`, `set_autolaunch`, the SIGCHLD source's autolaunch branch
    (`autolaunched client exited, terminating`), `debug.rs` (`enable`
    returns a `Listener` that is `mark_attached`; `protocol_log_fn`
    formats one line Rust-side, `rq`/`ev` prefixes, argument formatting
@@ -1297,15 +1310,15 @@ shared; `test_super_s_is_inert` and
    invocation adds `WESTONITE_CONFIG_FORMAT=toml`; the shell-load assert
    becomes the Rust marker.
 3. **CI** (A.22): `build-and-test` keeps building the meson tree and
-   running `e2e-test.sh` (hybrid) and the C-oracle smoke; the `rust` job
-   is the gate for the shipped artifact; the RPM steps move to the `rust`
-   job (or a job that depends on it) so the packaged binary is the one
-   the Rust legs tested; `drm-vm` unchanged (both frontends).
+   running `e2e-test.sh` (hybrid) and the C-oracle smoke through R3 (they
+   go at R4, §11.1); the `rust` job is the gate for the shipped artifact;
+   the RPM steps move to the `rust` job (or a job that depends on it) so
+   the packaged binary is the one the Rust legs tested; `drm-vm` unchanged (both frontends).
 4. **Docs**: `README.md` (what the Rust build is; the crate map and the
    fence rules in five lines; configuration: `westonite.toml`, `-o`,
    the migration table link; building: `cargo build --release -p
    westonite`; testing: the three configurations of §6.2); `PROVENANCE.md`
-   (§11.4); `docs/config-migration.md` final; the callback inventory's
+   (§11.5); `docs/config-migration.md` final; the callback inventory's
    Status column complete; `PLAN-Rust.md` = this document.
 5. `westonite.ini.example` stays in `data/` for the C oracle but is no
    longer packaged.
@@ -1320,12 +1333,48 @@ TOML mode; CI green on every job.
 
 ## 11. Phase R4 — hardening
 
-### 11.1 Fence and tooling
+### 11.1 Delete the hybrid (first task; D-PORT-4, D-VAL-4)
+
+The RPM has shipped the Rust binary at R3, so the C-frontend +
+Rust-shell configuration guards nothing that ships. Delete it in one
+commit, mechanically, and leave nothing dormant:
+
+1. `crates/westonite-shell-plugin/` and its `members` entry in the
+   workspace `Cargo.toml`; the `hybrid-r1` feature in
+   `crates/weston/Cargo.toml` and the `#[cfg(feature = "hybrid-r1")]`
+   half of `shell_init.rs` (the dlsym bootstrap, `read_background_color`,
+   `create_screenshooter`, the hand-declared config-parser externs); the
+   `weston` dependency of `crates/westonite/Cargo.toml` already carries
+   no feature (the R2a split).
+2. `scripts/rust-shell-install.sh`; the call to it and the
+   `WESTONITE_C_ORACLE` branch in `scripts/smoke-test.sh` (the C smoke is
+   plain C again, asserting `Loading module '/usr/lib64/westonite/desktop-shell.so'`
+   and the absence of the Rust marker without a switch); the interim
+   `cargo build … -p westonite-shell-plugin` and `install` lines are
+   already gone from the spec since R3 (A.21); leave the interim release
+   in `%changelog`.
+3. `scripts/rust-stress-test.sh`: the default `BIN` becomes
+   `target/release/westonite-rs`; keep the `WESTONITE_BIN` knob (pointing
+   it at `/usr/bin/westonite` stresses the C oracle, a legitimate
+   valgrind baseline for RPM-side leaks) and update the header comment.
+4. `.github/workflows/ci.yml`: remove the C-oracle smoke step and the
+   hybrid stress step from `build-and-test`; add a Rust-binary stress
+   step to the `rust` job if one is not already there.
+5. `docs/callback-inventory.md`: remove the hybrid notes (the
+   `wet_get_config` and compositor user-data remarks); `PROVENANCE.md`:
+   the plugin row becomes a log entry recording the deletion;
+   `README.md`: no `WESTONITE_C_ORACLE`, two configurations in the
+   testing section; §8.2's two hybrid-only rules are retired here.
+6. Verify: `grep -rn 'hybrid-r1\|WESTONITE_C_ORACLE\|shell-plugin\|shell_plugin' --exclude-dir=.git --exclude-dir=target --exclude=PLAN-Rust.md .`
+   is empty; the fence check's `UNSAFE_CRATES` list drops
+   `westonite-shell-plugin`; every CI job green.
+
+### 11.2 Fence and tooling
 
 - Wire `cargo public-api` for `weston` and `westonite-spawn`: a committed
   snapshot per crate, a `rust` job step that diffs it; the snapshot must
-  contain no `*mut`, `*const`, `NonNull` or `weston_sys::` token except
-  the `hybrid-r1` `shell_init` entry.
+  contain no `*mut`, `*const`, `NonNull` or `weston_sys::` token (the
+  hybrid entry point is gone by now, §11.1).
 - `cargo doc --workspace --no-deps` with `RUSTDOCFLAGS="-D warnings"` as
   a CI step (broken intra-doc links are errors).
 - `rust-fence-check.sh` fence 1 runs `cargo metadata` with
@@ -1334,7 +1383,7 @@ TOML mode; CI green on every job.
 - Pin the rustup bootstrap in `rust-asan-smoke.sh` to a checksummed
   installer.
 
-### 11.2 Wrapper-internal debts (each with a unit or e2e test)
+### 11.3 Wrapper-internal debts (each with a unit or e2e test)
 
 - Move the per-seat records and the focus track counts from module
   thread-locals into `CtxInner` so `Ctx::teardown` clears them.
@@ -1348,7 +1397,7 @@ TOML mode; CI green on every job.
 - Re-derive the `run()` unwrapped-entry-point list (D-VAL-5) and the
   callback-inventory tier cells against the code.
 
-### 11.3 Idiom pass
+### 11.4 Idiom pass
 
 Clippy `pedantic` triage (allow with a reason or fix; no blanket allow),
 SAFETY-comment audit (every `unsafe` block names the invariant that
@@ -1357,7 +1406,7 @@ port no longer needs (sentinel returns, int flags inside `weston`,
 duplicated teardown closures), and a re-baseline of the public-API
 snapshot.
 
-### 11.4 `PROVENANCE.md`
+### 11.5 `PROVENANCE.md`
 
 A table mapping every Rust module to its source C file at `14.0.1` (+P0
 and the T/F trims) with line ranges, followed by one log entry per
@@ -1470,11 +1519,11 @@ measured (Appendix C).
       `ALL FENCE CHECKS PASSED`; the public-API snapshots match.
 - [ ] `scripts/rust-smoke.sh`: all nine legs; `scripts/rust-asan-smoke.sh`:
       `ASAN SMOKE PASSED`.
-- [ ] `scripts/rust-stress-test.sh` valgrind-clean against the hybrid and
-      with `WESTONITE_BIN=target/release/westonite-rs`.
+- [ ] `scripts/rust-stress-test.sh` valgrind-clean against
+      `target/release/westonite-rs` (its default after R4).
 - [ ] `scripts/rust-e2e-test.sh /results`: 110 passed, 1 skipped.
-- [ ] `scripts/e2e-test.sh /results` (hybrid) and the C oracle: the C
-      plan's 84 passed, 1 skipped, both.
+- [ ] `scripts/e2e-test.sh /results` (the C oracle): the C plan's 84
+      passed, 1 skipped.
 - [ ] `scripts/drm-vm-test.sh /results rust` and `… c`: `DRMVM-EXIT=0`,
       10 passed each.
 - [ ] `rpm/westonite.spec` builds `westonite-14.0.1-3.el10.x86_64.rpm`
@@ -1491,6 +1540,10 @@ measured (Appendix C).
       `westonite.toml.example` agree with `model.rs`
       (`example_config_is_valid` passes).
 - [ ] The C tree still builds and its e2e and DRM legs still pass.
+- [ ] No hybrid remains: no `crates/westonite-shell-plugin`, no
+      `hybrid-r1` feature, no `scripts/rust-shell-install.sh`, no
+      `WESTONITE_C_ORACLE` anywhere outside `PLAN-Rust.md`; exactly two
+      test configurations (§6.2).
 
 ---
 
@@ -5779,7 +5832,9 @@ grep -q "autolaunched client exited, terminating" /tmp/rs-asan.log \
 echo "ASAN SMOKE PASSED"
 ```
 
-### A.18b `scripts/rust-stress-test.sh` — copy as-is
+### A.18b `scripts/rust-stress-test.sh` — copy, then apply at R4
+
+Delta (§11.1 item 3): at R4 the default `BIN` becomes `target/release/westonite-rs` and the header comment describes the Rust binary as the default target.
 
 ```bash
 #!/bin/bash
@@ -10307,7 +10362,9 @@ fn main() -> std::process::ExitCode {
 }
 ```
 
-### A.38 `crates/westonite-spawn/Cargo.toml` and `crates/westonite/Cargo.toml` — copy as-is
+### A.38 `crates/westonite-spawn/Cargo.toml` and `crates/westonite/Cargo.toml` — copy, then apply
+
+Delta (R2a, §9.1 item 4): in `crates/westonite/Cargo.toml` the `weston` dependency is `weston = { workspace = true }` with no `features`, and its comment goes; the native shell attach is unconditional after the split.
 
 ```toml
 [package]
